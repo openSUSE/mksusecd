@@ -1,0 +1,148 @@
+#! /usr/bin/perl
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# package Tmp version 1.0
+#
+# Create temporary files/directories and ensures they are removed at
+# program end.
+#
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+{
+  package Tmp;
+
+  use File::Temp;
+  use strict 'vars';
+
+  sub new
+  {
+    my $self = {};
+    my $save_tmp = shift;
+
+    bless $self;
+
+    my $x = $0;
+    $x =~ s#.*/##;
+    $x =~ s/(\s+|"|\\|')/_/;
+    $x = 'tmp' if$x eq "";
+
+    my $t = File::Temp::tempdir("/tmp/$x.XXXXXXXX", CLEANUP => $save_tmp ? 0 : 1);
+
+    $self->{base} = $t;
+
+    if(!$save_tmp) {
+      my $s_t = $SIG{TERM};
+      $SIG{TERM} = sub { File::Temp::cleanup; &$s_t if $s_t };
+
+      my $s_i = $SIG{INT};
+      $SIG{INT} = sub { File::Temp::cleanup; &$s_i if $s_i };
+    }
+
+    return $self
+  }
+
+  sub dir
+  {
+    my $self = shift;
+    my $dir = shift;
+    my $t;
+
+    if($dir ne "" && !-e("$self->{base}/$dir")) {
+      $t = "$self->{base}/$dir";
+      die "error: mktemp failed\n" unless mkdir $t, 0755;
+    }
+    else {
+      chomp ($t = `mktemp -d $self->{base}/XXXX`);
+      die "error: mktemp failed\n" if $?;
+    }
+
+    return $t;
+  }
+
+  sub file
+  {
+    my $self = shift;
+    my $file = shift;
+    my $t;
+
+    if($file ne "" && !-e("$self->{base}/$file")) {
+      $t = "$self->{base}/$file";
+      open my $f, ">$t";
+      close $f;
+    }
+    else {
+      chomp ($t = `mktemp $self->{base}/XXXX`);
+      die "error: mktemp failed\n" if $?;
+    }
+
+    return $t;
+  }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+use strict;
+
+use Getopt::Long;
+use File::Find;
+use File::Path;
+use Cwd 'abs_path';
+
+use Data::Dumper;
+$Data::Dumper::Sortkeys = 1;
+$Data::Dumper::Terse = 1;
+$Data::Dumper::Indent = 1;
+
+our $VERSION = "0.0";
+
+sub usage;
+
+my $opt_create;
+my $opt_save_temp;
+my $opt_dst;
+
+GetOptions(
+  'create|c=s'       => sub { $opt_create = 1; $opt_dst = $_[1] },
+  'save-temp'        => \$opt_save_temp,
+  'version'          => sub { print "$VERSION\n"; exit 0 },
+  'help'             => sub { usage 0 },
+) || usage 1;
+
+
+usage 1 unless $opt_create;
+
+my $tmp = Tmp::new($opt_save_temp);
+
+my $tmp_old = $tmp->dir('old');
+my $tmp_new = $tmp->dir('new');
+my $tmp_mnt = $tmp->dir('mnt');
+my $tmp_err = $tmp->file('err');
+
+if($opt_create) {
+
+}
+
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# usage($exit_code)
+#
+# Print help text and exit.
+#
+sub usage
+{
+  print <<"= = = = = = = =";
+Usage: mksusecd [OPTIONS] [SOURCES]
+Create SUSE installation CD/DVD.
+
+General options:
+
+      --version                 Show mksusecd version.
+      --save-temp               Keep temporary files.
+      --help                    Write this help text.
+
+= = = = = = = =
+
+  exit shift;
+}
+
+
