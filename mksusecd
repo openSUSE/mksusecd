@@ -148,9 +148,10 @@ sub write_sector;
 sub fix_catalog;
 sub relocate_catalog;
 sub rerun_mkisofs;
+sub run_isohybrid;
 sub isols;
 sub meta_iso;
-sub run_isohybrid;
+sub meta_fat;
 
 my %config;
 my $sudo;
@@ -513,7 +514,7 @@ sub prepare_mkisofs
 
     push @{$mkisofs->{sort}}, "$tmp_new/glump 1000000";
 
-    # $mkisofs->{options} .= " -hide glump -hide-joliet glump";
+    $mkisofs->{options} .= " -hide glump -hide-joliet glump";
   }
 
   if($mkisofs->{sort}) {
@@ -690,10 +691,11 @@ sub relocate_catalog
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 sub rerun_mkisofs
 {
-  # run_mkisofs;
-
   if($opt_hybrid_fs eq 'iso') {
     meta_iso;
+  }
+  elsif($opt_hybrid_fs eq 'fat') {
+    meta_fat;
   }
 
   run_mkisofs;
@@ -810,5 +812,13 @@ sub meta_iso
 
   close $iso_fh;
 }
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub meta_fat
+{
+
+}
+
 
 
