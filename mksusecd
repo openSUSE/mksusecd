@@ -76,6 +76,43 @@
 
     return $t;
   }
+
+  # helper function
+  sub umount
+  {
+    my $mp = shift;
+
+    if(open(my $f, "/proc/mounts")) {
+      while(<$f>) {
+        if((split)[1] eq $mp) {
+          # print STDERR "umount $mp\n";
+          ::susystem("umount $mp");
+          return;
+        }
+      }
+      close $f;
+    }
+  }
+
+  sub mnt
+  {
+    my $self = shift;
+    my $dir = shift;
+
+    my $t = $self->dir($dir);
+
+    if($t ne '') {
+      eval 'END { umount $t }';
+
+      my $s_t = $SIG{TERM};
+      $SIG{TERM} = sub { umount $t; &$s_t if $s_t };
+
+      my $s_i = $SIG{INT};
+      $SIG{INT} = sub { umount $t; &$s_i if $s_i };
+    }
+
+    return $t;
+  }
 }
 
 
@@ -94,33 +131,161 @@ $Data::Dumper::Indent = 1;
 
 our $VERSION = "0.0";
 
-sub usage;
+my @boot_archs = qw ( x86_64 i386 s390x s390 ia64 aarch64 ppc ppc64 );
+my $magic_id = "7984fc91-a43f-4e45-bf27-6d3aa08b24cf";
 
+sub usage;
+sub check_root;
+sub susystem;
+sub fname;
+sub analyze_boot;
+sub build_todo;
+sub prepare_mkisofs;
+sub build_filelist;
+sub run_mkisofs;
+sub read_sector;
+sub write_sector;
+sub fix_catalog;
+sub relocate_catalog;
+sub rerun_mkisofs;
+sub isols;
+sub meta_iso;
+sub run_isohybrid;
+
+my %config;
+my $sudo;
+my $sudo_checked;
 my $opt_create;
 my $opt_save_temp;
 my $opt_dst;
+my $opt_joliet = 1;
+my $opt_verbose = 0;
+my $opt_efi = 1;
+my $opt_hybrid = 1;
+my $opt_hybrid_fs;
+my $opt_hybrid_gpt;
+my $opt_hybrid_mbr;
+my $opt_check;
+my $opt_digest = 'md5';
 
 GetOptions(
   'create|c=s'       => sub { $opt_create = 1; $opt_dst = $_[1] },
+  'joliet'           => \$opt_joliet,
+  'no-joliet'        => sub { $opt_joliet = 0 },
+  'efi'              => \$opt_efi,
+  'no-efi'           => sub { $opt_efi = 0 },
+  'uefi'             => \$opt_efi,
+  'no-uefi'          => sub { $opt_efi = 0 },
+  'check'            => \$opt_check,
+  'digest=s'         => \$opt_digest,
+  'gpt'              => sub { $opt_hybrid = 1; $opt_hybrid_gpt = 1 },
+  'mbr'              => sub { $opt_hybrid = 1; $opt_hybrid_mbr = 1 },
+  'hybrid'           => \$opt_hybrid,
+  'no-hybrid'        => sub { $opt_hybrid = 0 },
+  'hybrid-fs=s'      => sub { $opt_hybrid = 1; $opt_hybrid_fs = $_[1] },
   'save-temp'        => \$opt_save_temp,
+  'verbose|v'        => sub { $opt_verbose++ },
   'version'          => sub { print "$VERSION\n"; exit 0 },
   'help'             => sub { usage 0 },
 ) || usage 1;
 
-
 usage 1 unless $opt_create;
+usage 1 if $opt_hybrid_fs !~ '^(|iso|fat)$';
+usage 1 if $opt_digest !~ '^(md5|sha1|sha224|sha256|sha384|sha512)$';
+
+if(open my $f, "$ENV{HOME}/.mksusecdrc") {
+  while(<$f>) {
+    if(/^(\S+?)=\"(.*)\"\s*$/) {
+      $config{$1} = $2;
+    }
+  }
+  close $f;
+}
+
+if($config{sudo}) {
+  $sudo = $config{sudo};
+  $sudo =~ s/\s*$/ /;
+}
 
 my $tmp = Tmp::new($opt_save_temp);
 
-my $tmp_old = $tmp->dir('old');
+# my $tmp_mnt = $tmp->mnt('mnt');
 my $tmp_new = $tmp->dir('new');
-my $tmp_mnt = $tmp->dir('mnt');
 my $tmp_err = $tmp->file('err');
+my $tmp_sort = $tmp->file('sort');
+
+my @sources;
+my $files;
+my $boot;
+my $todo;
+my $iso_cnt = 0;
+my $mkisofs = { command => 'genisoimage' };
+my $iso_file;
+my $iso_fh;
+my $two_runs;
 
 if($opt_create) {
+  # we might need two mkisofs runs...
+  $two_runs = $opt_hybrid && $opt_hybrid_fs;
 
+  $iso_file = $opt_dst;
+
+  for (@ARGV) {
+    s#/*$##;
+    next if $_ eq "";
+    if(-d) {
+      push @sources, { dir => $_, real_name => $_, type => 'dir' };
+    }
+    elsif(-f _) {
+      my $t = `file -b -L $_ 2>/dev/null`;
+      if($t =~ / ISO 9660 CD-ROM /) {
+        check_root "Sorry, can't access ISO images; you need root privileges.";
+        $iso_cnt++;
+        my $d = $tmp->mnt(sprintf("mnt_%04d", $iso_cnt));
+        susystem "mount -oro,loop $_ $d";
+        push @sources, { dir => $d, real_name => $_, type => 'iso' };
+      }
+      else {
+        die "$_: unsupported source type\n";
+      }
+    }
+    else {
+      die "$_: unsupported source type\n";
+    }
+  }
+
+  die "no sources - nothing to do\n" unless @sources;
+
+  $files = build_filelist;
+  $boot = analyze_boot;
+  $todo = build_todo;
+  prepare_mkisofs;
+
+  # print "sources = ", Dumper(\@sources);
+  # print "boot = ", Dumper($boot);
+  # print "todo = ", Dumper($todo);
+  # print "mkisofs = ", Dumper($mkisofs);
+
+  run_mkisofs;
+
+  if($two_runs) {
+    rerun_mkisofs;
+  }
+
+  fix_catalog;
+  relocate_catalog;
+
+  run_isohybrid if $opt_hybrid;
+
+  my $chk = $opt_check ? " --check" : "";
+  print "calculating $opt_digest...";
+  system "tagmedia $chk --digest '$opt_digest' --pad 150 '$iso_file' >/dev/null";
+  print "\n";
+
+  if($mkisofs->{meta_start}) {
+    system "tagmedia --add-tag  'partition=$mkisofs->{meta_start}' '$iso_file' >/dev/null";
+  }
 }
-
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -143,6 +308,507 @@ General options:
 = = = = = = = =
 
   exit shift;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub check_root
+{
+  my $p;
+  my $msg = shift;
+
+  return if $sudo_checked;
+
+  $sudo_checked = 1;
+
+  if(!$>) {
+    undef $sudo;
+    return;
+  }
+
+  chomp($p = `bash -c 'type -p $sudo'`) if $sudo;
+
+  $msg = "sorry, you must be root" if $msg eq "";
+
+  die "$msg\n" if $p eq "";
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub susystem
+{
+  system $sudo . $_[0];
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub fname
+{
+  if(exists $files->{$_[0]}) {
+    return "$files->{$_[0]}/$_[0]";
+  }
+  else {
+    return undef;
+  }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub build_filelist
+{
+  my $files;
+
+  for my $s (@sources) {
+    File::Find::find({
+      wanted => sub {
+        $files->{$1} = $s->{dir} if m#^$s->{dir}/(.+)#;
+      },
+      no_chdir => 1
+    }, $s->{dir});
+  }
+
+  return $files;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub analyze_boot
+{
+  my $boot;
+
+  for (@boot_archs) {
+    if(-d fname("boot/$_")) {
+      $boot->{$_} = { base => "boot/$_" };
+      if(-f fname("boot/$_/loader/isolinux.bin")) {
+        $boot->{$_}{bl}{isolinux} = { base => "boot/$_/loader", arch => $_ };
+      }
+      if(-f fname("boot/$_/isolinux/isolinux.bin")) {
+        $boot->{$_}{bl}{isolinux} = { base => "boot/$_/isolinux", arch => $_ };
+      }
+      if(-d fname("boot/$_/grub2-efi")) {
+        $boot->{$_}{bl}{"grub2-efi"} = { base => "boot/$_/grub2-efi", arch => $_ };
+      }
+      if(-f fname("boot/$_/efi")) {
+        $boot->{$_}{bl}{efi} = { base => "boot/$_/efi", arch => $_ };
+      }
+    }
+    if(-f fname("ppc/bootinfo.txt")) {
+      $boot->{ppc} = { base => "ppc", arch => $_ };
+      # ...
+    }
+  }
+  if(-d fname("EFI/BOOT")) {
+    $boot->{efi} = { base => "EFI/BOOT" };
+  }
+
+  return $boot;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub build_todo
+{
+  my $todo;
+  my %iso_arch;
+
+  # legacy El-Torito x86 boot
+  # In theory more than one entry could be created, but BIOSes don't really
+  # expect that...
+  for (sort keys %$boot) {
+    if($boot->{$_}{bl}{isolinux}) {
+      $iso_arch{$_} = { isolinux => $boot->{$_}{bl}{isolinux} };
+    }
+  }
+
+  # ... so we just pick one.
+  if(%iso_arch) {
+    $_ = (sort keys %iso_arch)[-1];
+    push @$todo, $iso_arch{$_};
+    if(keys %iso_arch > 1) {
+      print "More than one El Torito legacy boot entry detected, choosing $_.\n";
+    }
+  }
+
+  # standard UEFI boot
+  for (sort keys %$boot) {
+    if($boot->{$_}{bl}{efi}) {
+      push @$todo, { efi => $boot->{$_}{bl}{efi} };
+    }
+  }
+
+  return $todo;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub copy_file
+{
+  my $f = fname($_[0]);
+
+  return unless defined $f;
+
+  if(-d $f) {
+    system "mdir -p '$tmp_new/$_[0]'";
+  }
+  elsif(-f $f) {
+    if($_[0] =~ m#(.+)/([^/]+)#) {
+      system "mkdir -p '$tmp_new/$1'; cp '$f' '$tmp_new/$1'";
+    }
+    elsif($_[0] !~ m#/#) {
+      system "cp '$f' '$tmp_new'";
+    }
+
+    $mkisofs->{options} .= " -x '$f'";
+    system "chmod u+w '$tmp_new/$_[0]'";
+  }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub prepare_mkisofs
+{
+  my $iso_catalog;
+
+  # general options
+  $mkisofs->{options} = " -l -r -pad -input-charset utf8 -o '$iso_file'";
+  $mkisofs->{options} .= " -J -f" if $opt_joliet;
+
+  # special loader options
+  for (@$todo) {
+    my $t = (keys %$_)[0];
+
+    if($t eq 'isolinux') {
+      copy_file "$_->{$t}{base}/isolinux.bin";
+      push @{$mkisofs->{sort}}, "$tmp_new/$_->{$t}{base}/boot.catalog 4";
+      # push @{$mkisofs->{sort}}, fname("$_->{$t}{base}/isolinux.bin") . " 3";
+      push @{$mkisofs->{sort}}, "$tmp_new/$_->{$t}{base}/isolinux.bin 3";
+      # push @{$mkisofs->{sort}}, "$_->{$t}{base}/isolinux.bin 3";
+      push @{$mkisofs->{sort}}, "$tmp_new/$_->{$t}{base} 1";
+      $mkisofs->{options} .=
+        " -no-emul-boot -boot-load-size 4 -boot-info-table" .
+        " -b $_->{$t}{base}/isolinux.bin -c $_->{$t}{base}/boot.catalog" .
+        " -hide $_->{$t}{base}/boot.catalog -hide-joliet $_->{$t}{base}/boot.catalog";
+      print "El-Torito legacy bootable ($_->{$t}{arch})\n";
+      push @$iso_catalog, "Legacy (isolinux)";
+    }
+    elsif($opt_efi && $t eq 'efi') {
+      my $f = fname($_->{$t}{base});
+      my $s = -s $f;
+      $s = (($s + 2047) >> 11) << 2;
+      $s = 1 if $s == 0 || $s >> 0xffff;
+      push @{$mkisofs->{sort}}, "$f 1000001";
+      $mkisofs->{options} .=
+        " -eltorito-alt-boot -no-emul-boot -boot-load-size $s -b $_->{$t}{base}";
+      print "El-Torito UEFI bootable ($_->{$t}{arch})\n";
+      push @$iso_catalog, "UEFI (grub2)";
+      $mkisofs->{fix_catalog} = $iso_catalog;
+    }
+  }
+
+  if($two_runs) {
+    if(open my $fh, ">$tmp_new/glump") {
+      print $fh "$magic_id\n";
+      close $fh;
+    }
+
+    push @{$mkisofs->{sort}}, "$tmp_new/glump 1000000";
+
+    # $mkisofs->{options} .= " -hide glump -hide-joliet glump";
+  }
+
+  if($mkisofs->{sort}) {
+    $mkisofs->{options} .= " -sort '$tmp_sort'";
+  }
+
+  # add our source dirs
+  for (@sources) {
+    $mkisofs->{options} .= " '$_->{dir}'";
+  }
+  $mkisofs->{options} .= " '$tmp_new'";
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub run_mkisofs
+{
+  my $log;
+  my $ok;
+  my $cmd;
+
+  # create sort file
+  if($mkisofs->{sort}) {
+    if(open my $fh, ">$tmp_sort") {
+      print $fh "$_\n" for @{$mkisofs->{sort}};
+      close $fh;
+    }
+  }
+
+  $cmd = "$mkisofs->{command}$mkisofs->{options}";
+
+  print "running:\n$cmd\n" if $opt_verbose >= 1;
+
+  print "$mkisofs->{command} sort file:\n", join("\n", @{$mkisofs->{sort}}), "\n" if $opt_verbose >= 2;
+
+  if(open my $fh, "$cmd 2>&1 |") {
+    $| = 1;
+    while(<$fh>) {
+      if(/^\s*(\d*\.\d)\d%/) {
+        $ok = 1;
+        printf "\rbuilding: %02.1f%%", $1;
+      }
+      else {
+        $log .= $_;
+      }
+    }
+    print "\rbuilding: 100.0%\n" if $ok;
+    close $fh;
+    $ok = 0 if $?;
+  }
+
+  print $log if $opt_verbose >= 2 || !$ok;
+
+  die "Error: $mkisofs->{command} failed\n" if !$ok;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub read_sector
+{
+  my $buf;
+
+  die "$iso_file: seek error\n" unless seek($iso_fh, $_[0] * 0x800, 0);
+  die "$iso_file: read error\n" if sysread($iso_fh, $buf, 0x800) != 0x800;
+
+  return $buf;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub write_sector
+{
+  die "$iso_file: seek error\n" unless seek($iso_fh, $_[0] * 0x800, 0);
+  die "$iso_file: write error\n" if syswrite($iso_fh, $_[1], 0x800) != 0x800;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub fix_catalog
+{
+  return unless $mkisofs->{fix_catalog};
+
+  die "$iso_file: $!\n" unless open $iso_fh, "+<", $iso_file;
+
+  my $vol_descr = read_sector 0x10;
+  my $vol_id = substr($vol_descr, 0, 7);
+  die "$iso_file: not an iso9660 fs\n" if $vol_id ne "\x01CD001\x01";
+
+  my $eltorito_descr = read_sector 0x11;
+  my $eltorito_id = substr($eltorito_descr, 0, 0x1e);
+  die "$iso_file: not bootable\n" if $eltorito_id ne "\x00CD001\x01EL TORITO SPECIFICATION";
+
+  my $boot_catalog_idx = unpack "V", substr($eltorito_descr, 0x47, 4);
+  die "$iso_file: strange boot catalog location: $boot_catalog_idx\n" if $boot_catalog_idx < 0x12;
+
+  my $boot_catalog = read_sector $boot_catalog_idx;
+
+  my $entry1 = substr $boot_catalog, 32 * 1, 32;
+  substr($entry1, 12, 20) = pack "Ca19", 1, $mkisofs->{fix_catalog}[0];
+  substr($boot_catalog, 32 * 1, 32) = $entry1;
+
+  my $entry2 = substr $boot_catalog, 32 * 2, 32;
+  substr($entry2, 12, 20) = pack "Ca19", 1, $mkisofs->{fix_catalog}[1];
+
+  if((unpack "C", $entry2)[0] == 0x88) {
+    substr($boot_catalog, 32 * 3, 32) = $entry2;
+    $entry2 = pack "CCva28", 0x91, 0xef, 1, "";
+    substr($boot_catalog, 32 * 2, 32) = $entry2;
+    write_sector $boot_catalog_idx, $boot_catalog;
+  }
+
+  close $iso_fh;
+  undef $iso_fh;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub relocate_catalog
+{
+  die "$iso_file: $!\n" unless open $iso_fh, "+<", $iso_file;
+
+  my $vol_descr = read_sector 0x10;
+  my $vol_id = substr($vol_descr, 0, 7);
+  die "$iso_file: not an iso9660 fs\n" if $vol_id ne "\x01CD001\x01";
+
+  my $path_table = unpack "V", substr($vol_descr, 0x08c, 4);
+  die "$iso_file: strange path table location: $path_table\n" if $path_table < 0x11;
+
+  my $new_location = $path_table - 1;
+
+  my $eltorito_descr = read_sector 0x11;
+  my $eltorito_id = substr($eltorito_descr, 0, 0x1e);
+  die "$iso_file: not bootable\n" if $eltorito_id ne "\x00CD001\x01EL TORITO SPECIFICATION";
+
+  my $boot_catalog_idx = unpack "V", substr($eltorito_descr, 0x47, 4);
+  die "$iso_file: strange boot catalog location: $boot_catalog_idx\n" if $boot_catalog_idx < 0x12;
+
+  my $boot_catalog = read_sector $boot_catalog_idx;
+
+  my $vol_descr2 = read_sector $new_location - 1;
+  my $vol_id2 = substr($vol_descr2, 0, 7);
+  if($vol_id2 ne "\xffCD001\x01") {
+    undef $new_location;
+    for(my $i = 0x12; $i < 0x40; $i++) {
+      $vol_descr2 = read_sector $i;
+      $vol_id2 = substr($vol_descr2, 0, 7);
+      if($vol_id2 eq "\x00TEA01\x01" || $boot_catalog_idx == $i + 1) {
+        $new_location = $i + 1;
+        last;
+      }
+    }
+  }
+
+  die "$iso_file: unexpected layout\n" unless defined $new_location;
+
+  # oops, already relocated?
+  return if $boot_catalog_idx == $new_location;
+
+  my $version_descr = read_sector $new_location;
+  die "$iso_file: unexpected layout\n" if $version_descr ne ("\x00" x 0x800) && substr($version_descr, 0, 4) ne "MKI ";
+
+  # now reloacte to $new_location
+  substr($eltorito_descr, 0x47, 4) = pack "V", $new_location;
+  write_sector $new_location, $boot_catalog;
+  write_sector 0x11, $eltorito_descr;
+
+  printf "boot catalog moved: %d -> %d\n", $boot_catalog_idx, $new_location if $opt_verbose >= 1;
+
+  close $iso_fh;
+  undef $iso_fh;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub rerun_mkisofs
+{
+  # run_mkisofs;
+
+  if($opt_hybrid_fs eq 'iso') {
+    meta_iso;
+  }
+
+  run_mkisofs;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub run_isohybrid
+{
+  my $opt;
+  my $ok;
+
+  $opt .= " --uefi" if $opt_efi;
+  $opt .= " --gpt" if $opt_hybrid_gpt;
+  $opt .= " --mbr" if $opt_hybrid_mbr;
+  $opt .= " --offset $mkisofs->{meta_start}" if $mkisofs->{meta_start};
+
+  my $cmd = "isohybrid$opt $iso_file";
+
+  print "running:\n$cmd\n" if $opt_verbose >= 1;
+
+  $ok = !system("$cmd 2>$tmp_err >&2");
+
+  if(open my $fh, "<", $tmp_err) {
+    local $/;
+    $_ = <$fh>;
+    close $fh;
+    $ok = 0 if $_ ne "";
+  }
+
+  print $_ if $opt_verbose >= 2 || !$ok;
+
+  die "Error: isohybrid failed\n" if !$ok;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# ISO file list sorted by start address.
+#
+# Return ref to array with files.
+#
+sub isols
+{
+  my $files;
+
+  open my $fd, "isoinfo -R -l -i $iso_file 2>/dev/null |";
+
+  my $dir = "/";
+
+  while(<$fd>) {
+    if(/^Directory listing of\s*(\/.*\/)/) {
+      $dir = $1;
+      next;
+    }
+
+    if(/^(.).*\s\[\s*(\d+)(\s+\d+)?\]\s+(.*?)\s*$/) {
+      my $type = $1;
+      $type = ' ' if $type eq '-';
+      if($4 ne '.' && $4 ne '..') {
+        push @$files, { name => "$dir$4", type => $type, start => $2 + 0 };
+      }
+    }
+  } 
+
+  close $fd;
+
+  $files = [ sort { $a->{start} <=> $b->{start} } @$files ] if $files;
+
+  # printf "%6d\t%s %s\n", $_->{start}, $_->{type}, $_->{name} for @$files;
+
+  return $files;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub meta_iso
+{
+  my $cnt = 0;
+  my $start;
+
+  die "$iso_file: $!\n" unless open $iso_fh, "<", $iso_file;
+
+  # Look for magic block.
+  #
+  # As we don't have a directory entry for it, scan backward at the position
+  # of the first few files.
+  #
+  found: for (@{isols()}) {
+    next unless $_->{type} eq ' ';
+    last if $cnt++ >= 10;		# check just first 10 files
+    my $buf;
+    for (my $i = 0; $i >= -10; $i--) {	# go back up to 10 blocks
+      seek $iso_fh, ($_->{start} + $i) << 11, 0;
+      sysread $iso_fh, $buf, length $magic_id;
+      $start = $_->{start} + $i, last found if $buf eq $magic_id;
+    }
+  }
+
+  die "$iso_file: oops, magic not found\n" unless defined $start;
+
+  $mkisofs->{meta_start} = $start * 4;
+
+  print "meta data found at $mkisofs->{meta_start}\n" if $opt_verbose >= 1;
+
+  # copy meta data
+  open my $fh, ">", "$tmp_new/glump" or die "$tmp_new/glump: $?\n";
+  seek $iso_fh, 0, 0;
+  my $buf;
+  for (my $i = 0; $i < $start + 1; $i++) {
+    die "$iso_file: read error\n" unless sysread($iso_fh, $buf, 2048) == 2048;
+    die "$tmp_new/glump: write error\n" unless syswrite($fh, $buf, 2048) == 2048;
+  }
+  close $fh;
+
+  close $iso_fh;
 }
 
 
