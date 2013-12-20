@@ -319,8 +319,61 @@ Create SUSE installation CD/DVD.
 General options:
 
       --version                 Show mksusecd version.
+      --verbose                 Show more messages. Can be repeated to log even more.
       --save-temp               Keep temporary files.
       --help                    Write this help text.
+
+Create ISO image:
+
+  -c, --create FILE             Create ISO image from SOURCES.
+                                SOURCES are either directories or existing ISO images.
+      --joliet                  Use Joliet extensions (default).
+      --no-joliet               Don't use Joliet extensions.
+      --uefi                    Make ISO UEFI bootable (default).
+      --no-uefi                 Don't make ISO UEFI bootable.
+      --check                   Tag ISO to be verified before starting the installation.
+      --no-check                Don't tag ISO (default).
+      --digest DIGEST           Use DIGEST to verify ISO integrity (default: SHA1).
+      --gpt                     Add GPT when in isohybrid mode.
+      --mbr                     Add MBR when in isohybrid mode (default).
+                                Note that when both --mbr and --gpt are specified both MBR and GPT
+                                are written - which looks nice but is against the UEFi spec.
+      --hybrid                  Create an isohybrid image which is both an ISO and a regular
+                                disk image (default).
+      --no-hybrid               Create a regular ISO image without extra gimmicks.
+      --hybrid-fs FS            Use FS for the disk partition created in hybrid mode. FS can be
+                                either "" (empty string) producing a partition starting at offset 0
+                                and extending across the entire ISO image (partitioning tools
+                                don't really like this) or 'iso' or 'fat' in which case you get a
+                                regular partition with an ISO960 or FAT file system (default: 'iso').
+
+Hybrid mode notes:
+
+  Hybrid mode means the image can be used both as an ISO for a DVD or
+  directly as a disk image. In other words, there is a partition table
+  written on the ISO image, either GPT or MBR.
+
+  If you need UEFI support you will get two paritions: one for the UEFI
+  image, one for the entire DVD. If not, you get just one partition covering
+  all files.
+
+  There are 2 variants this script supports:
+
+    (1) Partition 1 is the data partition starting at offset 0 and covering
+    the entire ISO, partition 2 is the UEFI system parition pointing
+    somwhere inside the first partition. This produces an obviously
+    inconsistent partition table and partitioning tools really don't like it.
+
+    (2) Partition 1 is a data partition _not_ starting at offset 0 but still
+    holding all data files. When you mount it, you see either an ISO9660 or
+    a FAT filesystem. If you need UEFI support this partition becomes
+    partition 2 and partition 1 points to the UEFI image. Partition 1 and 2
+    don't overlap. In this variant a consistent partition table is written.
+
+Examples:
+
+  # create foo.iso from /foo_dir
+  mksusecd --create foo.iso /foo_dir
 
 = = = = = = = =
 
