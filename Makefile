@@ -13,7 +13,10 @@ changelog: $(GITDEPS)
 	$(GIT2LOG) --changelog changelog
 
 install:
-	install -m 755 -D mksusecd $(DESTDIR)$(BINDIR)/mksusecd
+	@cp mksusecd mksusecd.tmp
+	@perl -pi -e 's/0\.0/$(VERSION)/ if /VERSION = /' mksusecd.tmp
+	install -m 755 -D mksusecd.tmp $(DESTDIR)$(BINDIR)/mksusecd
+	@rm -f mksusecd.tmp
 
 clean:
 	@rm -rf *~ package
