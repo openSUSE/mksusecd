@@ -375,6 +375,9 @@ Examples:
   # create foo.iso from /foo_dir
   mksusecd --create foo.iso /foo_dir
 
+  # create foo.iso from /foo_dir, no hybrid mode
+  mksusecd --create foo.iso --no-hybrid /foo_dir
+
 = = = = = = = =
 
   exit shift;
