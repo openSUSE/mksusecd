@@ -3,6 +3,7 @@ GITDEPS	:= $(shell [ -d .git ] && echo .git/HEAD .git/refs/heads .git/refs/tags)
 VERSION	:= $(shell $(GIT2LOG) --version VERSION ; cat VERSION)
 BRANCH	:= $(shell git branch | perl -ne 'print $$_ if s/^\*\s*//')
 PREFIX	:= mksusecd-$(VERSION)
+BINDIR	 = /usr/bin
 
 all:    changelog
 	mkdir -p package
@@ -10,6 +11,9 @@ all:    changelog
 
 changelog: $(GITDEPS)
 	$(GIT2LOG) --changelog changelog
+
+install:
+	install -m 755 -D mksusecd $(DESTDIR)$(BINDIR)/mksusecd
 
 clean:
 	@rm -rf *~ package
