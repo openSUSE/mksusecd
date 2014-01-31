@@ -153,6 +153,8 @@ sub isols;
 sub find_magic;
 sub meta_iso;
 sub meta_fat;
+sub create_initrd;
+sub update_initrd;
 
 my %config;
 my $sudo;
@@ -169,6 +171,7 @@ my $opt_hybrid_gpt;
 my $opt_hybrid_mbr;
 my $opt_check;
 my $opt_digest = 'sha1';
+my @opt_initrds;
 
 GetOptions(
   'create|c=s'       => sub { $opt_create = 1; $opt_dst = $_[1] },
@@ -186,6 +189,7 @@ GetOptions(
   'hybrid'           => \$opt_hybrid,
   'no-hybrid'        => sub { $opt_hybrid = 0 },
   'hybrid-fs=s'      => sub { $opt_hybrid = 1; $opt_hybrid_fs = $_[1] },
+  'initrd=s'         => \@opt_initrds,
   'save-temp'        => \$opt_save_temp,
   'verbose|v'        => sub { $opt_verbose++ },
   'version'          => sub { print "$VERSION\n"; exit 0 },
@@ -227,6 +231,7 @@ my $mkisofs = { command => 'genisoimage' };
 my $iso_file;
 my $iso_fh;
 my $two_runs;
+my $add_initrd;
 
 my $progress_start = 0;
 my $progress_end = 100;
@@ -264,8 +269,10 @@ if($opt_create) {
 
   die "no sources - nothing to do\n" unless @sources;
 
+  $add_initrd = create_initrd;
   $files = build_filelist;
   $boot = analyze_boot;
+  update_initrd;
   $todo = build_todo;
   prepare_mkisofs;
 
@@ -346,6 +353,7 @@ Create ISO image:
                                 and extending across the entire ISO image (partitioning tools
                                 don't really like this) or 'iso' or 'fat' in which case you get a
                                 regular partition with an ISO960 or FAT file system (default: 'iso').
+      --initrd DIR              Add DIR to initrd.
 
 Hybrid mode notes:
 
@@ -468,6 +476,15 @@ sub analyze_boot
   for (@boot_archs) {
     if(-d fname("boot/$_")) {
       $boot->{$_} = { base => "boot/$_" };
+
+      $boot->{$_}{initrd} = "boot/$_/loader/initrd" if -f fname("boot/$_/loader/initrd");
+      $boot->{$_}{initrd} = "boot/$_/isolinux/initrd" if -f fname("boot/$_/isolinux/initrd");
+      $boot->{$_}{initrd} = "boot/$_/initrd" if -f fname("boot/$_/initrd");
+
+      $boot->{$_}{kernel} = "boot/$_/loader/linux" if -f fname("boot/$_/loader/linux");
+      $boot->{$_}{kernel} = "boot/$_/isolinux/linux" if -f fname("boot/$_/isolinux/linux");
+      $boot->{$_}{kernel} = "boot/$_/linux" if -f fname("boot/$_/linux");
+
       if(-f fname("boot/$_/loader/isolinux.bin")) {
         $boot->{$_}{bl}{isolinux} = { base => "boot/$_/loader", arch => $_ };
       }
@@ -533,23 +550,29 @@ sub build_todo
 sub copy_file
 {
   my $f = fname($_[0]);
+  my $n;
 
   return unless defined $f;
 
   if(-d $f) {
-    system "mdir -p '$tmp_new/$_[0]'";
+    $n = "$tmp_new/$_[0]";
+    system "mdir -p '$n'";
   }
   elsif(-f $f) {
     if($_[0] =~ m#(.+)/([^/]+)#) {
+      $n = "$tmp_new/$1/$2";
       system "mkdir -p '$tmp_new/$1'; cp '$f' '$tmp_new/$1'";
     }
     elsif($_[0] !~ m#/#) {
+      $n = "$tmp_new/$_[0]";
       system "cp '$f' '$tmp_new'";
     }
 
     $mkisofs->{options} .= " -x '$f'";
     system "chmod u+w '$tmp_new/$_[0]'";
   }
+
+  return $n;
 }
 
 
@@ -559,7 +582,7 @@ sub prepare_mkisofs
   my $iso_catalog;
 
   # general options
-  $mkisofs->{options} = " -l -r -pad -input-charset utf8 -o '$iso_file'";
+  $mkisofs->{options} .= " -l -r -pad -input-charset utf8 -o '$iso_file'";
   $mkisofs->{options} .= " -J -f" if $opt_joliet;
 
   # special loader options
@@ -1133,6 +1156,39 @@ sub meta_fat
   }
 
   close $fh;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub create_initrd
+{
+  return undef if !@opt_initrds;
+
+  my $tmp = $tmp->file();
+
+  for my $i (@opt_initrds) {
+    system "( cd $i; find . | cpio -o -H newc | gzip -9c ) >> $tmp";
+  }
+
+  # system "ls -l $tmp";
+
+  return $tmp;
+}
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub update_initrd
+{
+  return if !$add_initrd;
+
+  for my $b (sort keys %$boot) {
+    if($boot->{$b}{initrd}) {
+      my $n = copy_file $boot->{$b}{initrd};
+      if(-f $n) {
+        system "cat $add_initrd >> $n";
+      }
+      last;
+    }
+  }
 }
 
 
