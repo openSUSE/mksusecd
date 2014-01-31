@@ -250,7 +250,7 @@ if($opt_create) {
       push @sources, { dir => $_, real_name => $_, type => 'dir' };
     }
     elsif(-f _) {
-      my $t = `file -b -L $_ 2>/dev/null`;
+      my $t = `file -b -k -L $_ 2>/dev/null`;
       if($t =~ / ISO 9660 CD-ROM /) {
         check_root "Sorry, can't access ISO images; you need root privileges.";
         $iso_cnt++;
