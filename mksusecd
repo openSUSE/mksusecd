@@ -846,7 +846,6 @@ sub run_isohybrid
     local $/;
     $_ = <$fh>;
     close $fh;
-    $ok = 0 if $_ ne "";
   }
 
   print $_ if $opt_verbose >= 2 || !$ok;
