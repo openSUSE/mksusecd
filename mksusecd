@@ -155,6 +155,7 @@ sub meta_iso;
 sub meta_fat;
 sub create_initrd;
 sub update_initrd;
+sub create_cd_ikr;
 
 my %config;
 my $sudo;
@@ -232,6 +233,7 @@ my $iso_file;
 my $iso_fh;
 my $two_runs;
 my $add_initrd;
+my $has_efi = 0;
 
 my $progress_start = 0;
 my $progress_end = 100;
@@ -483,6 +485,7 @@ sub analyze_boot
 
       $boot->{$_}{kernel} = "boot/$_/loader/linux" if -f fname("boot/$_/loader/linux");
       $boot->{$_}{kernel} = "boot/$_/isolinux/linux" if -f fname("boot/$_/isolinux/linux");
+      $boot->{$_}{kernel} = "boot/$_/vmrdr.ikr" if -f fname("boot/$_/vmrdr.ikr");
       $boot->{$_}{kernel} = "boot/$_/linux" if -f fname("boot/$_/linux");
 
       if(-f fname("boot/$_/loader/isolinux.bin")) {
@@ -490,6 +493,12 @@ sub analyze_boot
       }
       if(-f fname("boot/$_/isolinux/isolinux.bin")) {
         $boot->{$_}{bl}{isolinux} = { base => "boot/$_/isolinux", arch => $_ };
+      }
+      if(-f fname("boot/$_/cd.ikr")) {
+        $boot->{$_}{bl}{ikr} = { base => "boot/$_/cd.ikr", arch => $_ };
+      }
+      elsif(-f fname("boot/$_/suse.ins")) {
+        $boot->{$_}{bl}{ikr} = { base => "boot/$_/cd.ikr", arch => $_, ins => "boot/$_/suse.ins" };
       }
       if(-d fname("boot/$_/grub2-efi")) {
         $boot->{$_}{bl}{"grub2-efi"} = { base => "boot/$_/grub2-efi", arch => $_ };
@@ -539,6 +548,13 @@ sub build_todo
   for (sort keys %$boot) {
     if($boot->{$_}{bl}{efi}) {
       push @$todo, { efi => $boot->{$_}{bl}{efi} };
+    }
+  }
+
+  # s390 also uses el-torito 
+  for (sort keys %$boot) {
+    if($boot->{$_}{bl}{ikr}) {
+      push @$todo, { ikr => $boot->{$_}{bl}{ikr} };
     }
   }
 
@@ -601,9 +617,10 @@ sub prepare_mkisofs
         " -b $_->{$t}{base}/isolinux.bin -c $_->{$t}{base}/boot.catalog" .
         " -hide $_->{$t}{base}/boot.catalog -hide-joliet $_->{$t}{base}/boot.catalog";
       print "El-Torito legacy bootable ($_->{$t}{arch})\n";
-      push @$iso_catalog, "Legacy (isolinux)";
+      push @$iso_catalog, "Legacy ($_->{$t}{arch})";
     }
     elsif($opt_efi && $t eq 'efi') {
+      $has_efi = 1;
       my $f = fname($_->{$t}{base});
       my $s = -s $f;
       $s = (($s + 2047) >> 11) << 2;
@@ -612,7 +629,18 @@ sub prepare_mkisofs
       $mkisofs->{options} .=
         " -eltorito-alt-boot -no-emul-boot -boot-load-size $s -b $_->{$t}{base}";
       print "El-Torito UEFI bootable ($_->{$t}{arch})\n";
-      push @$iso_catalog, "UEFI (grub2)";
+      push @$iso_catalog, "UEFI ($_->{$t}{arch})";
+      $mkisofs->{fix_catalog} = $iso_catalog;
+    }
+    elsif($t eq 'ikr') {
+      if($_->{$t}{ins}) {
+        # need to create base
+        create_cd_ikr($_->{$t}{base}, $_->{$t}{ins});
+      }
+      $mkisofs->{options} .=
+        " -eltorito-alt-boot -no-emul-boot -boot-load-size 1 -b $_->{$t}{base}";
+      print "El-Torito legacy bootable ($_->{$t}{arch})\n";
+      push @$iso_catalog, "Legacy ($_->{$t}{arch})";
       $mkisofs->{fix_catalog} = $iso_catalog;
     }
   }
@@ -831,7 +859,7 @@ sub run_isohybrid
   my $opt;
   my $ok;
 
-  $opt .= " --uefi" if $opt_efi;
+  $opt .= " --uefi" if $has_efi;
   $opt .= " --gpt" if $opt_hybrid_gpt;
   $opt .= " --mbr" if $opt_hybrid_mbr;
   $opt .= " --offset $mkisofs->{partition_start}" if $mkisofs->{partition_start};
@@ -1174,6 +1202,7 @@ sub create_initrd
   return $tmp;
 }
 
+
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 sub update_initrd
 {
@@ -1187,6 +1216,65 @@ sub update_initrd
       }
       last;
     }
+  }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub create_cd_ikr
+{
+  local $_;
+
+  my $ikr = $_[0];
+  my $ins = $_[1];
+
+  my $src = fname($ins);
+  $src =~ s#/[^/]*$##;
+
+  my $dst = $ikr;
+  $dst =~ s#/[^/]*$##;
+
+  my @layout;
+
+  if(open my $s, fname($ins)) {
+    while(<$s>) {
+      next if /^\s*\*/;
+      push @layout, { file => "$src/$1", ofs => oct($2) } if /^\s*(\S+)\s+(\S+)/;
+    }
+    close $s;
+  }
+
+  die "$ins: nothing to do?\n" if !@layout;
+
+  system("mkdir -p $tmp_new/$dst");
+
+  if(open my $d, ">", "$tmp_new/$ikr") {
+    for (@layout) {
+      my $fname = $_->{file};
+      my $is_parmfile;
+      $is_parmfile = 1 if $fname =~ s#(/parmfile)$#$1.cd#;
+      if(open my $f, $fname) {
+        sysread $f, my $buf, -s($f);
+        close $f;
+        sysseek $d, $_->{ofs}, 0;
+        # remove newlines from parmfile
+        $buf =~ s/\n+/ /g if $is_parmfile;
+        syswrite $d, $buf;
+        # print "$fname: $_->{ofs} ", length($buf), "\n";
+      }
+      else {
+        die "$_->{file}: $!\n";
+      }
+    }
+
+    sysseek $d, 4, 0;
+    syswrite $d, pack("N",0x80010000);
+
+    # align to 4k
+    sysseek $d, -s($d) | 0xfff, 0;
+    syswrite $d, "\x00";
+
+    close $d;
   }
 }
 
