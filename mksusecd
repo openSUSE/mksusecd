@@ -156,6 +156,9 @@ sub meta_fat;
 sub create_initrd;
 sub update_initrd;
 sub create_cd_ikr;
+sub isolinux_add_option;
+sub grub2_add_option;
+sub update_boot_options;
 
 my %config;
 my $sudo;
@@ -173,6 +176,7 @@ my $opt_hybrid_mbr;
 my $opt_check;
 my $opt_digest = 'sha1';
 my @opt_initrds;
+my $opt_boot_options;
 
 GetOptions(
   'create|c=s'       => sub { $opt_create = 1; $opt_dst = $_[1] },
@@ -191,6 +195,7 @@ GetOptions(
   'no-hybrid'        => sub { $opt_hybrid = 0 },
   'hybrid-fs=s'      => sub { $opt_hybrid = 1; $opt_hybrid_fs = $_[1] },
   'initrd=s'         => \@opt_initrds,
+  'boot=s'           => \$opt_boot_options,
   'save-temp'        => \$opt_save_temp,
   'verbose|v'        => sub { $opt_verbose++ },
   'version'          => sub { print "$VERSION\n"; exit 0 },
@@ -275,6 +280,7 @@ if($opt_create) {
   $files = build_filelist;
   $boot = analyze_boot;
   update_initrd;
+  update_boot_options;
   $todo = build_todo;
   prepare_mkisofs;
 
@@ -356,6 +362,7 @@ Create ISO image:
                                 don't really like this) or 'iso' or 'fat' in which case you get a
                                 regular partition with an ISO960 or FAT file system (default: 'iso').
       --initrd DIR              Add DIR to initrd.
+      --boot OPTIONS            Add OPTIONS to default boot options.
 
 Hybrid mode notes:
 
@@ -1194,7 +1201,7 @@ sub create_initrd
   my $tmp = $tmp->file();
 
   for my $i (@opt_initrds) {
-    system "( cd $i; find . | cpio -o -H newc | gzip -9c ) >> $tmp";
+    system "( cd $i; find . | cpio --quiet -o -H newc | gzip -9c ) >> $tmp";
   }
 
   # system "ls -l $tmp";
@@ -1275,6 +1282,74 @@ sub create_cd_ikr
     syswrite $d, "\x00";
 
     close $d;
+  }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub isolinux_add_option
+{
+  my $n = shift;
+  my $b = shift;
+
+  if(open my $f, $n) {
+    my @f = <$f>;
+    close $f;
+    @f = map { chomp; $_ .= " $b" if /^\s*append\s.*initrd=/; "$_\n" } @f;
+    if(open my $f, ">", $n) {
+      print $f @f;
+      close $f;
+    }
+  }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub grub2_add_option
+{
+  my $n = shift;
+  my $b = shift;
+
+  if(open my $f, $n) {
+    my @f = <$f>;
+    close $f;
+    @f = map { chomp; $_ .= " $b" if /^\s*linuxefi\s/; "$_\n" } @f;
+    if(open my $f, ">", $n) {
+      print $f @f;
+      close $f;
+    }
+  }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub update_boot_options
+{
+  return unless defined $opt_boot_options;
+
+  # print Dumper($boot);
+
+  for my $b (sort keys %$boot) {
+    if($boot->{$b}{bl}{isolinux}) {
+      my $n = copy_file "$boot->{$b}{bl}{isolinux}{base}/isolinux.cfg";
+      isolinux_add_option $n, $opt_boot_options;
+    }
+    if($boot->{$b}{bl}{efi}) {
+      my $n = copy_file $boot->{$b}{bl}{efi}{base};
+      if(defined $n) {
+        my $tmp = $tmp->file();
+        if(!system "mcopy -n -i $n ::/efi/boot/grub.cfg $tmp") {
+          grub2_add_option $tmp, $opt_boot_options;
+          if(system "mcopy -D o -i $n $tmp ::/efi/boot/grub.cfg") {
+            print STDERR "Warning: failed to update grub.cfg\n";
+          }
+        }
+      }
+    }
+    if($b eq 'efi') {
+      my $n = copy_file "$boot->{$b}{base}/grub.cfg";
+      grub2_add_option $n, $opt_boot_options;
+    }
   }
 }
 
