@@ -131,7 +131,7 @@ $Data::Dumper::Indent = 1;
 
 our $VERSION = "0.0";
 
-my @boot_archs = qw ( x86_64 i386 s390x s390 ia64 aarch64 ppc ppc64 );
+my @boot_archs = qw ( x86_64 i386 s390x s390 ia64 aarch64 ppc ppc64 ppc64le );
 my $magic_id = "7984fc91-a43f-4e45-bf27-6d3aa08b24cf";
 
 sub usage;
@@ -159,6 +159,8 @@ sub create_cd_ikr;
 sub isolinux_add_option;
 sub grub2_add_option;
 sub update_boot_options;
+sub prepare_micro;
+sub prepare_nano;
 
 my %config;
 my $sudo;
@@ -177,6 +179,7 @@ my $opt_check;
 my $opt_digest = 'sha1';
 my @opt_initrds;
 my $opt_boot_options;
+my $opt_type;
 
 GetOptions(
   'create|c=s'       => sub { $opt_create = 1; $opt_dst = $_[1] },
@@ -196,6 +199,8 @@ GetOptions(
   'hybrid-fs=s'      => sub { $opt_hybrid = 1; $opt_hybrid_fs = $_[1] },
   'initrd=s'         => \@opt_initrds,
   'boot=s'           => \$opt_boot_options,
+  'micro'            => sub { $opt_type = 'micro' },
+  'nano'             => sub { $opt_type = 'nano' },
   'save-temp'        => \$opt_save_temp,
   'verbose|v'        => sub { $opt_verbose++ },
   'version'          => sub { print "$VERSION\n"; exit 0 },
@@ -285,6 +290,9 @@ if($opt_create) {
   $todo = build_todo;
   prepare_mkisofs;
 
+  prepare_micro if $opt_type eq 'micro';
+  prepare_nano if $opt_type eq 'nano';
+
   # print "sources = ", Dumper(\@sources);
   # print "boot = ", Dumper($boot);
   # print "todo = ", Dumper($todo);
@@ -352,18 +360,26 @@ Create ISO image:
       --digest DIGEST           Use DIGEST to verify ISO integrity (default: SHA1).
       --gpt                     Add GPT when in isohybrid mode.
       --mbr                     Add MBR when in isohybrid mode (default).
-                                Note that when both --mbr and --gpt are specified both MBR and GPT
-                                are written - which looks nice but is against the UEFi spec.
-      --hybrid                  Create an isohybrid image which is both an ISO and a regular
-                                disk image (default).
+                                Note that when both --mbr and --gpt are specified both
+                                MBR and GPT are written - which looks nice but is against
+                                the UEFi spec.
+      --hybrid                  Create an isohybrid image which is both an ISO and a
+                                regular disk image (default).
       --no-hybrid               Create a regular ISO image without extra gimmicks.
-      --hybrid-fs FS            Use FS for the disk partition created in hybrid mode. FS can be
-                                either "" (empty string) producing a partition starting at offset 0
-                                and extending across the entire ISO image (partitioning tools
-                                don't really like this) or 'iso' or 'fat' in which case you get a
-                                regular partition with an ISO960 or FAT file system (default: 'iso').
+      --hybrid-fs FS            Use FS for the disk partition created in hybrid mode. FS
+                                can be either "" (empty string) producing a partition
+                                starting at offset 0 and extending across the entire ISO
+                                image (partitioning tools don't really like this) or
+                                'iso' or 'fat' in which case you get a regular partition
+                                with an ISO960 or FAT file system (default: 'iso').
       --initrd DIR              Add DIR to initrd.
       --boot OPTIONS            Add OPTIONS to default boot options.
+      --micro                   Create an ISO with just enough files to test the
+                                installation setup. But you can't actually install as
+                                all packages have been removed. (Similar to the
+                                Network-ISO.)
+      --nano                    Create an ISO with just enough files to test the boot
+                                process.
 
 Hybrid mode notes:
 
@@ -1377,4 +1393,43 @@ sub update_boot_options
   }
 }
 
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub prepare_micro
+{
+  push @{$mkisofs->{exclude}}, "suse/$_" for (@boot_archs, "i586");
+
+  push @{$mkisofs->{exclude}}, qw (
+    docu
+    ls-lR.gz
+    INDEX.gz
+  );
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub prepare_nano
+{
+  prepare_micro;
+
+  my $p = $files->{boot};
+  # try harder, just in case
+  $p = $files->{suse} unless  defined $p;
+
+  return unless defined $p;
+
+  push @{$mkisofs->{exclude}}, (
+    "suse",
+    "$p/boot/*/*.rpm",
+    "$p/boot/*/bind",
+    "$p/boot/*/common",
+    "$p/boot/*/gdb",
+    "$p/boot/*/rescue",
+    "$p/boot/*/root",
+    "$p/boot/*/*-xen",
+    "control.xml",
+    "gpg-*",
+    "NEWS",
+  );
+}
 
