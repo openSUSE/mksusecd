@@ -595,6 +595,15 @@ sub copy_file
     system "chmod u+w '$tmp_new/$_[0]'";
   }
 
+  # update file location database
+  if(defined $n) {
+    my $x = $n;
+    if($x =~ s#/$_[0]$##) {
+      $files->{$_[0]} = $x;
+      # print "$_[0] -> $x\n";
+    }
+  }
+
   return $n;
 }
 
