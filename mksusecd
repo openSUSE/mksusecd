@@ -226,6 +226,7 @@ my $tmp = Tmp::new($opt_save_temp);
 my $tmp_new = $tmp->dir('new');
 my $tmp_err = $tmp->file('err');
 my $tmp_sort = $tmp->file('sort');
+my $tmp_exclude = $tmp->file('exclude');
 my $tmp_fat = $tmp->file('fat');
 
 my @sources;
@@ -591,7 +592,7 @@ sub copy_file
       system "cp '$f' '$tmp_new'";
     }
 
-    $mkisofs->{options} .= " -x '$f'";
+    push @{$mkisofs->{exclude}}, $f;
     system "chmod u+w '$tmp_new/$_[0]'";
   }
 
@@ -676,6 +677,10 @@ sub prepare_mkisofs
     $mkisofs->{options} .= " -sort '$tmp_sort'";
   }
 
+  if($mkisofs->{exclude}) {
+    $mkisofs->{options} .= " -exclude-list '$tmp_exclude'";
+  }
+
   # add our source dirs
   for (@sources) {
     $mkisofs->{options} .= " '$_->{dir}'";
@@ -699,11 +704,21 @@ sub run_mkisofs
     }
   }
 
+  # create exclude file
+  if($mkisofs->{exclude}) {
+    if(open my $fh, ">$tmp_exclude") {
+      print $fh "$_\n" for @{$mkisofs->{exclude}};
+      close $fh;
+    }
+  }
+
   $cmd = "$mkisofs->{command}$mkisofs->{options}";
 
   print "running:\n$cmd\n" if $opt_verbose >= 1;
 
   print "$mkisofs->{command} sort file:\n", join("\n", @{$mkisofs->{sort}}), "\n" if $opt_verbose >= 2;
+
+  print "$mkisofs->{command} exclude file:\n", join("\n", @{$mkisofs->{exclude}}), "\n" if $opt_verbose >= 2;
 
   if(open my $fh, "$cmd 2>&1 |") {
     $| = 1;
