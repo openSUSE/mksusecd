@@ -161,6 +161,7 @@ sub grub2_add_option;
 sub update_boot_options;
 sub prepare_micro;
 sub prepare_nano;
+sub set_mkisofs_metadata;
 
 my %config;
 my $sudo;
@@ -180,6 +181,10 @@ my $opt_digest = 'sha1';
 my @opt_initrds;
 my $opt_boot_options;
 my $opt_type;
+my $opt_vendor;
+my $opt_preparer;
+my $opt_application;
+my $opt_volume;
 
 GetOptions(
   'create|c=s'       => sub { $opt_create = 1; $opt_dst = $_[1] },
@@ -201,6 +206,10 @@ GetOptions(
   'boot=s'           => \$opt_boot_options,
   'micro'            => sub { $opt_type = 'micro' },
   'nano'             => sub { $opt_type = 'nano' },
+  'volume=s'         => \$opt_volume,
+  'vendor=s'         => \$opt_vendor,
+  'preparer=s'       => \$opt_preparer,
+  'application=s'    => \$opt_application,
   'save-temp'        => \$opt_save_temp,
   'verbose|v'        => sub { $opt_verbose++ },
   'version'          => sub { print "$VERSION\n"; exit 0 },
@@ -288,6 +297,7 @@ if($opt_create) {
   update_initrd;
   update_boot_options;
   $todo = build_todo;
+  set_mkisofs_metadata;
   prepare_mkisofs;
 
   prepare_micro if $opt_type eq 'micro';
@@ -380,6 +390,10 @@ Create ISO image:
                                 Network-ISO.)
       --nano                    Create an ISO with just enough files to test the boot
                                 process.
+      --volume                  Set ISO volume id.
+      --vendor                  Set ISO publisher id.
+      --preparer                Set ISO data preparer id.
+      --application             Set ISO application id.
 
 Hybrid mode notes:
 
@@ -632,6 +646,10 @@ sub prepare_mkisofs
 
   # general options
   $mkisofs->{options} .= " -l -r -pad -input-charset utf8 -o '$iso_file'";
+  $mkisofs->{options} .= " -V '" . substr($opt_volume, 0, 32) . "'";
+  $mkisofs->{options} .= " -A '" . substr($opt_application, 0, 128) . "'";
+  $mkisofs->{options} .= " -p '" . substr($opt_preparer, 0, 128) . "'";
+  $mkisofs->{options} .= " -publisher '" . substr($opt_vendor, 0, 128) . "'";
   $mkisofs->{options} .= " -J -f" if $opt_joliet;
 
   # special loader options
@@ -1431,5 +1449,74 @@ sub prepare_nano
     "gpg-*",
     "NEWS",
   );
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub set_mkisofs_metadata
+{
+  my $media;
+
+  # first, try using old values, if we remaster an image
+  if($sources[0]{type} eq 'iso') {
+    if(open my $f, "isoinfo -d -i $sources[0]{real_name} 2>/dev/null |") {
+      while(<$f>) {
+        $opt_volume = $1 if !defined $opt_volume && /^Volume id:\s*(.+?)\s*$/;
+        $opt_vendor = $1 if !defined $opt_vendor && /^Publisher id:\s*(.+?)\s*$/;
+        $opt_application = $1 if !defined $opt_application && /^Application id:\s*(.+?)\s*$/;
+        $opt_preparer = $1 if !defined $opt_preparer && /^Data preparer id:\s*(.+?)\s*$/;
+      }
+      close $f;
+    }
+  }
+
+  # else, build new ones based on media.1 dir
+  for (sort sort keys %$files) {
+    $media = $_, last if /^media\.\d+$/;
+  }
+
+  if($media) {
+    if(open my $f, "<", fname("$media/build")) {
+      my $x = <$f>;
+      close $f;
+      chomp $x;
+      my $m .= $1 if $media =~ /\.(\d+)$/;
+      if(!defined $opt_application) {
+        $opt_application = $x;
+        $opt_application .= "-Media$m" if defined $m;
+      }
+      if(!defined $opt_volume) {
+        $opt_volume = $x;
+        $opt_volume =~ s/\-?Build.*$//;
+        # try to cut volume id to fit into 32 bytes
+        while(length $opt_volume > 25 && $opt_volume =~ s/\-([^\-])*$//) {}
+        $opt_volume .= "-Media$m" if defined $m;
+      }
+    }
+
+    if(open my $f, "<", fname("$media/media")) {
+      my $x = <$f>;
+      close $f;
+      chomp $x;
+      $x = "SUSE LINUX GmbH" if $x eq "SUSE" || $x eq "openSUSE";
+      $opt_vendor = $x if $x ne "" && !defined $opt_vendor;
+    }
+
+    if(open my $f, "<", fname("$media/info.txt")) {
+      local $/;
+      my $x = <$f>;
+      close $f;
+      if($x =~ /\n([^\n]+)\n\s*$/) {
+        $x = $1;
+        $x =~ s/^\s*|\s*$//g;
+        $x =~ s/\.//;
+        $opt_preparer = $x if $x ne "" && !defined $opt_preparer;
+      }
+    }
+  }
+
+  # if nothing worked, put in some defaults
+  $opt_vendor = "mksusecd $VERSION" if !defined $opt_vendor;
+  $opt_preparer = "mksusecd $VERSION" if !defined $opt_preparer;
 }
 
