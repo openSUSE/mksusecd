@@ -1415,7 +1415,11 @@ sub update_boot_options
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 sub prepare_micro
 {
-  push @{$mkisofs->{exclude}}, "suse/$_" for (@boot_archs, "i586");
+  my $p = $files->{boot};
+  # try harder, just in case
+  $p = $files->{suse} unless  defined $p;
+
+  push @{$mkisofs->{exclude}}, "$p/suse/$_" for (@boot_archs, "i586", "noarch");
 
   push @{$mkisofs->{exclude}}, qw (
     docu
@@ -1444,6 +1448,11 @@ sub prepare_nano
     "$p/boot/*/gdb",
     "$p/boot/*/rescue",
     "$p/boot/*/root",
+    "$p/boot/*/sax2",
+    "$p/boot/*/branding",
+    "$p/boot/*/openSUSE",
+    "$p/boot/*/SLES",
+    "$p/boot/*/SLED",
     "$p/boot/*/*-xen",
     "control.xml",
     "gpg-*",
