@@ -1425,6 +1425,10 @@ sub prepare_micro
     docu
     ls-lR.gz
     INDEX.gz
+    ARCHIVES.gz
+    ChangeLog
+    updates
+    linux
   );
 }
 
@@ -1470,12 +1474,13 @@ sub set_mkisofs_metadata
   if($sources[0]{type} eq 'iso') {
     if(open my $f, "isoinfo -d -i $sources[0]{real_name} 2>/dev/null |") {
       while(<$f>) {
-        $opt_volume = $1 if !defined $opt_volume && /^Volume id:\s*(.+?)\s*$/;
-        $opt_vendor = $1 if !defined $opt_vendor && /^Publisher id:\s*(.+?)\s*$/;
-        $opt_application = $1 if !defined $opt_application && /^Application id:\s*(.+?)\s*$/;
-        $opt_preparer = $1 if !defined $opt_preparer && /^Data preparer id:\s*(.+?)\s*$/;
+        $opt_volume = $1 if !defined $opt_volume && /^Volume id:\s*(.*?)\s*$/ && $1 ne "" && $1 ne "CDROM";
+        $opt_vendor = $1 if !defined $opt_vendor && /^Publisher id:\s*(.*?)\s*$/ && $1 ne "";
+        $opt_application = $1 if !defined $opt_application && /^Application id:\s*(.*?)\s*$/ && $1 ne "";
+        $opt_preparer = $1 if !defined $opt_preparer && /^Data preparer id:\s*(.*?)\s*$/ && $1 ne "";
       }
       close $f;
+      undef $opt_application if $opt_application =~ /^GENISOIMAGE/;
     }
   }
 
