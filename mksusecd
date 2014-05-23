@@ -350,6 +350,9 @@ sub usage
 Usage: mksusecd [OPTIONS] [SOURCES]
 Create SUSE installation CD/DVD.
 
+SOURCES can be directories or ISO image files. All SOURCES are combined
+into a single ISO.
+
 General options:
 
       --version                 Show mksusecd version.
@@ -418,6 +421,13 @@ Hybrid mode notes:
     partition 2 and partition 1 points to the UEFI image. Partition 1 and 2
     don't overlap. In this variant a consistent partition table is written.
 
+Configuration files:
+
+  $HOME/.mksusecdrc
+    To access existing ISO image files you will need root privileges. (It
+    will be mounted.) There's a 'sudo' config file entry that lets you
+    specify a command granting you root privileges. E.g. sudo="foo".
+
 Examples:
 
   # create foo.iso from /foo_dir
@@ -425,6 +435,12 @@ Examples:
 
   # create foo.iso from /foo_dir, no hybrid mode
   mksusecd --create foo.iso --no-hybrid /foo_dir
+
+  # create foo.iso from old.iso and add files to the initrd
+  mksusecd --create foo.iso --initrd /dir_with_new_initrd_stuff old.iso
+
+  # create foo.iso from old.iso and add some boot option
+  mksusecd --create foo.iso --boot 'debug=1' old.iso
 
 = = = = = = = =
 
@@ -1421,14 +1437,14 @@ sub prepare_micro
 
   push @{$mkisofs->{exclude}}, "$p/suse/$_" for (@boot_archs, "i586", "noarch");
 
-  push @{$mkisofs->{exclude}}, qw (
-    docu
-    ls-lR.gz
-    INDEX.gz
-    ARCHIVES.gz
-    ChangeLog
-    updates
-    linux
+  push @{$mkisofs->{exclude}}, (
+    "$p/docu",
+    "$p/ls-lR.gz",
+    "$p/INDEX.gz",
+    "$p/ARCHIVES.gz",
+    "$p/ChangeLog",
+    "$p/updates",
+    "$p/linux",
   );
 }
 
@@ -1445,7 +1461,7 @@ sub prepare_nano
   return unless defined $p;
 
   push @{$mkisofs->{exclude}}, (
-    "suse",
+    "$p/suse",
     "$p/boot/*/*.rpm",
     "$p/boot/*/bind",
     "$p/boot/*/common",
@@ -1458,9 +1474,10 @@ sub prepare_nano
     "$p/boot/*/SLES",
     "$p/boot/*/SLED",
     "$p/boot/*/*-xen",
-    "control.xml",
-    "gpg-*",
-    "NEWS",
+    "$p/control.xml",
+    "$p/gpg-*",
+    "$p/NEWS",
+    "TRANS.TBL",
   );
 }
 
