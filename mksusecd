@@ -423,7 +423,7 @@ Hybrid mode notes:
 
 Configuration files:
 
-  $HOME/.mksusecdrc
+  \$HOME/.mksusecdrc
     To access existing ISO image files you will need root privileges. (It
     will be mounted.) There's a 'sudo' config file entry that lets you
     specify a command granting you root privileges. E.g. sudo="foo".
