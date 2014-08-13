@@ -188,6 +188,7 @@ my $opt_vendor;
 my $opt_preparer;
 my $opt_application;
 my $opt_volume;
+my $opt_no_docs = 1;
 
 GetOptions(
   'create|c=s'       => sub { $opt_create = 1; $opt_dst = $_[1] },
@@ -213,6 +214,8 @@ GetOptions(
   'vendor=s'         => \$opt_vendor,
   'preparer=s'       => \$opt_preparer,
   'application=s'    => \$opt_application,
+  'no-docs'          => \$opt_no_docs,
+  'keep-docs'        => sub { $opt_no_docs = 0 },
   'save-temp'        => \$opt_save_temp,
   'verbose|v'        => sub { $opt_verbose++ },
   'version'          => sub { print "$VERSION\n"; exit 0 },
@@ -389,7 +392,10 @@ Create ISO image:
                                 image (partitioning tools don't really like this) or
                                 'iso' or 'fat' in which case you get a regular partition
                                 with an ISO960 or FAT file system (default: 'iso').
-      --initrd DIR              Add DIR to initrd.
+      --initrd DIR|RPM          Add directory DIR or package RPM to initrd.
+      --no-docs                 Don't include package documentation when updating the initrd
+                                This is the default.
+      --keep-docs               Include package documentation when updating initrd.
       --boot OPTIONS            Add OPTIONS to default boot options.
       --micro                   Create an ISO with just enough files to test the
                                 installation setup. But you can't actually install as
@@ -441,7 +447,7 @@ Examples:
   mksusecd --create foo.iso --no-hybrid /foo_dir
 
   # create foo.iso from old.iso and add files to the initrd
-  mksusecd --create foo.iso --initrd /dir_with_new_initrd_stuff old.iso
+  mksusecd --create foo.iso --initrd /dir_with_new_initrd_stuff --initrd foo.rpm old.iso
 
   # create foo.iso from old.iso and add some boot option
   mksusecd --create foo.iso --boot 'debug=1' old.iso
@@ -1276,15 +1282,39 @@ sub create_initrd
 {
   return undef if !@opt_initrds;
 
-  my $tmp = $tmp->file();
+  my $tmp_initrd = $tmp->file();
+  my $tmp_dir = $tmp->dir();
 
   for my $i (@opt_initrds) {
-    system "( cd $i; find . | cpio --quiet -o -H newc | gzip -9c ) >> $tmp";
+    my $t = `file -b -k -L $i 2>/dev/null`;
+    if(-d $i) {
+      system "tar -C '$i' -cf - . | tar -C $tmp_dir -xpf -";
+    }
+    elsif(-f $i && $t =~ /^RPM/) {
+      system "rpm2cpio '$i' | ( cd $tmp_dir ; cpio --quiet --sparse -dimu --no-absolute-filenames )";
+    }
+    else {
+      print STDERR "Warning: ignoring $i\n";
+    }
   }
 
-  # system "ls -l $tmp";
+  if($opt_no_docs) {
+    system "rm -rf $tmp_dir/usr/share/{doc,info,man}";
+    rmdir "$tmp_dir/usr/share";
+    rmdir "$tmp_dir/usr";
+  }
 
-  return $tmp;
+  # make it possible to directly add linuxrc.rpm - it's a bit special
+  if(-f "$tmp_dir/usr/sbin/linuxrc") {
+    rename "$tmp_dir/usr/sbin/linuxrc", "$tmp_dir/init";
+    print "initrd: linuxrc detected, renamed to /init\n";
+  }
+
+  system "( cd $tmp_dir; find . | cpio --quiet -o -H newc | gzip -9c ) >> $tmp_initrd";
+
+  # system "ls -lR $tmp_dir";
+
+  return $tmp_initrd;
 }
 
 
