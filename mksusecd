@@ -120,6 +120,8 @@
 use strict;
 
 use Getopt::Long;
+use Digest::MD5;
+use Digest::SHA;
 use File::Find;
 use File::Path;
 use Cwd 'abs_path';
@@ -162,6 +164,7 @@ sub update_boot_options;
 sub prepare_micro;
 sub prepare_nano;
 sub set_mkisofs_metadata;
+sub update_content;
 
 my %config;
 my $sudo;
@@ -294,6 +297,7 @@ if($opt_create) {
   $add_initrd = create_initrd;
   $files = build_filelist;
   $boot = analyze_boot;
+  update_content;
   update_initrd;
   update_boot_options;
   $todo = build_todo;
@@ -1549,5 +1553,54 @@ sub set_mkisofs_metadata
   # if nothing worked, put in some defaults
   $opt_vendor = "mksusecd $VERSION" if !defined $opt_vendor;
   $opt_preparer = "mksusecd $VERSION" if !defined $opt_preparer;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub update_content
+{
+  my $content = fname "content";
+
+  return unless defined $content;
+
+  my $content_old;
+  my $content_new;
+
+  if(open(my $f, $content)) {
+    while(<$f>) {
+      $content_old .= $_;
+      if(/^((META|HASH|KEY)\s+SHA(\d+)\s+)(\S+)(\s+(\S+))/) {
+        my $bits  = "\L$3";
+        my $val = "\L$4";
+        my $name = "$6";
+        my $part1 = $1;
+        my $part2 = $5;
+        # print "bits = $bits, val = $val, name = $name\n";
+        # print "($part1)($part2)\n";
+        my $digest = Digest::SHA->new($bits);
+        my $f = fname $name;
+        if(defined $f) {
+          $digest->addfile($f);
+          $val = $digest->hexdigest;
+        }
+        $content_new .= "$part1$val$part2\n";
+      }
+      else {
+        $content_new .= $_;
+      }
+    }
+    close $f;
+  }
+
+  if($content_new ne $content_old) {
+    my $n = copy_file "content";
+
+    if($n) {
+      if(open my $f, ">", $n) {
+        print $f $content_new;
+        close $f;
+      }
+    }
+  }
 }
 
