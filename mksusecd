@@ -163,6 +163,7 @@ sub grub2_add_option;
 sub update_boot_options;
 sub prepare_micro;
 sub prepare_nano;
+sub prepare_pico;
 sub set_mkisofs_metadata;
 sub update_content;
 
@@ -210,6 +211,7 @@ GetOptions(
   'boot=s'           => \$opt_boot_options,
   'micro'            => sub { $opt_type = 'micro' },
   'nano'             => sub { $opt_type = 'nano' },
+  'pico'             => sub { $opt_type = 'pico' },
   'volume=s'         => \$opt_volume,
   'vendor=s'         => \$opt_vendor,
   'preparer=s'       => \$opt_preparer,
@@ -309,6 +311,7 @@ if($opt_create) {
 
   prepare_micro if $opt_type eq 'micro';
   prepare_nano if $opt_type eq 'nano';
+  prepare_pico if $opt_type eq 'pico';
 
   # print "sources = ", Dumper(\@sources);
   # print "boot = ", Dumper($boot);
@@ -403,6 +406,7 @@ Create ISO image:
                                 Network-ISO.)
       --nano                    Create an ISO with just enough files to test the boot
                                 process.
+      --pico                    Even less than --nano. Keep just the bootloader.
       --volume                  Set ISO volume id.
       --vendor                  Set ISO publisher id.
       --preparer                Set ISO data preparer id.
@@ -782,6 +786,7 @@ sub run_mkisofs
 
   if(open my $fh, "$cmd 2>&1 |") {
     $| = 1;
+    $ok = 1;	# sometimes mkisofs doesn't show any progress, so set ok here...
     while(<$fh>) {
       if(/^\s*(\d*\.\d)\d%/) {
         $ok = 1;
@@ -794,6 +799,7 @@ sub run_mkisofs
     show_progress 100 if $ok;
     print "\n" if $progress_end == 100;
     close $fh;
+    # printf STDERR "ret = $?\n";
     $ok = 0 if $?;
   }
 
@@ -1512,6 +1518,29 @@ sub prepare_nano
     "$p/gpg-*",
     "$p/NEWS",
     "TRANS.TBL",
+  );
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub prepare_pico
+{
+  prepare_nano;
+
+  my $p = $files->{boot};
+  # try harder, just in case
+  $p = $files->{suse} unless  defined $p;
+
+  return unless defined $p;
+
+  push @{$mkisofs->{exclude}}, (
+    "$p/boot/*/*/linux",
+    "$p/boot/*/*/initrd",
+    "$p/boot/*/*/biostest",
+    "$p/boot/*/*/en.tlk",
+    "$p/EFI",
+    "$p/boot/*/efi",
+    "$p/boot/*/grub2*",
   );
 }
 
