@@ -5,9 +5,13 @@ BRANCH	:= $(shell git branch | perl -ne 'print $$_ if s/^\*\s*//')
 PREFIX	:= mksusecd-$(VERSION)
 BINDIR	 = /usr/bin
 
-all:    changelog
+all:    archive
+
+archive: changelog
 	mkdir -p package
-	git archive --prefix=$(PREFIX)/ $(BRANCH) | xz -c > package/$(PREFIX).tar.xz
+	git archive --prefix=$(PREFIX)/ $(BRANCH) > package/$(PREFIX).tar
+	tar -r -f package/$(PREFIX).tar --mode=0664 --owner=root --group=root --mtime="`git show -s --format=%ci`" --transform='s:^:$(PREFIX)/:' VERSION changelog
+	xz -f package/$(PREFIX).tar
 
 changelog: $(GITDEPS)
 	$(GIT2LOG) --changelog changelog
