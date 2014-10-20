@@ -202,6 +202,7 @@ GetOptions(
   'check'            => \$opt_check,
   'no-check'         => sub { $opt_check = 0 },
   'digest=s'         => \$opt_digest,
+  'no-digest'        => sub { $opt_digest = undef },
   'gpt'              => sub { $opt_hybrid = 1; $opt_hybrid_gpt = 1 },
   'mbr'              => sub { $opt_hybrid = 1; $opt_hybrid_mbr = 1 },
   'hybrid'           => \$opt_hybrid,
@@ -226,7 +227,7 @@ GetOptions(
 
 usage 1 unless $opt_create;
 usage 1 if $opt_hybrid_fs !~ '^(|iso|fat)$';
-usage 1 if $opt_digest !~ '^(md5|sha1|sha224|sha256|sha384|sha512)$';
+usage 1 if defined($opt_digest) && $opt_digest !~ '^(md5|sha1|sha224|sha256|sha384|sha512)$';
 
 if(open my $f, "$ENV{HOME}/.mksusecdrc") {
   while(<$f>) {
@@ -338,10 +339,12 @@ if($opt_create) {
 
   run_isohybrid if $opt_hybrid;
 
-  my $chk = $opt_check ? " --check" : "";
-  print "calculating $opt_digest...";
-  system "tagmedia $chk --digest '$opt_digest' --pad 150 '$iso_file' >/dev/null";
-  print "\n";
+  if(defined $opt_digest) {
+    my $chk = $opt_check ? " --check" : "";
+    print "calculating $opt_digest...";
+    system "tagmedia $chk --digest '$opt_digest' --pad 150 '$iso_file' >/dev/null";
+    print "\n";
+  }
 
   if($mkisofs->{partition_start}) {
     system "tagmedia --add-tag  'partition=$mkisofs->{partition_start}' '$iso_file' >/dev/null";
@@ -381,6 +384,7 @@ Create ISO image:
       --check                   Tag ISO to be verified before starting the installation.
       --no-check                Don't tag ISO (default).
       --digest DIGEST           Use DIGEST to verify ISO integrity (default: SHA1).
+      --no-digest               Don't calculate any digest.
       --gpt                     Add GPT when in isohybrid mode.
       --mbr                     Add MBR when in isohybrid mode (default).
                                 Note that when both --mbr and --gpt are specified both
@@ -849,19 +853,27 @@ sub fix_catalog
 
   my $boot_catalog = read_sector $boot_catalog_idx;
 
-  my $entry1 = substr $boot_catalog, 32 * 1, 32;
-  substr($entry1, 12, 20) = pack "Ca19", 1, $mkisofs->{fix_catalog}[0];
-  substr($boot_catalog, 32 * 1, 32) = $entry1;
+  my $entries = @{$mkisofs->{fix_catalog}};
 
-  my $entry2 = substr $boot_catalog, 32 * 2, 32;
-  substr($entry2, 12, 20) = pack "Ca19", 1, $mkisofs->{fix_catalog}[1];
+  my @entry;
 
-  if((unpack "C", $entry2)[0] == 0x88) {
-    substr($boot_catalog, 32 * 3, 32) = $entry2;
-    $entry2 = pack "CCva28", 0x91, 0xef, 1, "";
-    substr($boot_catalog, 32 * 2, 32) = $entry2;
-    write_sector $boot_catalog_idx, $boot_catalog;
+  for (my $i = 0; $i < $entries; $i++) {
+    push @entry, substr $boot_catalog, 32 * ($i + 1), 32;
+    substr($entry[-1], 12, 20) = pack "Ca19", 1, $mkisofs->{fix_catalog}[$i];
+    if((unpack "C", $entry[-1])[0] != 0x88) {
+      die "$iso_file: boot entry $i: strange content\n";
+    }
   }
+
+  substr($boot_catalog, 32 * 1, 32) = $entry[0];
+
+  for (my $i = 1; $i < $entries; $i++) {
+    my $section_head = pack "CCva28", $i == $entries - 1 ? 0x91 : 0x90, 0xef, 1, "";
+    substr($boot_catalog, 32 * (2 * $i), 32) = $section_head;
+    substr($boot_catalog, 32 * (2 * $i + 1), 32) = $entry[$i];
+  }
+
+  write_sector $boot_catalog_idx, $boot_catalog;
 
   close $iso_fh;
   undef $iso_fh;
