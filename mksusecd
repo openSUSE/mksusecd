@@ -161,6 +161,7 @@ sub create_cd_ikr;
 sub isolinux_add_option;
 sub grub2_add_option;
 sub update_boot_options;
+sub prepare_normal;
 sub prepare_micro;
 sub prepare_nano;
 sub prepare_pico;
@@ -310,6 +311,7 @@ if($opt_create) {
   set_mkisofs_metadata;
   prepare_mkisofs;
 
+  prepare_normal;
   prepare_micro if $opt_type eq 'micro';
   prepare_nano if $opt_type eq 'nano';
   prepare_pico if $opt_type eq 'pico';
@@ -1477,6 +1479,20 @@ sub update_boot_options
       grub2_add_option $n, $opt_boot_options;
     }
   }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# wipe files we really don't want
+sub prepare_normal
+{
+  my $p = $files->{boot};
+  # try harder, just in case
+  $p = $files->{suse} unless  defined $p;
+
+  push @{$mkisofs->{exclude}}, (
+    "$p/glump",
+  );
 }
 
 
