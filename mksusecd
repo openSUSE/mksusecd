@@ -191,6 +191,7 @@ my $opt_preparer;
 my $opt_application;
 my $opt_volume;
 my $opt_no_docs = 1;
+my $opt_loader;
 
 GetOptions(
   'create|c=s'       => sub { $opt_create = 1; $opt_dst = $_[1] },
@@ -211,6 +212,8 @@ GetOptions(
   'hybrid-fs=s'      => sub { $opt_hybrid = 1; $opt_hybrid_fs = $_[1] },
   'initrd=s'         => \@opt_initrds,
   'boot=s'           => \$opt_boot_options,
+  'grub2'            => sub { $opt_loader = "grub" },
+  'isolinux'         => sub { $opt_loader = "isolinux" },
   'micro'            => sub { $opt_type = 'micro' },
   'nano'             => sub { $opt_type = 'nano' },
   'pico'             => sub { $opt_type = 'pico' },
@@ -402,10 +405,12 @@ Create ISO image:
                                 'iso' or 'fat' in which case you get a regular partition
                                 with an ISO960 or FAT file system (default: 'iso').
       --initrd DIR|RPM          Add directory DIR or package RPM to initrd.
-      --no-docs                 Don't include package documentation when updating the initrd
-                                This is the default.
+      --no-docs                 Don't include package documentation when updating the
+                                initrd (default).
       --keep-docs               Include package documentation when updating initrd.
       --boot OPTIONS            Add OPTIONS to default boot options.
+      --grub2                   Use grub2 for El-Torito legacy setup (for debugging).
+      --isolinux                Use isolinux for El-Torito legacy setup (for debugging).
       --micro                   Create an ISO with just enough files to test the
                                 installation setup. But you can't actually install as
                                 all packages have been removed. (Similar to the
@@ -431,7 +436,7 @@ Hybrid mode notes:
   There are 2 variants this script supports:
 
     (1) Partition 1 is the data partition starting at offset 0 and covering
-    the entire ISO, partition 2 is the UEFI system parition pointing
+    the entire ISO, partition 2 is the UEFI system partition pointing
     somwhere inside the first partition. This produces an obviously
     inconsistent partition table and partitioning tools really don't like it.
 
@@ -563,10 +568,10 @@ sub analyze_boot
       $boot->{$_}{kernel} = "boot/$_/linux" if -f fname("boot/$_/linux");
 
       if(-f fname("boot/$_/loader/isolinux.bin")) {
-        $boot->{$_}{bl}{isolinux} = { base => "boot/$_/loader", arch => $_ };
+        $boot->{$_}{bl}{isolinux} = { base => "boot/$_/loader", file => "isolinux.bin", arch => $_ };
       }
       if(-f fname("boot/$_/isolinux/isolinux.bin")) {
-        $boot->{$_}{bl}{isolinux} = { base => "boot/$_/isolinux", arch => $_ };
+        $boot->{$_}{bl}{isolinux} = { base => "boot/$_/isolinux", file => "isolinux.bin", arch => $_ };
       }
       if(-f fname("boot/$_/cd.ikr")) {
         $boot->{$_}{bl}{ikr} = { base => "boot/$_/cd.ikr", arch => $_ };
@@ -574,8 +579,11 @@ sub analyze_boot
       elsif(-f fname("boot/$_/suse.ins")) {
         $boot->{$_}{bl}{ikr} = { base => "boot/$_/cd.ikr", arch => $_, ins => "boot/$_/suse.ins" };
       }
-      if(-d fname("boot/$_/grub2-efi")) {
-        $boot->{$_}{bl}{"grub2-efi"} = { base => "boot/$_/grub2-efi", arch => $_ };
+      if(-f fname("boot/$_/grub2-efi/cd.img")) {
+        $boot->{$_}{bl}{grub2} = { base => "boot/$_/grub2-efi", file => "cd.img", arch => $_ };
+      }
+      if(-f fname("boot/$_/grub2/cd.img")) {
+        $boot->{$_}{bl}{grub2} = { base => "boot/$_/grub2", file => "cd.img", arch => $_ };
       }
       if(-f fname("boot/$_/efi")) {
         $boot->{$_}{bl}{efi} = { base => "boot/$_/efi", arch => $_ };
@@ -598,23 +606,26 @@ sub analyze_boot
 sub build_todo
 {
   my $todo;
-  my %iso_arch;
+  my @legacy_eltorito;
 
   # legacy El-Torito x86 boot
   # In theory more than one entry could be created, but BIOSes don't really
   # expect that...
   for (sort keys %$boot) {
-    if($boot->{$_}{bl}{isolinux}) {
-      $iso_arch{$_} = { isolinux => $boot->{$_}{bl}{isolinux} };
+    if($boot->{$_}{bl}{isolinux} && (!$opt_loader || $opt_loader eq "isolinux")) {
+      push @legacy_eltorito, { eltorito => $boot->{$_}{bl}{isolinux} };
+    }
+    if($boot->{$_}{bl}{grub2} && (!$opt_loader || $opt_loader eq "grub")) {
+      push @legacy_eltorito, { eltorito => $boot->{$_}{bl}{grub2} };
     }
   }
 
   # ... so we just pick one.
-  if(%iso_arch) {
-    $_ = (sort keys %iso_arch)[-1];
-    push @$todo, $iso_arch{$_};
-    if(keys %iso_arch > 1) {
-      print "More than one El Torito legacy boot entry detected, choosing $_.\n";
+  if(@legacy_eltorito) {
+    my $x = $legacy_eltorito[0]{eltorito}{base};
+    push @$todo, $legacy_eltorito[0];
+    if(@legacy_eltorito > 1) {
+      print "More than one El Torito legacy boot entry detected, choosing /$x\n";
     }
   }
 
@@ -692,16 +703,16 @@ sub prepare_mkisofs
   for (@$todo) {
     my $t = (keys %$_)[0];
 
-    if($t eq 'isolinux') {
-      copy_file "$_->{$t}{base}/isolinux.bin";
+    if($t eq 'eltorito') {
+      copy_file "$_->{$t}{base}/$_->{$t}{file}";
       push @{$mkisofs->{sort}}, "$tmp_new/$_->{$t}{base}/boot.catalog 4";
-      # push @{$mkisofs->{sort}}, fname("$_->{$t}{base}/isolinux.bin") . " 3";
-      push @{$mkisofs->{sort}}, "$tmp_new/$_->{$t}{base}/isolinux.bin 3";
-      # push @{$mkisofs->{sort}}, "$_->{$t}{base}/isolinux.bin 3";
+      # push @{$mkisofs->{sort}}, fname("$_->{$t}{base}/$_->{$t}{file}") . " 3";
+      push @{$mkisofs->{sort}}, "$tmp_new/$_->{$t}{base}/$_->{$t}{file} 3";
+      # push @{$mkisofs->{sort}}, "$_->{$t}{base}/$_->{$t}{file} 3";
       push @{$mkisofs->{sort}}, "$tmp_new/$_->{$t}{base} 1";
       $mkisofs->{options} .=
         " -no-emul-boot -boot-load-size 4 -boot-info-table" .
-        " -b $_->{$t}{base}/isolinux.bin -c $_->{$t}{base}/boot.catalog" .
+        " -b $_->{$t}{base}/$_->{$t}{file} -c $_->{$t}{base}/boot.catalog" .
         " -hide $_->{$t}{base}/boot.catalog -hide-joliet $_->{$t}{base}/boot.catalog";
       print "El-Torito legacy bootable ($_->{$t}{arch})\n";
       push @$iso_catalog, "Legacy ($_->{$t}{arch})";
@@ -1441,7 +1452,7 @@ sub grub2_add_option
   if(open my $f, $n) {
     my @f = <$f>;
     close $f;
-    @f = map { chomp; $_ .= " $b" if /^\s*linuxefi\s/; "$_\n" } @f;
+    @f = map { chomp; $_ .= " $b" if /^\s*linux(efi)?\s/; "$_\n" } @f;
     if(open my $f, ">", $n) {
       print $f @f;
       close $f;
@@ -1461,6 +1472,10 @@ sub update_boot_options
     if($boot->{$b}{bl}{isolinux}) {
       my $n = copy_file "$boot->{$b}{bl}{isolinux}{base}/isolinux.cfg";
       isolinux_add_option $n, $opt_boot_options;
+    }
+    if($boot->{$b}{bl}{grub2}) {
+      my $n = copy_file "$boot->{$b}{bl}{grub2}{base}/grub.cfg";
+      grub2_add_option $n, $opt_boot_options;
     }
     if($boot->{$b}{bl}{efi}) {
       my $n = copy_file $boot->{$b}{bl}{efi}{base};
