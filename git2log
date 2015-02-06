@@ -64,10 +64,16 @@ die "no branch?\n" unless $branch;
 @tags = get_branch_tags;
 die "no tags at all?\n" unless @tags;
 
-if(!grep { /^$branch\-/ } @tags) {
-  $branch = get_parent_branch;
-  die "sorry, can't determine branch\n" unless $branch;
+if($branch ne 'master') {
+  if(!grep { /^$branch\-/ } @tags) {
+    $branch = get_parent_branch;
+    die "sorry, can't determine branch\n" unless $branch;
 
+    @tags = get_branch_tags;
+    die "no tags at all?\n" unless @tags;
+  }
+}
+else {
   @tags = get_branch_tags;
   die "no tags at all?\n" unless @tags;
 }
