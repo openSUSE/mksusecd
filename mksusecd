@@ -167,6 +167,9 @@ sub prepare_nano;
 sub prepare_pico;
 sub set_mkisofs_metadata;
 sub update_content;
+sub create_sign_key;
+sub add_sign_key;
+sub sign_content;
 
 my %config;
 my $sudo;
@@ -192,6 +195,7 @@ my $opt_application;
 my $opt_volume;
 my $opt_no_docs = 1;
 my $opt_loader;
+my $opt_sign = 1;
 
 GetOptions(
   'create|c=s'       => sub { $opt_create = 1; $opt_dst = $_[1] },
@@ -205,6 +209,8 @@ GetOptions(
   'no-check'         => sub { $opt_check = 0 },
   'digest=s'         => \$opt_digest,
   'no-digest'        => sub { $opt_digest = undef },
+  'sign'             => \$opt_sign,
+  'no-sign'          => sub { $opt_sign = 0 },
   'gpt'              => sub { $opt_hybrid = 1; $opt_hybrid_gpt = 1 },
   'mbr'              => sub { $opt_hybrid = 1; $opt_hybrid_mbr = 1 },
   'hybrid'           => \$opt_hybrid,
@@ -267,6 +273,8 @@ my $iso_fh;
 my $two_runs;
 my $add_initrd;
 my $has_efi = 0;
+my $sign_key_pub;
+my $sign_key_dir;
 
 my $progress_start = 0;
 my $progress_end = 100;
@@ -304,12 +312,16 @@ if($opt_create) {
 
   die "no sources - nothing to do\n" unless @sources;
 
-  $add_initrd = create_initrd;
   $files = build_filelist;
   $boot = analyze_boot;
-  update_content;
-  update_initrd;
   update_boot_options;
+  if($opt_sign && (@opt_initrds || update_content)) {
+    create_sign_key;
+    add_sign_key;
+  }
+  $add_initrd = create_initrd;
+  update_initrd;
+  sign_content if update_content;
   $todo = build_todo;
   set_mkisofs_metadata;
   prepare_mkisofs;
@@ -390,6 +402,9 @@ Create ISO image:
       --no-check                Don't tag ISO (default).
       --digest DIGEST           Use DIGEST to verify ISO integrity (default: SHA1).
       --no-digest               Don't calculate any digest.
+      --sign                    Re-sign '/content' with a generated transient key if it has
+                                changed. The public key is added to the initrd. (default)
+      --no-sign                 Don't re-sign '/content'.
       --gpt                     Add GPT when in isohybrid mode.
       --mbr                     Add MBR when in isohybrid mode (default).
                                 Note that when both --mbr and --gpt are specified both
@@ -445,6 +460,18 @@ Hybrid mode notes:
     a FAT filesystem. If you need UEFI support this partition becomes
     partition 2 and partition 1 points to the UEFI image. Partition 1 and 2
     don't overlap. In this variant a consistent partition table is written.
+
+Signing notes:
+
+    On all media there is a file '/content' holding SHA256 sums of all files
+    relevant during installation. The file is signed and is used to ensure
+    the integrity of the installation environment.
+
+    If you modify any file mentioned there (e.g. replacing it or implicitly
+    as a result of the --initrd or --boot options) '/content' is updated and
+    must be re-signed. Otherwise the installer will complain when it starts
+    up. For this, mksusecd creates a transient key, re-signs the file, and
+    adds the public part to the initrd. The secret part is deleted.
 
 Configuration files:
 
@@ -654,6 +681,11 @@ sub copy_file
   my $n;
 
   return unless defined $f;
+
+  # we may already have a copy...
+  if($f eq "$tmp_new/$_[0]") {
+    return $f;
+  }
 
   if(-d $f) {
     $n = "$tmp_new/$_[0]";
@@ -1661,6 +1693,8 @@ sub set_mkisofs_metadata
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 sub update_content
 {
+  my $changed = 0;
+
   my $content = fname "content";
 
   return unless defined $content;
@@ -1695,6 +1729,7 @@ sub update_content
   }
 
   if($content_new ne $content_old) {
+    $changed = 1;
     my $n = copy_file "content";
 
     if($n) {
@@ -1704,5 +1739,84 @@ sub update_content
       }
     }
   }
+
+  return $changed;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub create_sign_key
+{
+  my $gpg_dir = $tmp->dir();
+
+my $c = <<"= = = = = = = =";
+%no-ask-passphrase
+%no-protection
+%transient-key
+Key-Type: default
+Name-Real: mksusecd
+Name-Comment: transient key
+%pubring mksusecd.pub
+%secring mksusecd.sec
+%commit
+= = = = = = = =
+
+  if(open my $p, "| cd $gpg_dir ; gpg --no-tty --batch --armor --debug-quick-random --gen-key - 2>/dev/null") {
+    print $p $c;
+    close $p;
+  }
+
+  my $keyid;
+  my $date;
+
+  if(open my $p, "gpg -v -v $gpg_dir/mksusecd.pub 2>&1 |") {
+    while(<$p>) {
+      $keyid = $1 if !$keyid && /^:signature packet:.*keyid\s+([0-9a-zA-Z]+)/;
+      $date = $1, last if !$date && $keyid && /created\s+(\d+)/;
+    }
+    close $p;
+  }
+
+  if($date) {
+    my $cname = sprintf "gpg-pubkey-%08x-%08x.asc", hex($keyid) & 0xffffffff, $date;
+    rename "$gpg_dir/mksusecd.pub", "$gpg_dir/$cname";
+    $sign_key_pub = "$gpg_dir/$cname";
+
+    system "gpg --homedir=$gpg_dir --import $gpg_dir/mksusecd.sec >/dev/null 2>&1";
+
+    $sign_key_dir = $gpg_dir;
+
+    print "transient signing key created, keyid = $keyid\n" if $opt_verbose >= 1;
+  }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub add_sign_key
+{
+  return if !$sign_key_pub;
+
+  my $tmp_dir = $tmp->dir();
+
+  system "mkdir -p $tmp_dir/usr/lib/rpm/gnupg/keys";
+  system "cp $sign_key_pub $tmp_dir/usr/lib/rpm/gnupg/keys";
+
+  print "transient signing key added to initrd\n" if $opt_verbose >= 1;
+
+  push @opt_initrds, $tmp_dir;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub sign_content
+{
+  return if !$sign_key_dir;
+
+  my $c = copy_file "content";
+  copy_file "content.asc";
+
+  print "re-signing '/content'\n" if $opt_verbose >= 1;
+
+  system "gpg --homedir=$sign_key_dir --batch --yes --armor --detach-sign $c";
 }
 
