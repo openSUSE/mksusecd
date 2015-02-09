@@ -138,10 +138,12 @@ my $magic_id = "7984fc91-a43f-4e45-bf27-6d3aa08b24cf";
 
 sub usage;
 sub check_root;
+sub show_progress;
 sub susystem;
 sub fname;
 sub analyze_boot;
 sub build_todo;
+sub copy_file;
 sub prepare_mkisofs;
 sub build_filelist;
 sub run_mkisofs;
@@ -196,6 +198,7 @@ my $opt_volume;
 my $opt_no_docs = 1;
 my $opt_loader;
 my $opt_sign = 1;
+my $opt_sign_key;
 
 GetOptions(
   'create|c=s'       => sub { $opt_create = 1; $opt_dst = $_[1] },
@@ -211,6 +214,7 @@ GetOptions(
   'no-digest'        => sub { $opt_digest = undef },
   'sign'             => \$opt_sign,
   'no-sign'          => sub { $opt_sign = 0 },
+  'sign-key=s'       => \$opt_sign_key,
   'gpt'              => sub { $opt_hybrid = 1; $opt_hybrid_gpt = 1 },
   'mbr'              => sub { $opt_hybrid = 1; $opt_hybrid_mbr = 1 },
   'hybrid'           => \$opt_hybrid,
@@ -241,8 +245,12 @@ usage 1 if defined($opt_digest) && $opt_digest !~ '^(md5|sha1|sha224|sha256|sha3
 
 if(open my $f, "$ENV{HOME}/.mksusecdrc") {
   while(<$f>) {
-    if(/^(\S+?)=\"(.*)\"\s*$/) {
-      $config{$1} = $2;
+    next if /^\s*#/;
+    if(/^\s*(\S+?)\s*=\s*(.*?)\s*$/) {
+      my $key = $1;
+      my $val = $2;
+      $val =~ s/^\"|\"$//g;
+      $config{$key} = $val;
     }
   }
   close $f;
@@ -252,6 +260,8 @@ if($config{sudo}) {
   $sudo = $config{sudo};
   $sudo =~ s/\s*$/ /;
 }
+
+$opt_sign_key ||= $config{'sign-key'};
 
 my $tmp = Tmp::new($opt_save_temp);
 
@@ -402,9 +412,11 @@ Create ISO image:
       --no-check                Don't tag ISO (default).
       --digest DIGEST           Use DIGEST to verify ISO integrity (default: SHA1).
       --no-digest               Don't calculate any digest.
-      --sign                    Re-sign '/content' with a generated transient key if it has
-                                changed. The public key is added to the initrd. (default)
+      --sign                    Re-sign '/content' if it has changed. The public part of
+                                the sign key is added to the initrd. (default)
       --no-sign                 Don't re-sign '/content'.
+      --sign-key KEY_FILE       Use this key instead of generating a transient key.
+                                See Signing notes below.
       --gpt                     Add GPT when in isohybrid mode.
       --mbr                     Add MBR when in isohybrid mode (default).
                                 Note that when both --mbr and --gpt are specified both
@@ -470,15 +482,27 @@ Signing notes:
     If you modify any file mentioned there (e.g. replacing it or implicitly
     as a result of the --initrd or --boot options) '/content' is updated and
     must be re-signed. Otherwise the installer will complain when it starts
-    up. For this, mksusecd creates a transient key, re-signs the file, and
-    adds the public part to the initrd. The secret part is deleted.
+    up. For this, mksusecd will re-sign the file and add the public part of
+    the signing key to the initrd.
 
-Configuration files:
+    You can specify the key to use with the 'sign-key' option. The option
+    must point to the public key file, the file must end in '.pub', and
+    there must be a corresponding secret key file ending in '.sec'.
+
+    If there's no 'sign-key' option, a transient key is created. The public
+    part is added to the initrd and the secret part is deleted after
+    signing.
+
+Configuration file:
 
   \$HOME/.mksusecdrc
-    To access existing ISO image files you will need root privileges. (It
-    will be mounted.) There's a 'sudo' config file entry that lets you
-    specify a command granting you root privileges. E.g. sudo="foo".
+
+    sudo: To access existing ISO image files you will need root privileges.
+      (It will be mounted.) This entry lets you specify a command granting
+      you root privileges. E.g. sudo="foo".
+
+    sign-key: File name of the public part of the signing key. The same as
+      the 'sign-key' option. See Signing notes above.
 
 Examples:
 
@@ -1761,15 +1785,29 @@ Name-Comment: transient key
 %commit
 = = = = = = = =
 
-  if(open my $p, "| cd $gpg_dir ; gpg --no-tty --batch --armor --debug-quick-random --gen-key - 2>/dev/null") {
-    print $p $c;
-    close $p;
+  my ($pub_key, $sec_key);
+
+  if($opt_sign_key) {
+    $pub_key = $opt_sign_key;
+    $pub_key =~ s/^~/$ENV{HOME}/;
+    die "$pub_key: no such key file\n" unless -f $pub_key;
+    $sec_key = $pub_key;
+    $sec_key = undef if $sec_key !~ s/\.pub$/.sec/;
+    die "$pub_key: no matching secret key\n" unless -f $sec_key;
+  }
+  else {
+    if(open my $p, "| cd $gpg_dir ; gpg --no-tty --batch --armor --debug-quick-random --gen-key - 2>/dev/null") {
+      print $p $c;
+      close $p;
+    }
+    $pub_key = "$gpg_dir/mksusecd.pub";
+    $sec_key = "$gpg_dir/mksusecd.sec";
   }
 
   my $keyid;
   my $date;
 
-  if(open my $p, "gpg -v -v $gpg_dir/mksusecd.pub 2>&1 |") {
+  if(open my $p, "gpg -v -v $pub_key 2>&1 |") {
     while(<$p>) {
       $keyid = $1 if !$keyid && /^:signature packet:.*keyid\s+([0-9a-zA-Z]+)/;
       $date = $1, last if !$date && $keyid && /created\s+(\d+)/;
@@ -1779,14 +1817,22 @@ Name-Comment: transient key
 
   if($date) {
     my $cname = sprintf "gpg-pubkey-%08x-%08x.asc", hex($keyid) & 0xffffffff, $date;
-    rename "$gpg_dir/mksusecd.pub", "$gpg_dir/$cname";
+    system "cp", "$pub_key", "$gpg_dir/$cname";
     $sign_key_pub = "$gpg_dir/$cname";
 
-    system "gpg --homedir=$gpg_dir --import $gpg_dir/mksusecd.sec >/dev/null 2>&1";
+    system "gpg --homedir=$gpg_dir --import $sec_key >/dev/null 2>&1";
 
     $sign_key_dir = $gpg_dir;
 
-    print "transient signing key created, keyid = $keyid\n" if $opt_verbose >= 1;
+    if($opt_sign_key) {
+      print "using signing key, keyid = $keyid\n" if $opt_verbose >= 1;
+    }
+    else {
+      print "transient signing key created, keyid = $keyid\n" if $opt_verbose >= 1;
+    }
+  }
+  else {
+    die "oops, signing key not usable\n";
   }
 }
 
@@ -1801,7 +1847,7 @@ sub add_sign_key
   system "mkdir -p $tmp_dir/usr/lib/rpm/gnupg/keys";
   system "cp $sign_key_pub $tmp_dir/usr/lib/rpm/gnupg/keys";
 
-  print "transient signing key added to initrd\n" if $opt_verbose >= 1;
+  print "signing key added to initrd\n" if $opt_verbose >= 1;
 
   push @opt_initrds, $tmp_dir;
 }
