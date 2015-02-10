@@ -486,12 +486,10 @@ Signing notes:
     the signing key to the initrd.
 
     You can specify the key to use with the 'sign-key' option. The option
-    must point to the public key file, the file must end in '.pub', and
-    there must be a corresponding secret key file ending in '.sec'.
+    must point to a private key file.
 
     If there's no 'sign-key' option, a transient key is created. The public
-    part is added to the initrd and the secret part is deleted after
-    signing.
+    part is added to the initrd and the key is deleted.
 
 Configuration file:
 
@@ -501,8 +499,8 @@ Configuration file:
       (It will be mounted.) This entry lets you specify a command granting
       you root privileges. E.g. sudo="foo".
 
-    sign-key: File name of the public part of the signing key. The same as
-      the 'sign-key' option. See Signing notes above.
+    sign-key: File name of the private key file with the signing key. The
+      same as the 'sign-key' option. See Signing notes above.
 
 Examples:
 
@@ -1785,44 +1783,44 @@ Name-Comment: transient key
 %commit
 = = = = = = = =
 
-  my ($pub_key, $sec_key);
+  my $key;
 
   if($opt_sign_key) {
-    $pub_key = $opt_sign_key;
-    $pub_key =~ s/^~/$ENV{HOME}/;
-    die "$pub_key: no such key file\n" unless -f $pub_key;
-    $sec_key = $pub_key;
-    $sec_key = undef if $sec_key !~ s/\.pub$/.sec/;
-    die "$pub_key: no matching secret key\n" unless -f $sec_key;
+    $key = $opt_sign_key;
+    $key =~ s/^~/$ENV{HOME}/;
+    die "$key: no such key file\n" unless -f $key;
   }
   else {
     if(open my $p, "| cd $gpg_dir ; gpg --no-tty --batch --armor --debug-quick-random --gen-key - 2>/dev/null") {
       print $p $c;
       close $p;
     }
-    $pub_key = "$gpg_dir/mksusecd.pub";
-    $sec_key = "$gpg_dir/mksusecd.sec";
+    $key = "$gpg_dir/mksusecd.sec";
   }
 
   my $keyid;
   my $date;
+  my $priv;
+  my $pub;
 
-  if(open my $p, "gpg -v -v $pub_key 2>&1 |") {
+  if(open my $p, "gpg -v -v $key 2>&1 |") {
     while(<$p>) {
+      $priv = 1 if /BEGIN PGP PRIVATE KEY BLOCK/;
+      $pub = 1 if /BEGIN PGP PUBLIC KEY BLOCK/;
       $keyid = $1 if !$keyid && /^:signature packet:.*keyid\s+([0-9a-zA-Z]+)/;
       $date = $1, last if !$date && $keyid && /created\s+(\d+)/;
     }
     close $p;
   }
 
-  if($date) {
-    my $cname = sprintf "gpg-pubkey-%08x-%08x.asc", hex($keyid) & 0xffffffff, $date;
-    system "cp", "$pub_key", "$gpg_dir/$cname";
-    $sign_key_pub = "$gpg_dir/$cname";
-
-    system "gpg --homedir=$gpg_dir --import $sec_key >/dev/null 2>&1";
-
+  if($priv && $date) {
     $sign_key_dir = $gpg_dir;
+
+    system "gpg --homedir=$gpg_dir --import $key >/dev/null 2>&1";
+
+    my $cname = sprintf "gpg-pubkey-%08x-%08x.asc", hex($keyid) & 0xffffffff, $date;
+    $sign_key_pub = "$gpg_dir/$cname";
+    system "gpg --homedir=$gpg_dir --export --armor --output $sign_key_pub >/dev/null 2>&1";
 
     if($opt_sign_key) {
       print "using signing key, keyid = $keyid\n" if $opt_verbose >= 1;
@@ -1832,7 +1830,12 @@ Name-Comment: transient key
     }
   }
   else {
-    die "oops, signing key not usable\n";
+    if($pub) {
+      die "$key: signing key is not a private key\n";
+    }
+    else {
+      die "$key: signing key not usable\n";
+    }
   }
 }
 
