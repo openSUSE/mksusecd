@@ -1717,6 +1717,9 @@ sub update_content
 {
   my $changed = 0;
 
+  # don't modify content if we're not going to re-sign it
+  return $changed if !$opt_sign;
+
   my $content = fname "content";
 
   return unless defined $content;
