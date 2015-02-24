@@ -431,7 +431,8 @@ Create ISO image:
                                 image (partitioning tools don't really like this) or
                                 'iso' or 'fat' in which case you get a regular partition
                                 with an ISO960 or FAT file system (default: 'iso').
-      --initrd DIR|RPM          Add directory DIR or package RPM to initrd.
+      --initrd DIR|RPM|DUD      Add directory DIR or package RPM or driver update DUD
+                                to initrd.
       --no-docs                 Don't include package documentation when updating the
                                 initrd (default).
       --keep-docs               Include package documentation when updating initrd.
@@ -1371,12 +1372,34 @@ sub create_initrd
   my $tmp_dir = $tmp->dir();
 
   for my $i (@opt_initrds) {
+    my ($cmd1, $cmd2);
+
     my $t = `file -b -k -L $i 2>/dev/null`;
+
     if(-d $i) {
-      system "tar -C '$i' -cf - . | tar -C $tmp_dir -xpf -";
+      $cmd1 = "tar -C '$i' -cf - .";
+      $cmd2 = 'tar';
     }
     elsif(-f $i && $t =~ /^RPM/) {
-      system "rpm2cpio '$i' | ( cd $tmp_dir ; cpio --quiet --sparse -dimu --no-absolute-filenames )";
+      $cmd1 = "rpm2cpio '$i'";
+      $cmd2 = 'cpio';
+    }
+    elsif(-f $i && $t =~ / (cpio|tar) archive/) {
+      $cmd1 = "cat '$i'";
+      $cmd2 = $1;
+    }
+    elsif(-f $i && $t =~ /^(gzip|XZ) compressed data/) {
+      $cmd1 = "\L$1\E -dc '$i'";
+      my $z = `$cmd1 | file -b -`;
+      $cmd2 = $1 if $z =~ / (cpio|tar) archive/;
+    }
+
+    if($cmd1 && $cmd2) {
+      $cmd2 = "( cd $tmp_dir ; cpio --quiet --sparse -dimu --no-absolute-filenames )" if $cmd2 eq 'cpio';
+      $cmd2 = "tar -C $tmp_dir -xpf -" if $cmd2 eq 'tar';
+
+      # print "$cmd1 | $cmd2\n";
+      system "$cmd1 | $cmd2";
     }
     else {
       print STDERR "Warning: ignoring $i\n";
@@ -1395,7 +1418,7 @@ sub create_initrd
     print "initrd: linuxrc detected, renamed to /init\n";
   }
 
-  system "( cd $tmp_dir; find . | cpio --quiet -o -H newc | gzip -9c ) >> $tmp_initrd";
+  system "( cd $tmp_dir; find . | cpio --quiet -o -H newc --owner 0:0 | gzip -9c ) >> $tmp_initrd";
 
   # system "ls -lR $tmp_dir";
 
