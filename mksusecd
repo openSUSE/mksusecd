@@ -157,8 +157,10 @@ sub isols;
 sub find_magic;
 sub meta_iso;
 sub meta_fat;
+sub get_unpack_commands;
 sub create_initrd;
 sub update_initrd;
+sub extract_installkeys;
 sub create_cd_ikr;
 sub isolinux_add_option;
 sub grub2_add_option;
@@ -285,6 +287,7 @@ my $add_initrd;
 my $has_efi = 0;
 my $sign_key_pub;
 my $sign_key_dir;
+my $initrd_installkeys;
 
 my $progress_start = 0;
 my $progress_end = 100;
@@ -326,6 +329,7 @@ if($opt_create) {
   $boot = analyze_boot;
   update_boot_options;
   if($opt_sign && (@opt_initrds || update_content)) {
+    extract_installkeys;
     create_sign_key;
     add_sign_key;
   }
@@ -850,11 +854,11 @@ sub run_mkisofs
 
   $cmd = "$mkisofs->{command}$mkisofs->{options}";
 
-  print "running:\n$cmd\n" if $opt_verbose >= 1;
+  print "running:\n$cmd\n" if $opt_verbose >= 2;
 
-  print "$mkisofs->{command} sort file:\n", join("\n", @{$mkisofs->{sort}}), "\n" if $opt_verbose >= 2;
+  print "$mkisofs->{command} sort file:\n", join("\n", @{$mkisofs->{sort}}), "\n" if $opt_verbose >= 3;
 
-  print "$mkisofs->{command} exclude file:\n", join("\n", @{$mkisofs->{exclude}}), "\n" if $opt_verbose >= 2;
+  print "$mkisofs->{command} exclude file:\n", join("\n", @{$mkisofs->{exclude}}), "\n" if $opt_verbose >= 3;
 
   if(open my $fh, "$cmd 2>&1 |") {
     $| = 1;
@@ -875,7 +879,7 @@ sub run_mkisofs
     $ok = 0 if $?;
   }
 
-  print $log if $opt_verbose >= 2 || !$ok;
+  print $log if $opt_verbose >= 3 || !$ok;
 
   die "Error: $mkisofs->{command} failed\n" if !$ok;
 }
@@ -1364,6 +1368,46 @@ sub meta_fat
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub get_unpack_commands
+{
+  my $i = $_[0];
+  my $tmp_dir = $_[1];
+
+  my ($cmd1, $cmd2);
+
+  my $t = `file -b -k -L $i 2>/dev/null`;
+
+  if(-d $i) {
+    $cmd1 = "tar -C '$i' -cf - .";
+    $cmd2 = 'tar';
+  }
+  elsif(-f $i && $t =~ /^RPM/) {
+    $cmd1 = "rpm2cpio '$i'";
+    $cmd2 = 'cpio';
+  }
+  elsif(-f $i && $t =~ / (cpio|tar) archive/) {
+    $cmd1 = "cat '$i'";
+    $cmd2 = $1;
+  }
+  elsif(-f $i && $t =~ /^(gzip|XZ) compressed data/) {
+    $cmd1 = "\L$1\E -dc '$i'";
+    my $z = `$cmd1 | file -b -`;
+    $cmd2 = $1 if $z =~ / (cpio|tar) archive/;
+  }
+
+  if($cmd1 && $cmd2) {
+    $cmd2 = "( cd $tmp_dir ; cpio --quiet --sparse -dimu --no-absolute-filenames 2>/dev/null )" if $cmd2 eq 'cpio';
+    $cmd2 = "tar -C $tmp_dir -xpf - 2>/dev/null" if $cmd2 eq 'tar';
+
+    # print "$cmd1 | $cmd2\n";
+    return [ $cmd1, $cmd2 ];
+  }
+
+  return undef;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 sub create_initrd
 {
   return undef if !@opt_initrds;
@@ -1372,34 +1416,10 @@ sub create_initrd
   my $tmp_dir = $tmp->dir();
 
   for my $i (@opt_initrds) {
-    my ($cmd1, $cmd2);
+    my $cmds = get_unpack_commands $i, $tmp_dir;
 
-    my $t = `file -b -k -L $i 2>/dev/null`;
-
-    if(-d $i) {
-      $cmd1 = "tar -C '$i' -cf - .";
-      $cmd2 = 'tar';
-    }
-    elsif(-f $i && $t =~ /^RPM/) {
-      $cmd1 = "rpm2cpio '$i'";
-      $cmd2 = 'cpio';
-    }
-    elsif(-f $i && $t =~ / (cpio|tar) archive/) {
-      $cmd1 = "cat '$i'";
-      $cmd2 = $1;
-    }
-    elsif(-f $i && $t =~ /^(gzip|XZ) compressed data/) {
-      $cmd1 = "\L$1\E -dc '$i'";
-      my $z = `$cmd1 | file -b -`;
-      $cmd2 = $1 if $z =~ / (cpio|tar) archive/;
-    }
-
-    if($cmd1 && $cmd2) {
-      $cmd2 = "( cd $tmp_dir ; cpio --quiet --sparse -dimu --no-absolute-filenames )" if $cmd2 eq 'cpio';
-      $cmd2 = "tar -C $tmp_dir -xpf -" if $cmd2 eq 'tar';
-
-      # print "$cmd1 | $cmd2\n";
-      system "$cmd1 | $cmd2";
+    if($cmds) {
+      system join(' | ', @$cmds);
     }
     else {
       print STDERR "Warning: ignoring $i\n";
@@ -1436,6 +1456,31 @@ sub update_initrd
       my $n = copy_file $boot->{$b}{initrd};
       if(-f $n) {
         system "cat $add_initrd >> $n";
+      }
+      last;
+    }
+  }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub extract_installkeys
+{
+  return if !$opt_sign;
+
+  for my $b (sort keys %$boot) {
+    if($boot->{$b}{initrd}) {
+      my $f = fname($boot->{$b}{initrd});
+      if(-f $f) {
+        my $tmp_dir = $tmp->dir();
+        my $cmds = get_unpack_commands $f, $tmp_dir;
+        if($cmds) {
+          system join(' | ', @$cmds);
+          if(-f "$tmp_dir/installkey.gpg") {
+            $initrd_installkeys = "$tmp_dir/installkey.gpg";
+            print "old style initrd found\n" if $opt_verbose >= 1;
+          }
+        }
       }
       last;
     }
@@ -1873,8 +1918,17 @@ sub add_sign_key
 
   my $tmp_dir = $tmp->dir();
 
-  system "mkdir -p $tmp_dir/usr/lib/rpm/gnupg/keys";
-  system "cp $sign_key_pub $tmp_dir/usr/lib/rpm/gnupg/keys";
+  if($initrd_installkeys) {
+    # old style, gpg key ring
+    system "cp $initrd_installkeys $tmp_dir/installkey.gpg";
+    system "gpg --homedir=$sign_key_dir --batch --no-default-keyring --ignore-time-conflict --ignore-valid-from --keyring $tmp_dir/installkey.gpg --import $sign_key_pub 2>/dev/null";
+    unlink "$tmp_dir/installkey.gpg~";
+  }
+  else {
+    # new style, directory of gpg keys
+    system "mkdir -p $tmp_dir/usr/lib/rpm/gnupg/keys";
+    system "cp $sign_key_pub $tmp_dir/usr/lib/rpm/gnupg/keys";
+  }
 
   print "signing key added to initrd\n" if $opt_verbose >= 1;
 
