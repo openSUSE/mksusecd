@@ -710,7 +710,7 @@ sub copy_file
   my $f = fname($_[0]);
   my $n;
 
-  return unless defined $f;
+  return undef unless defined $f;
 
   # we may already have a copy...
   if($f eq "$tmp_new/$_[0]") {
@@ -1850,7 +1850,7 @@ my $c = <<"= = = = = = = =";
 %no-protection
 %transient-key
 Key-Type: default
-Name-Real: mksusecd
+Name-Real: mksusecd Signing Key
 Name-Comment: transient key
 %pubring mksusecd.pub
 %secring mksusecd.sec
@@ -1945,7 +1945,14 @@ sub sign_content
   return if !$sign_key_dir;
 
   my $c = copy_file "content";
+  return if !defined $c;
+
+  my $k = copy_file "content.key";
+  return if !defined $k;
+
   copy_file "content.asc";
+
+  system "cp $sign_key_pub $k";
 
   print "re-signing '/content'\n" if $opt_verbose >= 1;
 
