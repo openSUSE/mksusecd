@@ -593,7 +593,10 @@ sub build_filelist
   for my $s (@sources) {
     File::Find::find({
       wanted => sub {
-        $files->{$1} = $s->{dir} if m#^$s->{dir}/(.+)#;
+        if(m#^$s->{dir}/(.+)#) {
+          push @{$mkisofs->{exclude}}, "$files->{$1}/$1" if $files->{$1};
+          $files->{$1} = $s->{dir};
+        }
       },
       no_chdir => 1
     }, $s->{dir});
