@@ -160,6 +160,7 @@ sub meta_fat;
 sub get_unpack_commands;
 sub create_initrd;
 sub update_initrd;
+sub get_initrd_format;
 sub extract_installkeys;
 sub create_cd_ikr;
 sub isolinux_add_option;
@@ -288,6 +289,7 @@ my $has_efi = 0;
 my $sign_key_pub;
 my $sign_key_dir;
 my $initrd_installkeys;
+my $initrd_format;
 
 my $progress_start = 0;
 my $progress_end = 100;
@@ -327,6 +329,7 @@ if($opt_create) {
 
   $files = build_filelist;
   $boot = analyze_boot;
+  get_initrd_format;
   update_boot_options;
   if($opt_sign && (@opt_initrds || update_content)) {
     extract_installkeys;
@@ -1441,7 +1444,9 @@ sub create_initrd
     print "initrd: linuxrc detected, renamed to /init\n";
   }
 
-  system "( cd $tmp_dir; find . | cpio --quiet -o -H newc --owner 0:0 | gzip -9c ) >> $tmp_initrd";
+  my $compr = $initrd_format eq "xz" ? "xz --check=crc32 -c" : "gzip -9c";
+
+  system "( cd $tmp_dir; find . | cpio --quiet -o -H newc --owner 0:0 | $compr ) >> $tmp_initrd";
 
   # system "ls -lR $tmp_dir";
 
@@ -1463,6 +1468,37 @@ sub update_initrd
       last;
     }
   }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub get_initrd_format
+{
+  my $f;
+
+  return if $initrd_format;
+
+  for my $b (sort keys %$boot) {
+    if($boot->{$b}{initrd}) {
+      my $c = get_unpack_commands fname($boot->{$b}{initrd}), "";
+      $c = $c->[0];
+      if($c =~ /^(gzip|xz) /) {
+        if($f) {
+          die "differing initrd formats: $f & $1\n" if $1 ne $f;
+        }
+        else {
+          $f = $1;
+        }
+      }
+      else {
+        die "$boot->{$b}{initrd}: invalid initrd format\n"
+      }
+    }
+  }
+
+  # print "initrd format: $f\n";
+
+  $initrd_format = $f;
 }
 
 
