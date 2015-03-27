@@ -157,7 +157,6 @@ sub isols;
 sub find_magic;
 sub meta_iso;
 sub meta_fat;
-sub get_unpack_commands;
 sub create_initrd;
 sub update_initrd;
 sub get_initrd_format;
@@ -175,6 +174,10 @@ sub update_content;
 sub create_sign_key;
 sub add_sign_key;
 sub sign_content;
+sub file_magic;
+sub get_archive_type;
+sub unpack_cpio;
+sub unpack_archive;
 
 my %config;
 my $sudo;
@@ -290,6 +293,7 @@ my $sign_key_pub;
 my $sign_key_dir;
 my $initrd_installkeys;
 my $initrd_format;
+my $rebuild_initrd;
 
 my $progress_start = 0;
 my $progress_end = 100;
@@ -1374,46 +1378,6 @@ sub meta_fat
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-sub get_unpack_commands
-{
-  my $i = $_[0];
-  my $tmp_dir = $_[1];
-
-  my ($cmd1, $cmd2);
-
-  my $t = `file -b -k -L $i 2>/dev/null`;
-
-  if(-d $i) {
-    $cmd1 = "tar -C '$i' -cf - .";
-    $cmd2 = 'tar';
-  }
-  elsif(-f $i && $t =~ /^RPM/) {
-    $cmd1 = "rpm2cpio '$i'";
-    $cmd2 = 'cpio';
-  }
-  elsif(-f $i && $t =~ / (cpio|tar) archive/) {
-    $cmd1 = "cat '$i'";
-    $cmd2 = $1;
-  }
-  elsif(-f $i && $t =~ /^(gzip|XZ) compressed data/) {
-    $cmd1 = "\L$1\E -dc '$i'";
-    my $z = `$cmd1 | file -b -`;
-    $cmd2 = $1 if $z =~ / (cpio|tar) archive/;
-  }
-
-  if($cmd1 && $cmd2) {
-    $cmd2 = "( cd $tmp_dir ; cpio --quiet --sparse -dimu --no-absolute-filenames 2>/dev/null )" if $cmd2 eq 'cpio';
-    $cmd2 = "tar -C $tmp_dir -xpf - 2>/dev/null" if $cmd2 eq 'tar';
-
-    # print "$cmd1 | $cmd2\n";
-    return [ $cmd1, $cmd2 ];
-  }
-
-  return undef;
-}
-
-
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 sub create_initrd
 {
   return undef if !@opt_initrds;
@@ -1422,10 +1386,10 @@ sub create_initrd
   my $tmp_dir = $tmp->dir();
 
   for my $i (@opt_initrds) {
-    my $cmds = get_unpack_commands $i, $tmp_dir;
+    my $type = get_archive_type $i;
 
-    if($cmds) {
-      system join(' | ', @$cmds);
+    if($type) {
+      unpack_archive $type, $i, $tmp_dir;
     }
     else {
       print STDERR "Warning: ignoring $i\n";
@@ -1480,9 +1444,8 @@ sub get_initrd_format
 
   for my $b (sort keys %$boot) {
     if($boot->{$b}{initrd}) {
-      my $c = get_unpack_commands fname($boot->{$b}{initrd}), "";
-      $c = $c->[0];
-      if($c =~ /^(gzip|xz) /) {
+      my $c = get_archive_type fname($boot->{$b}{initrd});
+      if($c =~ /\.(gz|xz)$/) {
         if($f) {
           die "differing initrd formats: $f & $1\n" if $1 ne $f;
         }
@@ -1512,9 +1475,9 @@ sub extract_installkeys
       my $f = fname($boot->{$b}{initrd});
       if(-f $f) {
         my $tmp_dir = $tmp->dir();
-        my $cmds = get_unpack_commands $f, $tmp_dir;
-        if($cmds) {
-          system join(' | ', @$cmds);
+        my $type = get_archive_type $f;
+        if($type) {
+          unpack_archive $type, $f, $tmp_dir;
           if(-f "$tmp_dir/installkey.gpg") {
             $initrd_installkeys = "$tmp_dir/installkey.gpg";
             print "old style initrd found\n" if $opt_verbose >= 1;
@@ -1993,5 +1956,210 @@ sub sign_content
   print "re-signing '/content'\n" if $opt_verbose >= 1;
 
   system "gpg --homedir=$sign_key_dir --batch --yes --armor --detach-sign $c";
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# Run 'file' system command.
+#
+# result = file_magic(file, pipe)
+#
+# -   file: the input file, or '-' if pipe is set
+# -   pipe: (if set) the command to read from
+# - result: everything 'file' returns
+#
+sub file_magic
+{
+  my $type = "file -b -k -L $_[0] 2>/dev/null";
+  $type = "$_[1] | $type" if $_[1];
+
+  return `$type`;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# Get archive type;
+#
+# type = get_archive_type(file)
+#
+# - file: the archive name
+# - type: something like 'tar.xz' or undef if the archive is unsupported.
+#
+sub get_archive_type
+{
+  my $file = $_[0];
+  my $type;
+  my $cmd;
+
+  my $orig = $file;
+
+  if(-d $file) {
+    return 'dir';
+  }
+
+  if(! -f $file) {
+    return undef;
+  }
+
+  do {
+    my $t = file_magic $file, $cmd;
+
+    if($t =~ /^RPM/) {
+      $type = "cpio.rpm$type";
+    }
+    elsif($t =~ / (cpio|tar) archive/) {
+      $type = "$1$type";
+    }
+    elsif($t =~ /^(gzip|XZ) compressed data/) {
+      my $c = "\L$1";
+      if($cmd) {
+        $cmd .= " | $c -dc";
+      }
+      else {
+        $cmd = "$c -dc '$file'";
+      }
+      $file = "-";
+      $type = "." . ($c eq 'gzip' ? 'gz' : 'xz') . "$type";
+    }
+    else {
+      die "$orig: unsupported archive format\n";
+    }
+  } while($type =~ /^\./);
+
+  return $type;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# Unpack cpio archive.
+#
+# unpack_cpio(dir, file, part)
+#
+# -  dir: the directory to unpack to
+# - file: the archive file name
+# - part: the part number of a multipart archive (kernel initramfs-like)
+#         (0 = unpack all)
+#
+sub unpack_cpio
+{
+  my $dst = shift;
+  my $file = shift;
+  my $part = shift() + 0;
+
+  my ($p, $buf_size, $buf, $cnt);
+
+  my $cpio_cmd = 'cpio --quiet -dmiu --sparse --no-absolute-filenames 2>/dev/null';
+
+  $cnt = 1;
+  $buf_size = 1 << 16;
+
+  if(open my $f, $file) {
+    while(sysread($f, $buf, $buf_size, length $buf) > 0) {
+      # printf STDERR "read buf = %d\n", length $buf;
+
+      for(my $i = 0; $i < length($buf); $i += 512) {
+        # printf STDERR "buf = %d, i = %d\n", length($buf), $i;
+        if(substr($buf, $i, 512) =~ /TRAILER!!!\x00*$/) {
+          # printf STDERR "end = %d, writing %d\n", $i, $i + 512;
+          open $p, "| ( cd $dst ; $cpio_cmd )" if !$p && ($part == 0 || $part == $cnt);
+          if($p) {
+            syswrite $p, substr($buf, 0, $i + 512);
+            close $p;
+            undef $p;
+          }
+          substr($buf, 0, $i + 512) = "";
+          $i = -512;
+          $cnt++;
+        }
+      }
+      if(length($buf)) {
+        # printf STDERR "writing %d\n", length($buf);
+        open $p, "| ( cd $dst ; $cpio_cmd )" if !$p && ($part == 0 || $part == $cnt);
+        syswrite $p, $buf if $p;
+        $buf = "";
+      }
+    }
+
+    close $p if $p;
+
+    close $f;
+  }
+  else {
+    die "failed to read file\n";
+  }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# Unpack archive file.
+#
+# unpack_archive(type, file, dir, part)
+#
+# - type: a type sring as returned by get_archive_type
+# - file: the archive
+# -  dir: the directory to unpack to
+# - part: is the part number of a multipart archive (0 = unpack all)
+#
+sub unpack_archive
+{
+  my $type = $_[0];
+  my $file = $_[1];
+  my $dir = $_[2];
+  my $part = $_[3];
+
+  return undef if $type eq '';
+
+  my $cmd;
+  my $cpio;
+
+  if($type eq 'dir') {
+    $cmd = "tar -C '$file' -cf - .";
+    $type = 'tar';
+  }
+
+  for (reverse split /\./, $type) {
+    if(/^(gz|xz|rpm)$/) {
+      my $c;
+      if($1 eq 'gz') {
+        $c = 'gzip -dc';
+      }
+      elsif($1 eq 'xz') {
+        $c = 'xz -dc';
+      }
+      else {
+        $c = 'rpm2cpio';
+      }
+      if($cmd) {
+        $cmd .= " | $c";
+      }
+      else {
+        $cmd = "$c '$file'";
+      }
+    }
+    elsif($_ eq 'tar') {
+      $cmd = "cat '$file'" if !$cmd;
+      $cmd .= " | tar -C '$dir' -xpf - 2>/dev/null";
+      last;
+    }
+    elsif($_ eq 'cpio') {
+      if(!$cmd) {
+        $cmd = $file;
+      }
+      else {
+        $cmd .= " |";
+      }
+      $cpio = 1;
+      last;
+    }
+  }
+
+  if($cpio) {
+    # print STDERR "unpack_cpio($cmd)\n";
+    unpack_cpio $dir, $cmd, $part;
+  }
+  else {
+    # print STDERR "$cmd\n";
+    system $cmd;
+  }
 }
 
