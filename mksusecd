@@ -164,6 +164,7 @@ sub extract_installkeys;
 sub create_cd_ikr;
 sub isolinux_add_option;
 sub grub2_add_option;
+sub yaboot_add_option;
 sub update_boot_options;
 sub prepare_normal;
 sub prepare_micro;
@@ -294,6 +295,7 @@ my $sign_key_dir;
 my $initrd_installkeys;
 my $initrd_format;
 my $rebuild_initrd;
+my $hybrid_part_type;
 
 my $progress_start = 0;
 my $progress_end = 100;
@@ -649,15 +651,32 @@ sub analyze_boot
       if(-f fname("boot/$_/grub2/cd.img")) {
         $boot->{$_}{bl}{grub2} = { base => "boot/$_/grub2", file => "cd.img", arch => $_ };
       }
+      if(-f fname("boot/$_/grub2-ieee1275/core.elf")) {
+        $boot->{$_}{bl}{grub2} = { base => "boot/$_/grub2-ieee1275", file => "core.elf", arch => $_ };
+      }
       if(-f fname("boot/$_/efi")) {
         $boot->{$_}{bl}{efi} = { base => "boot/$_/efi", arch => $_ };
       }
+      if(-f fname("ppc/bootinfo.txt")) {
+        $boot->{$_}{bl}{chrp} = { base => "ppc", arch => $_ };
+      }
     }
-    if(-f fname("ppc/bootinfo.txt")) {
-      $boot->{ppc} = { base => "ppc", arch => $_ };
-      # ...
+
+    if(-f fname("suseboot/linux64")) {
+      $boot->{ppc64} = { base => "suseboot", arch => "ppc64", kernel => "suseboot/linux64"};
+      $boot->{ppc64}{initrd} = "suseboot/initrd64" if -f fname("suseboot/initrd64");
+      if(-f fname("ppc/bootinfo.txt")) {
+        $boot->{ppc64}{bl}{yaboot} = { base => "suseboot", file => "suseboot/yaboot.ibm", arch => "ppc64" };
+        $boot->{ppc64}{bl}{chrp} = { base => "ppc", arch => "ppc64" };
+      }
     }
   }
+
+  # sanitize; kiwi creates stray directories
+  for (keys %$boot) {
+    delete $boot->{$_} unless $boot->{$_}{kernel} && $boot->{$_}{initrd};
+  }
+
   if(-d fname("EFI/BOOT")) {
     $boot->{efi} = { base => "EFI/BOOT" };
   }
@@ -679,7 +698,11 @@ sub build_todo
     if($boot->{$_}{bl}{isolinux} && (!$opt_loader || $opt_loader eq "isolinux")) {
       push @legacy_eltorito, { eltorito => $boot->{$_}{bl}{isolinux} };
     }
-    if($boot->{$_}{bl}{grub2} && (!$opt_loader || $opt_loader eq "grub")) {
+    if(
+      $boot->{$_}{bl}{grub2} &&
+      !$boot->{$_}{bl}{chrp} &&
+      (!$opt_loader || $opt_loader eq "grub")
+    ) {
       push @legacy_eltorito, { eltorito => $boot->{$_}{bl}{grub2} };
     }
   }
@@ -704,6 +727,17 @@ sub build_todo
   for (sort keys %$boot) {
     if($boot->{$_}{bl}{ikr}) {
       push @$todo, { ikr => $boot->{$_}{bl}{ikr} };
+    }
+  }
+
+  # chrp: just ensure we get a proper partition table
+  for (sort keys %$boot) {
+    if($boot->{$_}{bl}{chrp}) {
+      print "CHRP bootable ($_)\n";
+      $hybrid_part_type = 0x96;
+      $opt_hybrid = 1;
+      $opt_hybrid_fs = "";
+      $two_runs = 0;
     }
   }
 
@@ -965,6 +999,8 @@ sub fix_catalog
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 sub relocate_catalog
 {
+  return unless $mkisofs->{fix_catalog};
+
   die "$iso_file: $!\n" unless open $iso_fh, "+<", $iso_file;
 
   my $vol_descr = read_sector 0x10;
@@ -1053,6 +1089,7 @@ sub run_isohybrid
   $opt .= " --uefi" if $has_efi;
   $opt .= " --gpt" if $opt_hybrid_gpt;
   $opt .= " --mbr" if $opt_hybrid_mbr;
+  $opt .= sprintf(" --type 0x%x", $hybrid_part_type) if $hybrid_part_type;
   $opt .= " --offset $mkisofs->{partition_start}" if $mkisofs->{partition_start};
 
   my $cmd = "isohybrid$opt $iso_file";
@@ -1586,6 +1623,26 @@ sub grub2_add_option
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub yaboot_add_option
+{
+  my $n = shift;
+  my $b = shift;
+
+  if(open my $f, $n) {
+    my @f = <$f>;
+    close $f;
+    for (@f) {
+      $_ = "$1$2 $b\"\n" if/^(\s*append\s*=\s*")\s*(.*?)\s*"\s*$/;
+    }
+    if(open my $f, ">", $n) {
+      print $f @f;
+      close $f;
+    }
+  }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 sub update_boot_options
 {
   return unless defined $opt_boot_options;
@@ -1600,6 +1657,10 @@ sub update_boot_options
     if($boot->{$b}{bl}{grub2}) {
       my $n = copy_file "$boot->{$b}{bl}{grub2}{base}/grub.cfg";
       grub2_add_option $n, $opt_boot_options;
+    }
+    if($boot->{$b}{bl}{yaboot}) {
+      my $n = copy_file "$boot->{$b}{bl}{yaboot}{base}/yaboot.cnf";
+      yaboot_add_option $n, $opt_boot_options;
     }
     if($boot->{$b}{bl}{efi}) {
       my $n = copy_file $boot->{$b}{bl}{efi}{base};
