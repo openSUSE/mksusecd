@@ -1,0 +1,5 @@
+isohybrid is taken from syslinux-4.04 with some patches applied.
+
+isohdpfx.c holds various mbr variants and is normally generated during the
+syslinux build. Here it is an unchanged copy from syslinux-4.04.
+

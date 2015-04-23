@@ -1092,7 +1092,11 @@ sub run_isohybrid
   $opt .= sprintf(" --type 0x%x", $hybrid_part_type) if $hybrid_part_type;
   $opt .= " --offset $mkisofs->{partition_start}" if $mkisofs->{partition_start};
 
-  my $cmd = "isohybrid$opt $iso_file";
+  # prefer our own isohybrid variant
+  my $cmd = "/usr/lib/mksusecd/isohybrid";
+  $cmd = "isohybrid" unless -x $cmd;
+
+  $cmd .= "$opt $iso_file";
 
   print "running:\n$cmd\n" if $opt_verbose >= 1;
 
