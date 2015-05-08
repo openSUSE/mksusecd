@@ -315,7 +315,7 @@ if($opt_create) {
     }
     elsif(-f _) {
       my $t = `file -b -k -L $_ 2>/dev/null`;
-      if($t =~ / ISO 9660 CD-ROM /) {
+      if($t =~ /ISO 9660 CD-ROM/) {
         check_root "Sorry, can't access ISO images; you need root privileges.";
         $iso_cnt++;
         my $d = $tmp->mnt(sprintf("mnt_%04d", $iso_cnt));
@@ -1913,7 +1913,8 @@ my $c = <<"= = = = = = = =";
 %no-ask-passphrase
 %no-protection
 %transient-key
-Key-Type: default
+Key-Type: RSA
+Key-Length: 2048
 Name-Real: mksusecd Signing Key
 Name-Comment: transient key
 %pubring mksusecd.pub
@@ -1922,6 +1923,7 @@ Name-Comment: transient key
 = = = = = = = =
 
   my $key;
+  my $is_gpg21;
 
   if($opt_sign_key) {
     $key = $opt_sign_key;
@@ -1929,11 +1931,15 @@ Name-Comment: transient key
     die "$key: no such key file\n" unless -f $key;
   }
   else {
-    if(open my $p, "| cd $gpg_dir ; gpg --no-tty --batch --armor --debug-quick-random --gen-key - 2>/dev/null") {
+    if(open my $p, "| cd $gpg_dir ; gpg --homedir=$gpg_dir --batch --armor --debug-quick-random --gen-key - 2>/dev/null") {
       print $p $c;
       close $p;
     }
     $key = "$gpg_dir/mksusecd.sec";
+    if(!-f $key) {
+      $key = "$gpg_dir/mksusecd.pub";
+      $is_gpg21 = 1;
+    }
   }
 
   my $keyid;
@@ -1951,7 +1957,7 @@ Name-Comment: transient key
     close $p;
   }
 
-  if($priv && $date) {
+  if(($priv || ($is_gpg21 && $pub)) && $date) {
     $sign_key_dir = $gpg_dir;
 
     system "gpg --homedir=$gpg_dir --import $key >/dev/null 2>&1";
