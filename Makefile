@@ -34,6 +34,7 @@ changelog: $(GITDEPS)
 install: isohybrid
 	@cp mksusecd mksusecd.tmp
 	@perl -pi -e 's/0\.0/$(VERSION)/ if /VERSION = /' mksusecd.tmp
+	@perl -pi -e 's#"(.*)"#"$(LIBDIR)"# if /LIBEXECDIR = /' mksusecd.tmp
 	install -m 755 -D mksusecd.tmp $(DESTDIR)$(BINDIR)/mksusecd
 	install -m 755 -D isohybrid $(DESTDIR)$(LIBDIR)/mksusecd/isohybrid
 	@rm -f mksusecd.tmp
