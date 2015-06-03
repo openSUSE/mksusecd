@@ -360,6 +360,8 @@ if($opt_create) {
   # print "todo = ", Dumper($todo);
   # print "mkisofs = ", Dumper($mkisofs);
 
+  # print Dumper($mkisofs->{exclude});
+
   if($two_runs) {
     if($opt_hybrid_fs eq 'iso') {
       $progress_end = 50;
@@ -604,7 +606,7 @@ sub build_filelist
     File::Find::find({
       wanted => sub {
         if(m#^$s->{dir}/(.+)#) {
-          push @{$mkisofs->{exclude}}, "$files->{$1}/$1" if $files->{$1};
+          push @{$mkisofs->{exclude}}, "$files->{$1}/$1" if $files->{$1} && -f "$files->{$1}/$1";
           $files->{$1} = $s->{dir};
         }
       },
@@ -1691,34 +1693,26 @@ sub update_boot_options
 # wipe files we really don't want
 sub prepare_normal
 {
-  my $p = $files->{boot};
-  # try harder, just in case
-  $p = $files->{suse} unless  defined $p;
+  # cleaning up KIWI isos a bit
+  for ( "glump" ) {
+    my $f = fname($_);
+    push @{$mkisofs->{exclude}}, $f if $f;
+  }
 
-  push @{$mkisofs->{exclude}}, (
-    "$p/glump",
-  );
+  push @{$mkisofs->{exclude}}, "TRANS.TBL";
 }
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 sub prepare_micro
 {
-  my $p = $files->{boot};
-  # try harder, just in case
-  $p = $files->{suse} unless  defined $p;
-
-  push @{$mkisofs->{exclude}}, "$p/suse/$_" for (@boot_archs, "i586", "noarch");
-
-  push @{$mkisofs->{exclude}}, (
-    "$p/docu",
-    "$p/ls-lR.gz",
-    "$p/INDEX.gz",
-    "$p/ARCHIVES.gz",
-    "$p/ChangeLog",
-    "$p/updates",
-    "$p/linux",
-  );
+  for (
+    (map { "suse/$_" } @boot_archs, "i586", "noarch"),
+    "docu", "ls-lR.gz", "INDEX.gz", "ARCHIVES.gz", "ChangeLog", "updates", "linux"
+  ) {
+    my $f = fname($_);
+    push @{$mkisofs->{exclude}}, $f if $f;
+  }
 }
 
 
@@ -1727,31 +1721,30 @@ sub prepare_nano
 {
   prepare_micro;
 
-  my $p = $files->{boot};
-  # try harder, just in case
-  $p = $files->{suse} unless  defined $p;
-
-  return unless defined $p;
-
-  push @{$mkisofs->{exclude}}, (
-    "$p/suse",
-    "$p/boot/*/*.rpm",
-    "$p/boot/*/bind",
-    "$p/boot/*/common",
-    "$p/boot/*/gdb",
-    "$p/boot/*/rescue",
-    "$p/boot/*/root",
-    "$p/boot/*/sax2",
-    "$p/boot/*/branding",
-    "$p/boot/*/openSUSE",
-    "$p/boot/*/SLES",
-    "$p/boot/*/SLED",
-    "$p/boot/*/*-xen",
-    "$p/control.xml",
-    "$p/gpg-*",
-    "$p/NEWS",
-    "TRANS.TBL",
+  my $ex = join "|", (
+    "boot/.*/.*\\.rpm",
+    "boot/.*/bind",
+    "boot/.*/common",
+    "boot/.*/gdb",
+    "boot/.*/rescue",
+    "boot/.*/root",
+    "boot/.*/sax2",
+    "boot/.*/branding",
+    "boot/.*/openSUSE",
+    "boot/.*/SLES",
+    "boot/.*/SLED",
+    "boot/.*/.*-xen",
+    "control.xml",
+    "gpg-.*",
+    "NEWS",
   );
+
+  for (sort keys %$files) {
+    if(m#^suse(/|$)|^$ex$#) {
+      my $f = fname($_);
+      push @{$mkisofs->{exclude}}, $f if $f;
+    }
+  }
 }
 
 
@@ -1760,21 +1753,32 @@ sub prepare_pico
 {
   prepare_nano;
 
-  my $p = $files->{boot};
-  # try harder, just in case
-  $p = $files->{suse} unless  defined $p;
-
-  return unless defined $p;
-
-  push @{$mkisofs->{exclude}}, (
-    "$p/boot/*/*/linux",
-    "$p/boot/*/*/initrd",
-    "$p/boot/*/*/biostest",
-    "$p/boot/*/*/en.tlk",
-    "$p/EFI",
-    "$p/boot/*/efi",
-    "$p/boot/*/grub2*",
+  my $ex = join "|", (
+    "boot/.*/linux",
+    "boot/.*/initrd",
+    "boot/.*/biostest",
+    "boot/.*/en.tlk",
   );
+
+  if(!$opt_efi) {
+    $ex .= "|" . join "|", (
+      "boot/.*/efi",
+      "boot/.*/grub2.*",
+    )
+  }
+
+  $ex = "^$ex\$";
+
+  if(!$opt_efi) {
+    $ex .= "|^EFI(/|\$)";
+  }
+
+  for (sort keys %$files) {
+    if(m#$ex#) {
+      my $f = fname($_);
+      push @{$mkisofs->{exclude}}, $f if $f;
+    }
+  }
 }
 
 
