@@ -364,7 +364,10 @@ if($opt_create) {
   $files = build_filelist;
   $boot = analyze_boot;
   get_initrd_format;
-  if($opt_sign && (@opt_initrds || update_content)) {
+  if($opt_sign && (
+    # we are going to change '/content' in one way or another
+    @opt_initrds || @opt_kernel_rpms || $opt_boot_options || $opt_new_boot_entry || update_content)
+  ) {
     extract_installkeys;
     create_sign_key;
     add_sign_key;
