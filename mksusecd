@@ -159,8 +159,10 @@ sub find_magic;
 sub meta_iso;
 sub meta_fat;
 sub create_initrd;
-sub update_initrd;
+sub get_kernel_initrd;
+sub update_kernel_initrd;
 sub get_initrd_format;
+sub unpack_orig_initrd;
 sub extract_installkeys;
 sub create_cd_ikr;
 sub isolinux_add_option;
@@ -180,6 +182,11 @@ sub file_magic;
 sub get_archive_type;
 sub unpack_cpio;
 sub unpack_archive;
+sub format_array;
+sub get_initrd_modules;
+sub build_module_list;
+sub add_modules_to_initrd;
+sub replace_kernel_mods;
 
 my %config;
 my $sudo;
@@ -207,6 +214,10 @@ my $opt_no_docs = 1;
 my $opt_loader;
 my $opt_sign = 1;
 my $opt_sign_key;
+my @opt_kernel_rpms;
+my @opt_kernel_modules;
+my $opt_arch;
+my $opt_new_boot_entry;
 
 GetOptions(
   'create|c=s'       => sub { $opt_create = 1; $opt_dst = $_[1] },
@@ -241,6 +252,10 @@ GetOptions(
   'application=s'    => \$opt_application,
   'no-docs'          => \$opt_no_docs,
   'keep-docs'        => sub { $opt_no_docs = 0 },
+  'kernel=s{1,}'     => \@opt_kernel_rpms,
+  'modules=s{1,}'    => \@opt_kernel_modules,
+  'arch=s'           => \$opt_arch,
+  'add-entry=s'      => \$opt_new_boot_entry,
   'save-temp'        => \$opt_save_temp,
   'verbose|v'        => sub { $opt_verbose++ },
   'version'          => sub { print "$VERSION\n"; exit 0 },
@@ -289,7 +304,10 @@ my $mkisofs = { command => 'genisoimage' };
 my $iso_file;
 my $iso_fh;
 my $two_runs;
+my $add_kernel;
 my $add_initrd;
+my $orig_initrd;
+my $initrd_has_parts;
 my $has_efi = 0;
 my $sign_key_pub;
 my $sign_key_dir;
@@ -297,12 +315,17 @@ my $initrd_installkeys;
 my $initrd_format;
 my $rebuild_initrd;
 my $hybrid_part_type;
+my $kernel;
 
 my $progress_start = 0;
 my $progress_end = 100;
 my $progress_txt = 'building:';
 
 if($opt_create) {
+#  if(@opt_kernel_rpms) {
+#    die "Sorry, you must run mksusecd as root to replace kernel modules." if $>;
+#  }
+
   # we might need two mkisofs runs...
   $two_runs = $opt_hybrid && $opt_hybrid_fs;
 
@@ -332,19 +355,26 @@ if($opt_create) {
     }
   }
 
-  die "no sources - nothing to do\n" unless @sources;
+  if(!@sources) {
+    my $msg = "no sources - nothing to do\n";
+    $msg .= "Maybe you forgot '--' after --kernel or --modules?\n" if @opt_kernel_rpms || @opt_kernel_modules;
+    die $msg;
+  }
 
   $files = build_filelist;
   $boot = analyze_boot;
   get_initrd_format;
-  update_boot_options;
   if($opt_sign && (@opt_initrds || update_content)) {
     extract_installkeys;
     create_sign_key;
     add_sign_key;
   }
+  if(@opt_kernel_rpms) {
+    replace_kernel_mods;
+  }
   $add_initrd = create_initrd;
-  update_initrd;
+  update_kernel_initrd;
+  update_boot_options;
   sign_content if update_content;
   $todo = build_todo;
   set_mkisofs_metadata;
@@ -453,6 +483,22 @@ Create ISO image:
                                 initrd (default).
       --keep-docs               Include package documentation when updating initrd.
       --boot OPTIONS            Add OPTIONS to default boot options.
+      --add-entry BOOT_ENTRY    Instead of modifying the default boot files, create a new
+                                boot entry. This also means that in case initrd or kernel
+                                have to be changed, the originals are not overwritten but
+                                new files added.
+                                BOOT_ENTRY is the name used for this new entry.
+      --kernel KERNEL_RPMS      Replace kernel and modules used for booting. KERNEL_RPMS is
+                                a list of rpms that contain the new kernel, modules, and
+                                firmware files.
+                                Note: this option takes a variable number of arguments. So
+                                it may be necessary to terminate the arg list with '--'.
+      --modules MODULE_LIST     A list of modules to be included additionally to the initrd.
+                                Use this in combination with --kernel.
+                                You can prefix module names with '-' to have them removed
+                                instead. MODULE_LIST may be space or comma separated.
+                                Note: this option takes a variable number of arguments. So
+                                it may be necessary to terminate the arg list with '--'.
       --grub2                   Use grub2 for El-Torito legacy setup (for debugging).
       --isolinux                Use isolinux for El-Torito legacy setup (for debugging).
       --micro                   Create an ISO with just enough files to test the
@@ -906,6 +952,9 @@ sub run_mkisofs
   print "$mkisofs->{command} sort file:\n", join("\n", @{$mkisofs->{sort}}), "\n" if $opt_verbose >= 3;
 
   print "$mkisofs->{command} exclude file:\n", join("\n", @{$mkisofs->{exclude}}), "\n" if $opt_verbose >= 3;
+
+  # seems to be necessary, else some changes are lost...
+  system "sync";
 
   if(open my $fh, "$cmd 2>&1 |") {
     $| = 1;
@@ -1463,19 +1512,98 @@ sub create_initrd
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-sub update_initrd
+#
+# Return hash with kernel/initrd pair used for booting.
+#
+sub get_kernel_initrd
 {
-  return if !$add_initrd;
+  my $x;
+  my $cnt;
 
   for my $b (sort keys %$boot) {
-    if($boot->{$b}{initrd}) {
-      my $n = copy_file $boot->{$b}{initrd};
-      if(-f $n) {
-        system "cat $add_initrd >> $n";
-      }
-      last;
+    next if $opt_arch && $opt_arch ne $_;
+    if($boot->{$b}{initrd} && $boot->{$b}{kernel}) {
+      $x = { initrd => $boot->{$b}{initrd}, kernel => $boot->{$b}{kernel}} if !$x;
+      $cnt++;
     }
   }
+
+  if($cnt > 1) {
+    print "warning: more than one kernel/initrd pair to choose from\n";
+    print "Using $x->{kernel} & $x->{initrd}.\n";
+    print "Try '--arch' option to select different ones.\n";
+  }
+
+  if($x->{kernel} =~ m#/s390x/#) {
+    die "sorry, --add-entry option does not work for s390x\n";
+  }
+
+  # look for potential initrd & kernel names
+  if($x && $opt_new_boot_entry) {
+    for (my $i = 1; $i < 100; $i++) {
+      my $ext = sprintf "_%02d", $i;
+      if(!fname("$x->{kernel}$ext") && !fname("$x->{initrd}$ext")) {
+        $x->{kernel_ext} = $ext;
+        $x->{initrd_ext} = $ext;
+        last;
+      }
+    }
+  }
+
+  return $x;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub update_kernel_initrd
+{
+  my $x = get_kernel_initrd;
+
+  return if !$x;
+
+  if($add_initrd) {
+    my $n = copy_file $x->{initrd};
+
+    if(my $ext = $x->{initrd_ext}) {
+      my $n = fname $x->{initrd};
+      if($n) {
+        system "cp '$n' '$n$ext'";
+        $files->{"$x->{initrd}$ext"} = $files->{$x->{initrd}};
+        $x->{initrd} .= $ext;
+        delete $x->{initrd_ext};
+      }
+    }
+
+    if(my $n = fname $x->{initrd}) {
+      system "cat '$add_initrd' >> '$n'";
+    }
+  }
+  else {
+    delete $x->{initrd_ext};
+  }
+
+  if($add_kernel) {
+    copy_file $x->{kernel};
+
+    if(my $ext = $x->{kernel_ext}) {
+      my $n = fname $x->{kernel};
+      if($n) {
+        system "cp '$n' '$n$ext'";
+        $files->{"$x->{kernel}$ext"} = $files->{$x->{kernel}};
+        $x->{kernel} .= $ext;
+        delete $x->{kernel_ext};
+      }
+    }
+
+    if(my $n = fname $x->{kernel}) {
+      system "cp '$add_kernel' '$n'";
+    }
+  }
+  else {
+    delete $x->{kernel_ext};
+  }
+
+  $kernel->{current} = $x;
 }
 
 
@@ -1486,20 +1614,18 @@ sub get_initrd_format
 
   return if $initrd_format;
 
-  for my $b (sort keys %$boot) {
-    if($boot->{$b}{initrd}) {
-      my $c = get_archive_type fname($boot->{$b}{initrd});
-      if($c =~ /\.(gz|xz)$/) {
-        if($f) {
-          die "differing initrd formats: $f & $1\n" if $1 ne $f;
-        }
-        else {
-          $f = $1;
-        }
+  if(my $x = get_kernel_initrd) {
+    my $c = get_archive_type fname($x->{initrd});
+    if($c =~ /\.(gz|xz)$/) {
+      if($f) {
+        die "differing initrd formats: $f & $1\n" if $1 ne $f;
       }
       else {
-        die "$boot->{$b}{initrd}: invalid initrd format\n"
+        $f = $1;
       }
+    }
+    else {
+      die "$x->{initrd}: invalid initrd format\n"
     }
   }
 
@@ -1510,26 +1636,43 @@ sub get_initrd_format
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub unpack_orig_initrd
+{
+  if(my $x = get_kernel_initrd) {
+    my $f = fname($x->{initrd});
+    if(-f $f) {
+      $orig_initrd = $tmp->dir();
+      my $type = get_archive_type $f;
+      if($type) {
+        unpack_archive $type, $f, $orig_initrd;
+        if(-d "$orig_initrd/parts") {
+          my $last_part;
+          $last_part = (glob "$orig_initrd/parts/??_*")[-1];
+          if($last_part =~ m#/(\d\d)_[^/]*$#) {
+            $initrd_has_parts = $1 + 1;
+          }
+        }
+      }
+      else {
+        undef $orig_initrd;
+      }
+    }
+  }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 sub extract_installkeys
 {
   return if !$opt_sign;
 
-  for my $b (sort keys %$boot) {
-    if($boot->{$b}{initrd}) {
-      my $f = fname($boot->{$b}{initrd});
-      if(-f $f) {
-        my $tmp_dir = $tmp->dir();
-        my $type = get_archive_type $f;
-        if($type) {
-          unpack_archive $type, $f, $tmp_dir;
-          if(-f "$tmp_dir/installkey.gpg") {
-            $initrd_installkeys = "$tmp_dir/installkey.gpg";
-            print "old style initrd found\n" if $opt_verbose >= 1;
-          }
-        }
-      }
-      last;
-    }
+  unpack_orig_initrd if !$orig_initrd;
+
+  die "initrd unpacking failed\n" if !$orig_initrd;
+
+  if(-f "$orig_initrd/installkey.gpg") {
+    $initrd_installkeys = "$orig_initrd/installkey.gpg";
+    print "old style initrd found\n" if $opt_verbose >= 1;
   }
 }
 
@@ -1598,11 +1741,63 @@ sub isolinux_add_option
 {
   my $n = shift;
   my $b = shift;
+  my $m = shift;
 
   if(open my $f, $n) {
     my @f = <$f>;
     close $f;
-    @f = map { chomp; $_ .= " $b" if /^\s*append\s.*initrd=/; "$_\n" } @f;
+
+    # if we should add a new entry, base it loosely on the 'linux' entry
+    if($opt_new_boot_entry) {
+      my %label;
+      my $ext;
+      my $comment;
+      for (@f) {
+        $label{$1} = 1 if /^\s*label\s+(\S+)/i;
+      }
+      # find first unused label
+      for (; $ext < 99; $ext++) {
+        last if !$label{"linux$ext"};
+      }
+      my $ent;
+      # and insert a new entry after the 'linux' entry
+      for (@f) {
+        if($ent && /^\s*$/) {
+          $_ .= $ent;
+          last;
+        }
+        elsif(/^\s*label\s+linux/i) {
+          $ent = "# install - $opt_new_boot_entry\nlabel linux$ext\n  menu label Installation - $opt_new_boot_entry\n";
+          my $k = $kernel->{current}{kernel};
+          $k =~ s#.*/##;
+          $ent .= "  kernel $k\n";
+          my $i = $kernel->{current}{initrd};
+          $i =~ s#.*/##;
+          $b = " $b" if $b;
+          $ent .= "  append initrd=$i splash=silent showopts$b\n\n";
+          $comment = "  linux" . sprintf("%-4s", $ext) . " - Installation - $opt_new_boot_entry";
+        }
+      }
+
+      if($m && $comment) {
+        if(open my $f, $m) {
+          local $/ = undef;
+          my $x = <$f>;
+          close $f;
+          $x =~ s/(^\s+linux\s+-\s.*)$/$1\n$comment/m;
+          if(open my $f, ">", $m) {
+            print $f $x;
+            close $f;
+          }
+        }
+      }
+    }
+    else {
+      if($b) {
+        @f = map { chomp; $_ .= " $b" if /^\s*append\s.*initrd=/; "$_\n" } @f;
+      }
+    }
+
     if(open my $f, ">", $n) {
       print $f @f;
       close $f;
@@ -1620,7 +1815,37 @@ sub grub2_add_option
   if(open my $f, $n) {
     my @f = <$f>;
     close $f;
-    @f = map { chomp; $_ .= " $b" if /^\s*linux(efi)?\s/; "$_\n" } @f;
+
+    # if we should add a new entry, base it loosely on the 'Installation' entry
+    if($opt_new_boot_entry) {
+      my $ent;
+      # insert a new entry after the 'Installation' entry
+      for (@f) {
+        if($ent) {
+          if(!/^\s*$/) {
+            $ent .= $_;
+            next;
+          }
+          $b = " $b" if $b;
+          $ent =~ s/'Installation'/'Installation - $opt_new_boot_entry'/;
+          my $k = $kernel->{current}{kernel};
+          $ent =~ s#(\slinux(efi)?\s+)(\S+)(.*?)\n#$1/$k$4$b\n#;
+          my $i = $kernel->{current}{initrd};
+          $ent =~ s#(\sinitrd(efi)?\s+)(\S+)#$1/$i#;
+          $_ .= $ent;
+          last;
+        }
+        elsif(/^\s*menuentry\s+'Installation'/) {
+          $ent .= $_;
+        }
+      }
+    }
+    else {
+      if($b) {
+        @f = map { chomp; $_ .= " $b" if /^\s*linux(efi)?\s/; "$_\n" } @f;
+      }
+    }
+
     if(open my $f, ">", $n) {
       print $f @f;
       close $f;
@@ -1634,13 +1859,57 @@ sub yaboot_add_option
 {
   my $n = shift;
   my $b = shift;
+  my $m = shift;
 
   if(open my $f, $n) {
     my @f = <$f>;
     close $f;
-    for (@f) {
-      $_ = "$1$2 $b\"\n" if/^(\s*append\s*=\s*")\s*(.*?)\s*"\s*$/;
+
+    # if we should add a new entry, base it loosely on the 'install' entry
+    if($opt_new_boot_entry) {
+      my %label;
+      my $ext;
+      my $comment;
+      for (@f) {
+        $label{$1} = 1 if /^\s*label=(\S+)/i;
+      }
+      # find first unused label
+      for (; $ext < 99; $ext++) {
+        last if !$label{"install$ext"};
+      }
+      my $ent;
+      # and append a new entry at the end
+
+      my $k = $kernel->{current}{kernel};
+      $k =~ s#.*/##;
+      my $i = $kernel->{current}{initrd};
+      $i =~ s#.*/##;
+      $b = " $b" if $b;
+      $ent = "image[64bit]=$k\n  label=install$ext\n  append=\"quiet sysrq=1$b\"\n  initrd=$i\n\n";
+      $comment = "  Type  \"install$ext\" to start Installation - $opt_new_boot_entry";
+
+      pop @f if $f[-1] =~ /^\s*$/;
+      push @f, $ent;
+
+      if($m && $comment) {
+        if(open my $f, $m) {
+          local $/ = undef;
+          my $x = <$f>;
+          close $f;
+          $x =~ s/(^\s*Type\s+"install"\s.*)$/$1\n$comment/m;
+          if(open my $f, ">", $m) {
+            print $f $x;
+            close $f;
+          }
+        }
+      }
     }
+    else {
+      if($b) {
+        $_ = "$1$2 $b\"\n" if/^(\s*append\s*=\s*")\s*(.*?)\s*"\s*$/;
+      }
+    }
+
     if(open my $f, ">", $n) {
       print $f @f;
       close $f;
@@ -1652,14 +1921,16 @@ sub yaboot_add_option
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 sub update_boot_options
 {
-  return unless defined $opt_boot_options;
+  return unless defined $opt_boot_options || $opt_new_boot_entry;
 
   # print Dumper($boot);
 
   for my $b (sort keys %$boot) {
     if($boot->{$b}{bl}{isolinux}) {
       my $n = copy_file "$boot->{$b}{bl}{isolinux}{base}/isolinux.cfg";
-      isolinux_add_option $n, $opt_boot_options;
+      my $m;
+      $m = copy_file "$boot->{$b}{bl}{isolinux}{base}/message" if $opt_new_boot_entry;
+      isolinux_add_option $n, $opt_boot_options, $m;
     }
     if($boot->{$b}{bl}{grub2}) {
       my $n = copy_file "$boot->{$b}{bl}{grub2}{base}/grub.cfg";
@@ -1667,7 +1938,9 @@ sub update_boot_options
     }
     if($boot->{$b}{bl}{yaboot}) {
       my $n = copy_file "$boot->{$b}{bl}{yaboot}{base}/yaboot.cnf";
-      yaboot_add_option $n, $opt_boot_options;
+      my $m;
+      $m = copy_file "$boot->{$b}{bl}{yaboot}{base}/yaboot.txt" if $opt_new_boot_entry;
+      yaboot_add_option $n, $opt_boot_options, $m;
     }
     if($boot->{$b}{bl}{efi}) {
       my $n = copy_file $boot->{$b}{bl}{efi}{base};
@@ -2236,6 +2509,313 @@ sub unpack_archive
   else {
     # print STDERR "$cmd\n";
     system $cmd;
+  }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# $string = format_array(\@list, $indentation)
+#
+# Return joined list values with line breaks added if it gets too long.
+#
+sub format_array
+{
+  my $ar = shift;
+  my $ind = shift;
+  my $x;
+
+  for (@$ar) {
+    if(!defined $x) {
+      $x = (" " x $ind) . $_;
+    }
+    else {
+      my $xx = $x;
+      $xx =~ s/^.*\n//s;
+      my $l1 = length($xx) + 3;
+      my $l2 = length($_);
+      if($l1 + $l2 > 79) {
+        $x .= ",\n" . (" " x $ind);
+      }
+      else {
+        $x .= ", ";
+      }
+      $x .= $_;
+    }
+  }
+
+  return $x;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub get_initrd_modules
+{
+  my $unpack_dir = $tmp->dir();
+
+  if(-l "$orig_initrd/modules") {
+    $_ = readlink "$orig_initrd/modules";
+    if(m#/modules/([^/]+)#) {
+      $kernel->{orig_version} = $1;
+    }
+  }
+
+  die "oops, incompatible initrd layout\n" unless $kernel->{orig_version};
+
+  if(-f "$orig_initrd/parts/00_lib") {
+    rmdir $unpack_dir;
+    system "unsquashfs -n -d $unpack_dir $orig_initrd/parts/00_lib >/dev/null 2>&1";
+  }
+
+  File::Find::find({
+    wanted => sub {
+      return if -l;	# we don't want links
+      if(m#([^/]+)\.ko$#) {
+        $kernel->{initrd_modules}{$1} = 1;
+      }
+      if(m#/module\.config$#) {
+        $kernel->{initrd_module_config} = $_;
+      }
+    },
+    no_chdir => 1
+  }, "$orig_initrd/modules/", $unpack_dir);
+
+  die "no initrd modules?\n" if !$kernel->{initrd_modules};
+  die "no module config?\n" if !$kernel->{initrd_module_config};
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub unpack_kernel_rpms
+{
+  $kernel->{dir} = $tmp->dir();
+
+  for (@opt_kernel_rpms) {
+    my $type = get_archive_type $_;
+    die "$_: don't know how to unpack this\n" if !$type;
+    unpack_archive $type, $_, $kernel->{dir};
+  }
+
+  $kernel->{version} = (glob "$kernel->{dir}/boot/System.map-*")[0];
+
+  if($kernel->{version} =~ m#/boot/System.map-([^/]+)#) {
+    $kernel->{version} = $1;
+  }
+  else {
+    die "Couldn't determine kernel version. No kernel package?\n";
+  }
+
+  $kernel->{image} = (glob "$kernel->{dir}/boot/vmlinuz-*")[0];
+  $kernel->{image} = (glob "$kernel->{dir}/boot/image-*")[0] if !$kernel->{image};
+  $kernel->{image} = (glob "$kernel->{dir}/boot/vmlinux-*")[0] if !$kernel->{image};
+
+  die "no module dir?\n" if $kernel->{version} eq "";
+  die "no kernel?\n" if !$kernel->{image};
+
+  for (glob "$kernel->{dir}/lib/modules/*") {
+    s#.*/##;
+    next if $_ eq $kernel->{version};
+    print "warning: kmp version mismatch, adjusting: $_ --> $kernel->{version}\n";
+    system "tar -C '$kernel->{dir}/lib/modules/$_' -cf - . | tar -C '$kernel->{dir}/lib/modules/$kernel->{version}' -xf -";
+  }
+
+  system "depmod -a -b $kernel->{dir} $kernel->{version}";
+
+  # print Dumper($kernel);
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub build_module_list
+{
+  my %mods_remove;
+
+  for my $m (@opt_kernel_modules) {
+    for (split /,/, $m) {
+      s/\.ko$//;
+      if(s/^-//) {
+        $mods_remove{$_} = 1;
+      }
+      else {
+        $kernel->{initrd_modules}{$_} = 2 if !$kernel->{initrd_modules}{$_};
+      }
+    }
+  }
+
+  die "no modules.dep\n" if !open my $f, "$kernel->{dir}/lib/modules/$kernel->{version}/modules.dep";
+
+  # get module paths
+  for (<$f>) {
+    my @i = split;
+    $i[0] =~ s/:$//;
+    if($i[0] =~ m#([^/]+)\.ko$#) {
+      $kernel->{modules}{$1} = $i[0];
+      # resolve module deps
+      if($kernel->{initrd_modules}{$1} && @i > 1) {
+        shift @i;
+        for my $m (@i) {
+          if($m =~ m#([^/]+)\.ko$#) {
+            $kernel->{initrd_modules}{$1} = 3 if !$kernel->{initrd_modules}{$1};
+          }
+        }
+      }
+    }
+  }
+
+  close $f;
+
+  $kernel->{new_dir} = $tmp->dir();
+
+  mkdir "$kernel->{new_dir}/lib", 0755;
+  mkdir "$kernel->{new_dir}/lib/modules", 0755;
+  mkdir "$kernel->{new_dir}/lib/modules/$kernel->{version}", 0755;
+  mkdir "$kernel->{new_dir}/lib/modules/$kernel->{version}/initrd", 0755;
+
+  for (sort keys %{$kernel->{initrd_modules}}) {
+    if($kernel->{modules}{$_} && !$mods_remove{$_}) {
+      system "cp $kernel->{dir}/lib/modules/$kernel->{version}/$kernel->{modules}{$_} $kernel->{new_dir}/lib/modules/$kernel->{version}/initrd";
+      push @{$kernel->{added}}, $_ if $kernel->{initrd_modules}{$_} > 1;
+    }
+    else {
+      push @{$kernel->{missing}}, $_;
+    }
+  }
+
+  system "depmod -a -b $kernel->{new_dir} $kernel->{version}";
+
+  # now get firmware files
+
+  my %fw;
+
+  for my $m (glob("$kernel->{new_dir}/lib/modules/$kernel->{version}/initrd/*.ko")) {
+    chomp $m;
+
+    my @l;
+    chomp(@l = `modinfo -F firmware $m`);
+
+    $m =~ s#.*/##;
+    $m =~ s#.ko$##;
+
+    $fw{$m} = [ @l ] if @l;
+  }
+
+  for my $m (sort keys %fw) {
+    for (@{$fw{$m}}) {
+      my $f;
+      $f = "$_" if -f "$kernel->{dir}/lib/firmware/$_";
+      $f = "$kernel->{version}/$_" if -f "$kernel->{dir}/lib/firmware/$kernel->{version}/$_";
+
+      if($f) {
+        system "install -m 644 -D $kernel->{dir}/lib/firmware/$f $kernel->{new_dir}/lib/firmware/$f";
+      }
+    }
+  }
+
+  # print Dumper(\%fw);
+
+  # adjust module.config file
+
+  if(open my $f, $kernel->{initrd_module_config}) {
+    $kernel->{module_config} = [ <$f> ];
+    close $f;
+
+    # print "got it\n";
+    # FIXME: adjust config
+
+    open my $f, ">$kernel->{new_dir}/lib/modules/$kernel->{version}/initrd/module.config";
+    print $f @{$kernel->{module_config}};
+    close $f;
+  }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub add_modules_to_initrd
+{
+  my $tmp_dir;
+
+  if($initrd_has_parts) {
+    $tmp_dir = $tmp->dir();
+
+    mkdir "$tmp_dir/parts", 0755;
+
+    my $p = sprintf "%02u_lib", $initrd_has_parts++;
+
+    mkdir "$tmp_dir/lib", 0755;
+    mkdir "$tmp_dir/lib/modules", 0755;
+    mkdir "$tmp_dir/lib/modules/$kernel->{version}", 0755;
+    mkdir "$tmp_dir/lib/modules/$kernel->{version}/initrd", 0755;
+
+    for ("loop.ko", "squashfs.ko") {
+      rename "$kernel->{new_dir}/lib/modules/$kernel->{version}/initrd/$_", "$tmp_dir/lib/modules/$kernel->{version}/initrd/$_";
+    }
+
+    system "mksquashfs $kernel->{new_dir} $tmp_dir/parts/$p -comp xz -noappend -no-progress >/dev/null 2>&1";
+  }
+  else {
+    $tmp_dir = $kernel->{new_dir};
+  }
+
+  # add module symlink
+
+  symlink "lib/modules/$kernel->{version}/initrd", "$tmp_dir/modules";
+
+  my $cmd = "Exec:\t\tln -snf lib/modules/`uname -r`/initrd /modules\n";
+
+  if(open my $f, "$orig_initrd/linuxrc.config") {
+    my $cmd_found;
+    my @lines;
+    while(<$f>) {
+      push @lines, $_;
+      $cmd_found = 1 if $_ eq $cmd;
+    }
+    close $f;
+
+    if(!$cmd_found) {
+      open my $f, ">$tmp_dir/linuxrc.config";
+      print $f $cmd;
+      print $f @lines;
+      close $f;
+    }
+  }
+
+  push @opt_initrds, $tmp_dir;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub replace_kernel_mods
+{
+  my @modules;
+  my $unpack_dir;
+
+  unpack_orig_initrd if !$orig_initrd;
+
+  die "initrd unpacking failed\n" if !$orig_initrd;
+
+  get_initrd_modules;
+
+  unpack_kernel_rpms;
+
+  build_module_list;
+
+  print "kernel version: $kernel->{orig_version} --> $kernel->{version}\n";
+
+  if($kernel->{added}) {
+    print "kernel modules added:\n", format_array $kernel->{added}, 2;
+    print "\n";
+  }
+
+  if($kernel->{missing}) {
+    print "kernel modules missing:\n", format_array $kernel->{missing}, 2;
+    print "\n";
+  }
+
+  add_modules_to_initrd;
+
+  # now replace kernel
+
+  if(my $x = get_kernel_initrd) {
+    $add_kernel = $kernel->{image};
   }
 }
 
