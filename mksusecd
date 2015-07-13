@@ -181,7 +181,7 @@ sub add_sign_key;
 sub sign_content;
 sub file_magic;
 sub get_archive_type;
-sub unpack_cpio;
+sub unpack_cpiox;
 sub unpack_archive;
 sub format_array;
 sub get_initrd_modules;
@@ -351,8 +351,11 @@ if($opt_create) {
         die "$_: unsupported source type\n";
       }
     }
-    else {
+    elsif(-e _) {
       die "$_: unsupported source type\n";
+    }
+    else {
+      die "$_: no such file or directory\n";
     }
   }
 
@@ -2421,7 +2424,10 @@ sub get_archive_type
     if($t =~ /^RPM/) {
       $type = "cpio.rpm$type";
     }
-    elsif($t =~ / (cpio|tar) archive/) {
+    elsif($t =~ /^ASCII cpio archive \(SVR4/) {
+      $type = "cpiox$type";
+    }
+    elsif($t =~ /\b(cpio|tar) archive/) {
       $type = "$1$type";
     }
     elsif($t =~ /^(gzip|XZ) compressed data/) {
@@ -2440,6 +2446,8 @@ sub get_archive_type
     }
   } while($type =~ /^\./);
 
+  # print "$file = $type\n";
+
   return $type;
 }
 
@@ -2447,56 +2455,99 @@ sub get_archive_type
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # Unpack cpio archive.
 #
-# unpack_cpio(dir, file, part)
+# unpack_cpiox(dir, file, part)
 #
 # -  dir: the directory to unpack to
 # - file: the archive file name
 # - part: the part number of a multipart archive (kernel initramfs-like)
 #         (0 = unpack all)
 #
-sub unpack_cpio
+sub unpack_cpiox
 {
   my $dst = shift;
   my $file = shift;
   my $part = shift() + 0;
 
-  my ($p, $buf_size, $buf, $cnt);
+  my ($f, $p, $buf, $cnt, $len, $magic, $head, $fname_len, $data_len, $fname, $ofs);
 
   my $cpio_cmd = 'cpio --quiet -dmiu --sparse --no-absolute-filenames 2>/dev/null';
 
   $cnt = 1;
-  $buf_size = 1 << 16;
 
-  if(open my $f, $file) {
-    while(sysread($f, $buf, $buf_size, length $buf) > 0) {
-      # printf STDERR "read buf = %d\n", length $buf;
+  sub read_write
+  {
+    my $len = $_[0];
+    my $read;
 
-      for(my $i = 0; $i < length($buf); $i += 512) {
-        # printf STDERR "buf = %d, i = %d\n", length($buf), $i;
-        if(substr($buf, $i, 512) =~ /TRAILER!!!\x00*$/) {
-          # printf STDERR "end = %d, writing %d\n", $i, $i + 512;
-          open $p, "| ( cd $dst ; $cpio_cmd )" if !$p && ($part == 0 || $part == $cnt);
-          if($p) {
-            syswrite $p, substr($buf, 0, $i + 512);
-            close $p;
-            undef $p;
-          }
-          substr($buf, 0, $i + 512) = "";
-          $i = -512;
-          $cnt++;
-        }
-      }
-      if(length($buf)) {
-        # printf STDERR "writing %d\n", length($buf);
-        open $p, "| ( cd $dst ; $cpio_cmd )" if !$p && ($part == 0 || $part == $cnt);
-        syswrite $p, $buf if $p;
-        $buf = "";
+    undef $buf;
+
+    open $p, "| ( cd $dst ; $cpio_cmd )" if !$p && ($part == 0 || $part == $cnt);
+
+    return $len if !$len;
+
+    while($len) {
+      my $x = sysread $f, substr($buf, length $buf), $len;
+      last if !$x;
+      $read += $x;
+      $len -= $x;
+    };
+
+    syswrite $p, $buf, $read if $read && $p;
+
+    return $read;
+  }
+
+  if(open $f, $file) {
+    while(($len = read_write(110)) == 110) {
+      $ofs += 110;
+
+      # printf "header = \"%s\" %d\n", $buf, length($buf);
+
+      $magic = substr($buf, 0, 6);
+      $head = substr($buf, 6);
+
+      $fname_len = hex substr $buf, 94, 8;
+      $data_len = hex substr $buf, 54, 8;
+
+      # print "$magic - $fname_len - $data_len\n";
+
+      die "broken cpio header\n" if $magic ne "070701" && $magic ne "070702";
+
+      $fname_len += (2, 1, 0, 3)[$fname_len & 3];
+      $data_len = (($data_len + 3) & ~3);
+
+      read_write $fname_len;
+      $fname = $buf;
+      $fname =~ s/\x00*$//;
+
+      read_write $data_len;
+
+      $ofs += $fname_len + $data_len;
+
+      # print "fname = \"$fname\"\n";
+
+      # printf "ofs = 0x%x\n", $ofs;
+
+      if(
+        $fname eq 'TRAILER!!!' &&
+        $head eq '00000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000B00000000'
+      ) {
+        my $pad = ($ofs + 0x1ff) & ~0x1ff;
+        read_write $pad - $ofs;
+        $ofs = $pad;
+        $cnt++;
+        close $p if $p;
+        undef $p;
       }
     }
 
     close $p if $p;
 
     close $f;
+
+    if($len) {
+      die "error reading cpio archive $len\n";
+    }
   }
   else {
     die "failed to read file\n";
@@ -2524,7 +2575,7 @@ sub unpack_archive
   return undef if $type eq '';
 
   my $cmd;
-  my $cpio;
+  my $cpiox;
 
   if($type eq 'dir') {
     $cmd = "tar -C '$file' -cf - .";
@@ -2556,20 +2607,28 @@ sub unpack_archive
       last;
     }
     elsif($_ eq 'cpio') {
+      $cmd = "cat '$file'" if !$cmd;
+      $cmd .= " | ( cd '$dir' ; cpio --quiet -dmiu --sparse --no-absolute-filenames 2>/dev/null )";
+      last;
+    }
+    elsif($_ eq 'cpiox') {
       if(!$cmd) {
         $cmd = $file;
       }
       else {
         $cmd .= " |";
       }
-      $cpio = 1;
+      $cpiox = 1;
       last;
     }
   }
 
-  if($cpio) {
-    # print STDERR "unpack_cpio($cmd)\n";
-    unpack_cpio $dir, $cmd, $part;
+  # cpiox = concatenated compressed cpio archives as the kernel uses for initrd
+  # must be SVR4 ASCII format, with or without CRC ('cpio -H newc')
+  # in this case we have to parse the cpio stream and handle the 'TRAILER!!!' entries
+  if($cpiox) {
+    # print STDERR "unpack_cpiox($cmd)\n";
+    unpack_cpiox $dir, $cmd, $part;
   }
   else {
     # print STDERR "$cmd\n";
