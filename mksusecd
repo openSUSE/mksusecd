@@ -317,6 +317,7 @@ my $initrd_format;
 my $rebuild_initrd;
 my $hybrid_part_type;
 my $kernel;
+my $warned;
 
 my $progress_start = 0;
 my $progress_end = 100;
@@ -1535,13 +1536,14 @@ sub get_kernel_initrd
     }
   }
 
-  if($cnt > 1) {
-    print "warning: more than one kernel/initrd pair to choose from\n";
+  if($cnt > 1 && !$warned->{multi_arch}) {
+    $warned->{multi_arch} = 1;
+    print "Warning: more than one kernel/initrd pair to choose from\n";
+    print "(Use '--arch' option to select a different one.)\n";
     print "Using $x->{kernel} & $x->{initrd}.\n";
-    print "Try '--arch' option to select different ones.\n";
   }
 
-  if($x->{kernel} =~ m#/s390x/#) {
+  if($opt_new_boot_entry && $x->{kernel} =~ m#/s390x/#) {
     die "sorry, --add-entry option does not work for s390x\n";
   }
 

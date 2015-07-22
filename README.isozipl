@@ -1,0 +1,11 @@
+isozipl is a script that makes an iso image zIPL bootable.
+
+The script uses a pre-compiled binary blob (stage3 of the scsi loader) from
+the zipl command from the s390-tools-1.24.1 package, compiled on s390x.
+
+See COPYING_zipl for license details.
+
+You can get the sources here:
+
+http://www.ibm.com/developerworks/linux/linux390/s390-tools.html
+
