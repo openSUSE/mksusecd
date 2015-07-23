@@ -1,0 +1,27 @@
+--- zipl/src/zipl.c	2010-07-16 13:48:46.000000000 +0200
++++ zipl/src/zipl.c	2015-07-23 11:41:00.251231947 +0200
+@@ -27,6 +27,11 @@
+ #include "misc.h"
+ #include "zt_common.h"
+ 
++/* Include declarations for boot_data symbols. */
++#include "../boot/data.h"
++
++#define DATA_SIZE(x)    ((size_t) (&_binary_##x##_bin_size))
++#define DATA_ADDR(x)    (&_binary_##x##_bin_start)
+ 
+ /* Flag deciding the level of verbosity */
+ int verbose = 0;
+@@ -99,6 +104,12 @@
+ {
+ 	printf("%s version %s\n", tool_name, RELEASE_STRING);
+ 	printf("%s\n", copyright_notice);
++
++        void *data = DATA_ADDR(stage3);
++        unsigned size = DATA_SIZE(stage3);
++
++        printf("data = 0x%x, size = 0x%x\n", data, size);
++        write(3, data, size);
+ }
+ 
+ 
