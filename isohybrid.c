@@ -72,6 +72,13 @@ uint32_t c = 0;
 off_t iso_size = 0;
 off_t iso_filesize = 0;
 
+struct {
+  unsigned no_mbr:1;		/* gpt: don't write protective mbr */
+  unsigned no_code:1;		/* no mbr boot code */
+  unsigned no_chs:1;		/* fill in 0xffffff instead of real chs values */
+} opt;
+
+
 /* boot catalogue parameters */
 uint32_t de_lba = 0;
 uint16_t de_seg = 0, de_count = 0, de_mbz2 = 0;
@@ -242,6 +249,9 @@ printh(void)
     printf(FMT, "   -m --mac", "Add AFP table support");
     printf(FMT, "   --gpt", "Force GPT");
     printf(FMT, "   --mbr", "Force MBR");
+    printf(FMT, "   --no-mbr", "Don't write protective MBR for GPT");
+    printf(FMT, "   --no-code", "Don't include MBR boot code");
+    printf(FMT, "   --no-chs", "Don't fill in CHS values, use 0xffffff instead");
 
     printf("\n");
     printf(FMT, "   --forcehd0", "Assume we are loaded as disk ID 0");
@@ -273,6 +283,9 @@ check_option(int argc, char *argv[])
         { "id", required_argument, NULL, 'i' },
         { "gpt", no_argument, NULL, 1001 },
         { "mbr", no_argument, NULL, 1002 },
+        { "no-mbr", no_argument, NULL, 1003 },
+        { "no-code", no_argument, NULL, 1004 },
+        { "no-chs", no_argument, NULL, 1005 },
 
         { "forcehd0", no_argument, NULL, 'f' },
         { "ctrlhd0", no_argument, NULL, 'c' },
@@ -358,6 +371,18 @@ check_option(int argc, char *argv[])
 
         case 1002:
             mode |= MODE_MBR;
+            break;
+
+        case 1003:
+            opt.no_mbr = 1;
+            break;
+
+        case 1004:
+            opt.no_code = 1;
+            break;
+
+        case 1005:
+            opt.no_chs = 1;
             break;
 
         case 'V':
@@ -585,6 +610,8 @@ uint32_t ofs2chs(uint32_t ofs)
 {
   unsigned c, h, s;
 
+  if(opt.no_chs) return 0xffffff00;
+
   s = (ofs % sector) + 1;
   h = (ofs / sector) % head;
   c = ofs / (sector * head);
@@ -600,9 +627,11 @@ initialise_mbr(uint8_t *mbr)
     uint32_t tmp = 0, chs;
     uint8_t *rbm = mbr;
 
+    if(opt.no_mbr) return 0x200;
+
     extern unsigned char isohdpfx[][MBRSIZE];
 
-    if (catoffset) memcpy(mbr, &isohdpfx[hd0 + 3 * partok], MBRSIZE);
+    if (catoffset && !opt.no_code) memcpy(mbr, &isohdpfx[hd0 + 3 * partok], MBRSIZE);
 
     if (mode & MAC) {
         memcpy(mbr, afp_header, sizeof(afp_header));
@@ -611,7 +640,7 @@ initialise_mbr(uint8_t *mbr)
     mbr += MBRSIZE;                                 /* offset 432 */
 
     tmp = lendian_int(de_lba * 4);
-    memcpy(mbr, &tmp, sizeof(tmp));
+    if(!opt.no_code) memcpy(mbr, &tmp, sizeof(tmp));
     mbr += sizeof(tmp);                             /* offset 436 */
 
     tmp = 0;

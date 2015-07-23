@@ -154,6 +154,7 @@ sub fix_catalog;
 sub relocate_catalog;
 sub rerun_mkisofs;
 sub run_isohybrid;
+sub run_isozipl;
 sub isols;
 sub find_magic;
 sub meta_iso;
@@ -202,6 +203,10 @@ my $opt_hybrid = 1;
 my $opt_hybrid_fs = 'iso';
 my $opt_hybrid_gpt;
 my $opt_hybrid_mbr;
+my $opt_no_prot_mbr;
+my $opt_no_mbr_code;
+my $opt_no_mbr_chs;
+my $opt_zipl;
 my $opt_check;
 my $opt_digest = 'sha1';
 my @opt_initrds;
@@ -240,10 +245,18 @@ GetOptions(
   'hybrid'           => \$opt_hybrid,
   'no-hybrid'        => sub { $opt_hybrid = 0 },
   'hybrid-fs=s'      => sub { $opt_hybrid = 1; $opt_hybrid_fs = $_[1] },
+  'protective-mbr'   => sub { $opt_no_prot_mbr = 0 },
+  'no-protective-mbr' => \$opt_no_prot_mbr,
+  'mbr-code'         => sub { $opt_no_mbr_code = 0 },
+  'no-mbr-code'      => \$opt_no_mbr_code,
+  'mbr-chs'          => sub { $opt_no_mbr_chs = 0 },
+  'no-mbr-chs'       => \$opt_no_mbr_chs,
   'initrd=s'         => \@opt_initrds,
   'boot=s'           => \$opt_boot_options,
   'grub2'            => sub { $opt_loader = "grub" },
   'isolinux'         => sub { $opt_loader = "isolinux" },
+  'zipl'             => \$opt_zipl,
+  'no-zipl'          => sub { $opt_zipl = 0 },
   'micro'            => sub { $opt_type = 'micro' },
   'nano'             => sub { $opt_type = 'nano' },
   'pico'             => sub { $opt_type = 'pico' },
@@ -419,6 +432,7 @@ if($opt_create) {
   relocate_catalog;
 
   run_isohybrid if $opt_hybrid;
+  run_isozipl if $opt_zipl;
 
   if(defined $opt_digest) {
     my $chk = $opt_check ? " --check" : "";
@@ -476,6 +490,12 @@ Create ISO image:
                                 Note that when both --mbr and --gpt are specified both
                                 MBR and GPT are written - which looks nice but is against
                                 the UEFi spec.
+      --prot-mbr                When writing a GPT, write a protective MBR (default).
+      --no-prot-mbr             When writing a GPT, don't write a protective MBR.
+      --mbr-code                Include x86 MBR boot code (default).
+      --no-mbr-code             Don't include x86 MBR boot code.
+      --mbr-chs                 Fill in sensible CHS values in MBR partition table (default).
+      --no-mbr-chs              Use 0xffffff instead of CHS values in MBR partition table.
       --hybrid                  Create an isohybrid image which is both an ISO and a
                                 regular disk image (default).
       --no-hybrid               Create a regular ISO image without extra gimmicks.
@@ -485,6 +505,8 @@ Create ISO image:
                                 image (partitioning tools don't really like this) or
                                 'iso' or 'fat' in which case you get a regular partition
                                 with an ISO960 or FAT file system (default: 'iso').
+      --zipl                    Make zIPL bootable (default on s390x).
+      --no-zipl                 Don't make zIPL bootable (default except on s390x).
       --initrd DIR|RPM|DUD      Add directory DIR or package RPM or driver update DUD
                                 to initrd.
       --no-docs                 Don't include package documentation when updating the
@@ -782,6 +804,22 @@ sub build_todo
 
   # s390 also uses el-torito 
   for (sort keys %$boot) {
+    if($_ eq 's390x') {
+      $opt_no_mbr_code = 1 if !defined $opt_no_mbr_code;
+      $opt_zipl = 1 if !defined $opt_zipl;
+      if($opt_zipl) {
+        if(!fname("boot/s390x/zipl.map")) {
+          # add zipl map file, if necessary
+          mkdir "$tmp_new/boot", 0755;
+          mkdir "$tmp_new/boot/s390x", 0755;
+          if(open my $f, ">$tmp_new/boot/s390x/zipl.map") {
+            syswrite $f, ("\x00" x 0x4000);	# 16k should be enough
+            close $f;
+          }
+        }
+        print "zIPL bootable (s390x)\n";
+      }
+    }
     if($boot->{$_}{bl}{ikr}) {
       push @$todo, { ikr => $boot->{$_}{bl}{ikr} };
     }
@@ -794,6 +832,8 @@ sub build_todo
       $hybrid_part_type = 0x96;
       $opt_hybrid = 1;
       $opt_hybrid_fs = "";
+      $opt_no_mbr_chs = 1 if !defined $opt_no_mbr_chs;
+      $opt_no_mbr_code = 1 if !defined $opt_no_mbr_code;
       $two_runs = 0;
     }
   }
@@ -1149,6 +1189,9 @@ sub run_isohybrid
   $opt .= " --uefi" if $has_efi;
   $opt .= " --gpt" if $opt_hybrid_gpt;
   $opt .= " --mbr" if $opt_hybrid_mbr;
+  $opt .= " --no-mbr" if $opt_no_prot_mbr;
+  $opt .= " --no-code" if $opt_no_mbr_code;
+  $opt .= " --no-chs" if $opt_no_mbr_chs;
   $opt .= sprintf(" --type 0x%x", $hybrid_part_type) if $hybrid_part_type;
   $opt .= " --offset $mkisofs->{partition_start}" if $mkisofs->{partition_start};
 
@@ -1171,6 +1214,34 @@ sub run_isohybrid
   print $_ if $opt_verbose >= 2 || !$ok;
 
   die "Error: isohybrid failed\n" if !$ok;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub run_isozipl
+{
+  my $opt;
+  my $ok;
+
+  # prefer our own isozipl variant
+  my $cmd = "$LIBEXECDIR/mksusecd/isozipl";
+  $cmd = "isozipl" unless -x $cmd;
+
+  $cmd .= " $iso_file";
+
+  print "running:\n$cmd\n" if $opt_verbose >= 1;
+
+  $ok = !system("$cmd 2>$tmp_err >&2");
+
+  if(open my $fh, "<", $tmp_err) {
+    local $/;
+    $_ = <$fh>;
+    close $fh;
+  }
+
+  print $_ if $opt_verbose >= 2 || !$ok;
+
+  die "Error: isozipl failed\n" if !$ok;
 }
 
 

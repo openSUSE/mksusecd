@@ -342,7 +342,7 @@ sub install_zipl
 
   if($opt_mapfile) {
     $f = find_file $opt_mapfile;
-    print "warning: mapping file $opt_mapfile not found on iso\n" if !$f;
+    print "warning: mapping file $opt_mapfile not found on iso\n" if !$f && $opt_verbose;
   }
 
   if($f) {
