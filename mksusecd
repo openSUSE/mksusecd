@@ -331,6 +331,7 @@ my $rebuild_initrd;
 my $hybrid_part_type;
 my $kernel;
 my $warned;
+my $read_write;
 
 my $progress_start = 0;
 my $progress_end = 100;
@@ -2547,7 +2548,7 @@ sub unpack_cpiox
 
   $cnt = 1;
 
-  sub read_write
+  $read_write = sub
   {
     my $len = $_[0];
     my $read;
@@ -2568,10 +2569,10 @@ sub unpack_cpiox
     syswrite $p, $buf, $read if $read && $p;
 
     return $read;
-  }
+  };
 
   if(open $f, $file) {
-    while(($len = read_write(110)) == 110) {
+    while(($len = &$read_write(110)) == 110) {
       $ofs += 110;
 
       # printf "header = \"%s\" %d\n", $buf, length($buf);
@@ -2589,11 +2590,11 @@ sub unpack_cpiox
       $fname_len += (2, 1, 0, 3)[$fname_len & 3];
       $data_len = (($data_len + 3) & ~3);
 
-      read_write $fname_len;
+      &$read_write($fname_len);
       $fname = $buf;
       $fname =~ s/\x00*$//;
 
-      read_write $data_len;
+      &$read_write($data_len);
 
       $ofs += $fname_len + $data_len;
 
@@ -2606,7 +2607,7 @@ sub unpack_cpiox
         $head eq '00000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000B00000000'
       ) {
         my $pad = ($ofs + 0x1ff) & ~0x1ff;
-        read_write $pad - $ofs;
+        &$read_write($pad - $ofs);
         $ofs = $pad;
         $cnt++;
         close $p if $p;
