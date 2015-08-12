@@ -314,7 +314,7 @@ my $files;
 my $boot;
 my $todo;
 my $iso_cnt = 0;
-my $mkisofs = { command => 'genisoimage' };
+my $mkisofs = { command => '/usr/bin/mkisofs' };
 my $iso_file;
 my $iso_fh;
 my $two_runs;
@@ -336,6 +336,10 @@ my $read_write;
 my $progress_start = 0;
 my $progress_end = 100;
 my $progress_txt = 'building:';
+
+$mkisofs->{command} = "/usr/bin/genisoimage" if ! -x $mkisofs->{command};
+
+die "mkisofs: command not found\n" if ! -x $mkisofs->{command};
 
 if($opt_create) {
 #  if(@opt_kernel_rpms) {
@@ -1074,13 +1078,29 @@ sub fix_catalog
 
   my @entry;
 
-  for (my $i = 0; $i < $entries; $i++) {
-    push @entry, substr $boot_catalog, 32 * ($i + 1), 32;
-    substr($entry[-1], 12, 20) = pack "Ca19", 1, $mkisofs->{fix_catalog}[$i];
-    if((unpack "C", $entry[-1])[0] != 0x88) {
+  # collect boot catalog entries
+  # depending on the mkisofs variant, the catalog may or may not be correct
+  # that is, have section headers (type 0x90, 0x91) or not
+
+  for (my $i = my $j = 0; $i < $entries; $j++) {
+    my $ent = substr $boot_catalog, 32 * ($j + 1), 32;
+    my $t = (unpack "C", $ent)[0];
+
+    next if $t == 0x90 || $t == 0x91;
+
+    if($t != 0x88) {
       die "$iso_file: boot entry $i: strange content\n";
     }
+
+    push @entry, $ent;
+    substr($entry[-1], 12, 20) = pack "Ca19", 1, $mkisofs->{fix_catalog}[$i];
+
+    $i++;
   }
+
+  # rewrite the boot catalog completely
+
+  substr($boot_catalog, 32) = "\x00" x (length($boot_catalog) - 32);
 
   substr($boot_catalog, 32 * 1, 32) = $entry[0];
 
