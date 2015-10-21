@@ -404,12 +404,13 @@ if($opt_create) {
   sign_content if update_content;
   $todo = build_todo;
   set_mkisofs_metadata;
-  prepare_mkisofs;
 
   prepare_normal;
   prepare_micro if $opt_type eq 'micro';
   prepare_nano if $opt_type eq 'nano';
   prepare_pico if $opt_type eq 'pico';
+
+  prepare_mkisofs;
 
   # print "sources = ", Dumper(\@sources);
   # print "boot = ", Dumper($boot);
@@ -840,6 +841,7 @@ sub build_todo
       $opt_no_mbr_chs = 1 if !defined $opt_no_mbr_chs;
       $opt_no_mbr_code = 1 if !defined $opt_no_mbr_code;
       $two_runs = 0;
+      $mkisofs->{options} .= " -U";	# untranslated filenames for ppc firmware
     }
   }
 
