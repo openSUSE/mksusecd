@@ -1603,7 +1603,9 @@ sub create_initrd
     print "initrd: linuxrc detected, renamed to /init\n";
   }
 
-  my $compr = $initrd_format eq "xz" ? "xz --check=crc32 -c" : "gzip -9c";
+  my $compr = 'cat';
+  $compr = "xz --check=crc32 -c" if $initrd_format eq "xz";
+  $compr = "gzip -9c" if $initrd_format eq "gz";
 
   system "( cd $tmp_dir; find . | cpio --quiet -o -H newc --owner 0:0 | $compr ) >> $tmp_initrd";
 
@@ -1728,7 +1730,8 @@ sub get_initrd_format
       }
     }
     else {
-      die "$x->{initrd}: invalid initrd format\n"
+      print STDERR "Warning: $x->{initrd}: uncompressed initrd\n";
+      $f = 'cat';
     }
   }
 
