@@ -2304,6 +2304,8 @@ sub update_content
     next if m#directory\.yast$#;
 
     add_to_content_file $cont, "KEY", $_, '^gpg-pubkey-';
+    add_to_content_file $cont, "HASH", $_, '^license.tar.gz$';
+    add_to_content_file $cont, "HASH", $_, '^control.xml$';
     add_to_content_file $cont, "HASH", $_, '^boot/[^/]+/[^/]+$';
     add_to_content_file $cont, "HASH", $_, '^boot/.+/initrd[^/.]*$';
     add_to_content_file $cont, "HASH", $_, '^boot/.+/linux[^/.]*$';
