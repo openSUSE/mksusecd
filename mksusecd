@@ -929,7 +929,7 @@ sub prepare_mkisofs
       my $f = fname($_->{$t}{base});
       my $s = -s $f;
       $s = (($s + 2047) >> 11) << 2;
-      $s = 1 if $s == 0 || $s >> 0xffff;
+      $s = 1 if $s == 0 || $s > 0xffff;
       push @{$mkisofs->{sort}}, "$f 1000001";
       $mkisofs->{options} .=
         " -eltorito-alt-boot -no-emul-boot -boot-load-size $s -b $_->{$t}{base}";
