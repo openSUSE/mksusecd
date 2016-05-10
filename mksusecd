@@ -2970,7 +2970,7 @@ sub add_modules_to_initrd
     mkdir "$tmp_dir/lib/modules/$kernel->{version}", 0755;
     mkdir "$tmp_dir/lib/modules/$kernel->{version}/initrd", 0755;
 
-    for ("loop.ko", "squashfs.ko") {
+    for ("loop.ko", "squashfs.ko", "lz4_decompress.ko") {
       rename "$kernel->{new_dir}/lib/modules/$kernel->{version}/initrd/$_", "$tmp_dir/lib/modules/$kernel->{version}/initrd/$_";
     }
 
