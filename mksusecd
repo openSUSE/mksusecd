@@ -144,6 +144,8 @@ sub susystem;
 sub fname;
 sub analyze_boot;
 sub build_todo;
+sub new_file;
+sub copy_or_new_file;
 sub copy_file;
 sub prepare_mkisofs;
 sub build_filelist;
@@ -850,6 +852,50 @@ sub build_todo
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# new_file(fname)
+#
+# Create a new empty file with name fname.
+#
+# Return full path to fname.
+#
+sub new_file
+{
+  my $fname = $_[0];
+  my $new_path = "$tmp_new/$fname";
+
+  if($fname =~ m#(.+)/([^/]+)#) {
+    system "mkdir -p '$tmp_new/$1'";
+  }
+
+  if(open my $x, ">$new_path") { close $x }
+
+  # update file location database
+  $files->{$fname} = $tmp_new;
+
+  return $new_path;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# copy_or_new_file(fname)
+#
+# Create a writable copy of fname or a new empty file if fname does not exist.
+#
+# Return full path to fname.
+#
+sub copy_or_new_file
+{
+  return copy_file($_[0]) || new_file($_[0]);
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# copy_file(fname)
+#
+# Create a writable copy of fname.
+#
+# Return full path to fname or undef if it does not exist.
+#
 sub copy_file
 {
   my $f = fname($_[0]);
@@ -2272,11 +2318,10 @@ sub update_content
 
   my $content_file = fname "content";
 
-  return unless defined $content_file;
-
   my $cont;
 
   # first, read file
+  # ($content_file may be undefined - which is ok)
   if(open(my $f, $content_file)) {
     while(<$f>) {
       next if /^\s*$/;
@@ -2329,7 +2374,7 @@ sub update_content
 
   # if something changed, write new file
   if($changed) {
-    my $n = copy_file "content";
+    my $n = copy_or_new_file "content";
 
     if($n) {
       if(open my $f, ">", $n) {
@@ -2464,8 +2509,7 @@ sub sign_content
   my $c = copy_file "content";
   return if !defined $c;
 
-  my $k = copy_file "content.key";
-  return if !defined $k;
+  my $k = copy_or_new_file "content.key";
 
   copy_file "content.asc";
 
