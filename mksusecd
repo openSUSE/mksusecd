@@ -172,6 +172,7 @@ sub isolinux_add_option;
 sub grub2_add_option;
 sub yaboot_add_option;
 sub update_boot_options;
+sub exclude_files;
 sub prepare_normal;
 sub prepare_micro;
 sub prepare_nano;
@@ -2129,15 +2130,44 @@ sub prepare_normal
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# Exclude files from iso.
+#
+# exclude_files(ref_to_file_list)
+#
+# ref_to_file_list is an array ref with file name patterns (regexp) to exclude
+#
+sub exclude_files
+{
+  my $list = $_[0];
+
+  my $ex = join "|", @$list;
+
+  for (sort keys %$files) {
+    if(m#^($ex)$#) {
+      my $f = fname($_);
+      push @{$mkisofs->{exclude}}, $f if $f;
+    }
+  }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 sub prepare_micro
 {
-  for (
+  exclude_files [
     (map { "suse/$_" } @boot_archs, "i586", "noarch"),
-    "docu", "ls-lR.gz", "INDEX.gz", "ARCHIVES.gz", "ChangeLog", "updates", "linux"
-  ) {
-    my $f = fname($_);
-    push @{$mkisofs->{exclude}}, $f if $f;
-  }
+    "docu",
+    "ls-lR\\.gz",
+    "INDEX\\.gz",
+    "ARCHIVES\\.gz",
+    "ChangeLog",
+    "updates",
+    "linux",
+    "images",
+    "autorun.inf",
+    ".*\\.ico",
+    ".*\\.exe",
+  ];
 }
 
 
@@ -2146,7 +2176,7 @@ sub prepare_nano
 {
   prepare_micro;
 
-  my $ex = join "|", (
+  exclude_files [
     "boot/.*/.*\\.rpm",
     "boot/.*/bind",
     "boot/.*/common",
@@ -2154,22 +2184,19 @@ sub prepare_nano
     "boot/.*/rescue",
     "boot/.*/root",
     "boot/.*/sax2",
+    "boot/.*/libstoragemgmt",
     "boot/.*/branding",
     "boot/.*/openSUSE",
     "boot/.*/SLES",
     "boot/.*/SLED",
     "boot/.*/.*-xen",
-    "control.xml",
+    "control\\.xml",
     "gpg-.*",
     "NEWS",
-  );
-
-  for (sort keys %$files) {
-    if(m#^suse(/|$)|^$ex$#) {
-      my $f = fname($_);
-      push @{$mkisofs->{exclude}}, $f if $f;
-    }
-  }
+    "license\\.tar\\.gz",
+    "(|.*/)directory\\.yast",
+    "suse",
+  ];
 }
 
 
@@ -2178,31 +2205,19 @@ sub prepare_pico
 {
   prepare_nano;
 
-  my $ex = join "|", (
+  exclude_files [
     "boot/.*/linux",
     "boot/.*/initrd",
     "boot/.*/biostest",
-    "boot/.*/en.tlk",
-  );
+    "boot/.*/en\\.tlk",
+  ];
 
   if(!$opt_efi) {
-    $ex .= "|" . join "|", (
+    exclude_files [
       "boot/.*/efi",
       "boot/.*/grub2.*",
-    )
-  }
-
-  $ex = "^$ex\$";
-
-  if(!$opt_efi) {
-    $ex .= "|^EFI(/|\$)";
-  }
-
-  for (sort keys %$files) {
-    if(m#$ex#) {
-      my $f = fname($_);
-      push @{$mkisofs->{exclude}}, $f if $f;
-    }
+      "EFI",
+    ]
   }
 }
 
