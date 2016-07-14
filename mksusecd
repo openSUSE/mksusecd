@@ -2371,6 +2371,7 @@ sub update_content
     add_to_content_file $cont, "HASH", $_, '^boot/.+/linux[^/.]*$';
     add_to_content_file $cont, "HASH", $_, '^docu/RELEASE-NOTES[^/]*$';
     add_to_content_file $cont, "META", $_, '^suse/setup/descr/[^/]+$';
+    add_to_content_file $cont, "HASH", $_, '^images/[^/]+\.(xz|xml)$';
   }
 
   # print Dumper($cont);
