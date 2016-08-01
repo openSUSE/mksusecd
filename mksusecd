@@ -2965,6 +2965,24 @@ sub build_module_list
     }
   }
 
+  # copy modules.order & modules.builtin
+
+  if(-f "$kernel->{dir}/lib/modules/$kernel->{version}/modules.builtin") {
+    system "cp $kernel->{dir}/lib/modules/$kernel->{version}/modules.builtin $kernel->{new_dir}/lib/modules/$kernel->{version}/";
+  }
+
+  if(open my $f, "$kernel->{dir}/lib/modules/$kernel->{version}/modules.order") {
+    if(open my $w, ">$kernel->{new_dir}/lib/modules/$kernel->{version}/modules.order") {
+      while(<$f>) {
+        chomp;
+        s#.*/#initrd/#;
+        print $w "$_\n" if -f "$kernel->{new_dir}/lib/modules/$kernel->{version}/$_";
+      }
+      close $w;
+    }
+    close $f;
+  }
+
   system "depmod -a -b $kernel->{new_dir} $kernel->{version}";
 
   # now get firmware files
