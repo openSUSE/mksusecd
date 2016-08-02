@@ -2848,7 +2848,9 @@ sub get_initrd_modules
 
   if(-f "$orig_initrd/parts/00_lib") {
     rmdir $unpack_dir;
-    system "unsquashfs -n -d $unpack_dir $orig_initrd/parts/00_lib >/dev/null 2>&1";
+    if(system "unsquashfs -n -d $unpack_dir $orig_initrd/parts/00_lib >/dev/null 2>&1") {
+      die "parts/00_lib: failed to unpack squashfs image - squashfs tools too old?\n";
+    }
   }
 
   File::Find::find({
@@ -2963,6 +2965,24 @@ sub build_module_list
     else {
       push @{$kernel->{missing}}, $_;
     }
+  }
+
+  # copy modules.order & modules.builtin
+
+  if(-f "$kernel->{dir}/lib/modules/$kernel->{version}/modules.builtin") {
+    system "cp $kernel->{dir}/lib/modules/$kernel->{version}/modules.builtin $kernel->{new_dir}/lib/modules/$kernel->{version}/";
+  }
+
+  if(open my $f, "$kernel->{dir}/lib/modules/$kernel->{version}/modules.order") {
+    if(open my $w, ">$kernel->{new_dir}/lib/modules/$kernel->{version}/modules.order") {
+      while(<$f>) {
+        chomp;
+        s#.*/#initrd/#;
+        print $w "$_\n" if -f "$kernel->{new_dir}/lib/modules/$kernel->{version}/$_";
+      }
+      close $w;
+    }
+    close $f;
   }
 
   system "depmod -a -b $kernel->{new_dir} $kernel->{version}";
