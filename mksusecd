@@ -2848,7 +2848,9 @@ sub get_initrd_modules
 
   if(-f "$orig_initrd/parts/00_lib") {
     rmdir $unpack_dir;
-    system "unsquashfs -n -d $unpack_dir $orig_initrd/parts/00_lib >/dev/null 2>&1";
+    if(system "unsquashfs -n -d $unpack_dir $orig_initrd/parts/00_lib >/dev/null 2>&1") {
+      die "parts/00_lib: failed to unpack squashfs image - squashfs tools too old?\n";
+    }
   }
 
   File::Find::find({
