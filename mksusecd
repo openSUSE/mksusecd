@@ -3269,7 +3269,8 @@ sub prepare_addon
   # strip chars we don't like to create an alias from addon name
   if($addon_alias eq "") {
     $addon_alias = $addon_name;
-    $addon_alias =~ tr/a-zA-Z0-9_//cd;
+    $addon_alias =~ s/\s+/_/g;
+    $addon_alias =~ tr/a-zA-Z0-9._\-//cd;
   }
 
   die "error: '$addon_name' is not a suitable add-on name, please choose a different one\n" if $addon_alias eq "";
