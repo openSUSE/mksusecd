@@ -157,6 +157,7 @@ sub relocate_catalog;
 sub rerun_mkisofs;
 sub run_isohybrid;
 sub run_isozipl;
+sub run_createrepo;
 sub isols;
 sub find_magic;
 sub meta_iso;
@@ -192,6 +193,8 @@ sub get_initrd_modules;
 sub build_module_list;
 sub add_modules_to_initrd;
 sub replace_kernel_mods;
+sub new_products_xml;
+sub prepare_addon;
 
 my %config;
 my $sudo;
@@ -227,6 +230,10 @@ my @opt_kernel_rpms;
 my @opt_kernel_modules;
 my $opt_arch;
 my $opt_new_boot_entry;
+my @opt_addon_packages;
+my $opt_addon_name;
+my $opt_addon_alias;
+my $opt_addon_prio = 60;
 
 GetOptions(
   'create|c=s'       => sub { $opt_create = 1; $opt_dst = $_[1] },
@@ -273,6 +280,10 @@ GetOptions(
   'modules=s{1,}'    => \@opt_kernel_modules,
   'arch=s'           => \$opt_arch,
   'add-entry=s'      => \$opt_new_boot_entry,
+  'addon=s{1,}'      => \@opt_addon_packages,
+  'addon-name=s'     => \$opt_addon_name,
+  'addon-alias=s'    => \$opt_addon_alias,
+  'addon-prio=i'     => \$opt_addon_prio,
   'save-temp'        => \$opt_save_temp,
   'verbose|v'        => sub { $opt_verbose++ },
   'version'          => sub { print "$VERSION\n"; exit 0 },
@@ -383,11 +394,13 @@ if($opt_create) {
 
   if(!@sources) {
     my $msg = "no sources - nothing to do\n";
-    $msg .= "Maybe you forgot '--' after --kernel or --modules?\n" if @opt_kernel_rpms || @opt_kernel_modules;
+    if(@opt_kernel_rpms || @opt_kernel_modules || @opt_addon_packages) {
+      $msg .= "Maybe you forgot '--' after --kernel, --modules, or --addon?\n";
+    }
     die $msg;
   }
 
-  $files = build_filelist;
+  build_filelist \@sources;
   $boot = analyze_boot;
   get_initrd_format;
   if($opt_sign && (
@@ -404,6 +417,9 @@ if($opt_create) {
   $add_initrd = create_initrd;
   update_kernel_initrd;
   update_boot_options;
+
+  prepare_addon;
+
   sign_content if update_content;
   $todo = build_todo;
   set_mkisofs_metadata;
@@ -538,6 +554,18 @@ Create ISO image:
                                 instead. MODULE_LIST may be space or comma separated.
                                 Note: this option takes a variable number of arguments. So
                                 it may be necessary to terminate the arg list with '--'.
+      --addon RPM_LIST          A list of RPMs that should be made available as an add-on to
+                                the main product.
+                                Note: this option takes a variable number of arguments. So
+                                it may be necessary to terminate the arg list with '--'.
+                                See Add-on notes below.
+      --addon-name NAME         Use NAME as the add-on name.
+                                If unset, the auto-generated name 'Add-On NUM' is used, with NUM
+                                set to the smallest number that avoids name conflicts.
+      --addon-alias ALIAS       Set repo alias to ALIAS.
+                                If unset, an alias based on the repo name is generated.
+      --addon-prio NUM          Set add-on repository priority to NUM; lower NUM means higher
+                                priority (default: 60).
       --grub2                   Use grub2 for El-Torito legacy setup (for debugging).
       --isolinux                Use isolinux for El-Torito legacy setup (for debugging).
       --micro                   Create an ISO with just enough files to test the
@@ -592,6 +620,25 @@ Signing notes:
 
     If there's no 'sign-key' option, a transient key is created. The public
     part is added to the initrd and the key is deleted.
+
+Add-on notes:
+
+    The add-on created here is just a repository, not a full add-on product.
+    If you need the latter, you will have to create that on your own and add
+    it to the iso.
+
+    Although it auto-generates a name for the repository, it's not a very
+    creative one and it's probably a good idea to choose one explicitly
+    using the --addon-name option.
+
+    The default installation repositories have priority 99. Any smaller
+    number for the add-on repository will prefer the add-on packages even
+    though the package version number is smaller than in the standard
+    repository.
+
+    The default priority of 60 is chosen to be between the priority of the
+    default installation repositories (99) and the repositories created by
+    driver updates (50).
 
 Configuration file:
 
@@ -683,11 +730,24 @@ sub fname
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# build_filelist(sources)
+#
+# sources is an array_ref containing a list of directories to be scanned and
+# added to our internal file list.
+#
+# The global vars $files and $mkisofs->{exclude} are updated.
+#
+# The point here is that mkisofs refuses to resolve name conflicts (when
+# merging several sources). So we have to do this ourselves and track
+# obsolete (that is, when duplicates show up) files in $mkisofs->{exclude}.
+#
+# That's only needed for regular files; directories don't matter.
+#
 sub build_filelist
 {
-  my $files;
+  my $src = $_[0];
 
-  for my $s (@sources) {
+  for my $s (@$src) {
     File::Find::find({
       wanted => sub {
         if(m#^$s->{dir}/(.+)#) {
@@ -698,8 +758,6 @@ sub build_filelist
       no_chdir => 1
     }, $s->{dir});
   }
-
-  return $files;
 }
 
 
@@ -1312,6 +1370,34 @@ sub run_isozipl
   print $_ if $opt_verbose >= 2 || !$ok;
 
   die "Error: isozipl failed\n" if !$ok;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# run_createrepo(repo_dir)
+#
+# Run 'createrepo' on repo_dir to create a repo-md repo.
+#
+sub run_createrepo
+{
+  my $dir = $_[0];
+  my $ok;
+
+  my $cmd = "createrepo --simple-md-filenames '$dir'";
+
+  print "running:\n$cmd\n" if $opt_verbose >= 1;
+
+  $ok = !system("$cmd 2>$tmp_err >&2");
+
+  if(open my $fh, "<", $tmp_err) {
+    local $/;
+    $_ = <$fh>;
+    close $fh;
+  }
+
+  print $_ if $opt_verbose >= 2 || !$ok;
+
+  die "error: createrepo failed\n" if !$ok;
 }
 
 
@@ -3122,5 +3208,130 @@ sub replace_kernel_mods
   if(my $x = get_kernel_initrd) {
     $add_kernel = $kernel->{image};
   }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# new_products_xml(old_xml, dir, name, alias, prio)
+#
+# Add a product to an existing add_on_products.xml or create a new one.
+#
+# This doesn't use a full xml parser but assumes a reasonably formatted
+# add_on_products.xml.
+#
+sub new_products_xml
+{
+  my ($old_xml, $dir, $name, $alias, $prio) = @_;
+  my $new_xml;
+  my @x;
+
+  @x = split /^/m, $old_xml || <<'# template';
+<?xml version="1.0"?>
+<add_on_products xmlns="http://www.suse.com/1.0/yast2ns"
+    xmlns:config="http://www.suse.com/1.0/configns">
+    <product_items config:type="list">
+    </product_items>
+</add_on_products>
+# template
+
+  my $product = <<"# product";
+        <product_item>
+            <name>$name</name>
+            <url>relurl://$dir?alias=$alias</url>
+            <priority config:type="integer">$prio</priority>
+            <ask_user config:type="boolean">false</ask_user>
+            <selected config:type="boolean">true</selected>
+            <check_name config:type="boolean">false</check_name>
+        </product_item>
+# product
+
+  # inject the new product at the end of the list
+  for (@x) {
+    if(m#\s*</product_items>#) {
+      $_ = $product . $_;
+    }
+  }
+
+  $new_xml = join '', @x;
+
+  return $new_xml;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# prepare_addon()
+#
+# If there are RPMs for an add-on specified in @opt_addon_packages, create
+# an add-on on the media.
+#
+# The add-on is placed into /addons/<repo_alias>/ and a file /add_on_products.xml
+# is created/updated on the iso.
+#
+# Details can be influenced via $opt_addon_name, $opt_addon_alias, $opt_addon_prio.
+#
+sub prepare_addon
+{
+  return if !@opt_addon_packages;
+
+  my $addon_name = $opt_addon_name;
+
+  if($addon_name eq "") {
+    # ok, be creative...
+
+    my $idx = 1;
+    $idx++ while fname "addons/Add-On_$idx";
+
+    $addon_name = "Add-On $idx";
+  }
+
+  my $addon_alias = $opt_addon_alias;
+
+  # strip chars we don't like to create an alias from addon name
+  if($addon_alias eq "") {
+    $addon_alias = $addon_name;
+    $addon_alias =~ s/\s+/_/g;
+    $addon_alias =~ tr/a-zA-Z0-9._\-//cd;
+  }
+
+  die "error: '$addon_name' is not a suitable add-on name, please choose a different one\n" if $addon_alias eq "";
+  die "error: 'addons/$addon_alias' already exists\n" if fname "addons/$addon_alias";
+
+  print "creating add-on \"$addon_name\" (alias $addon_alias):\n";
+
+  my $tmp_dir = $tmp->dir();
+  my $repo_dir = "$tmp_dir/addons/$addon_alias";
+  mkdir "$tmp_dir/addons", 0755;
+  mkdir $repo_dir, 0755;
+
+  for (@opt_addon_packages) {
+    die "$_: not a RPM\n" unless -f && file_magic($_) =~ /^RPM/;
+    system "cp", $_, $repo_dir;
+    print "  - $_\n";
+  }
+
+  # create repo-md files
+  run_createrepo $repo_dir;
+
+  # create/update add_on_products.xml
+  my $products_xml;
+
+  my $f = fname "add_on_products.xml";
+  if($f && open my $fh, "<", $f) {
+    local $/;
+    $products_xml = <$fh>;
+    close $fh;
+  }
+
+  $products_xml = new_products_xml($products_xml, "addons/$addon_alias", $addon_name, $addon_alias, $opt_addon_prio);
+
+  if(open my $fh, ">", "$tmp_dir/add_on_products.xml") {
+    print $fh $products_xml;
+    close $fh;
+  }
+
+  # add our add-on to the iso
+  my $new_source = { dir => $tmp_dir, real_name => $tmp_dir, type => 'dir' };
+  push @sources, $new_source;
+  build_filelist [ $new_source ];
 }
 
