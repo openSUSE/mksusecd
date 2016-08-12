@@ -558,6 +558,7 @@ Create ISO image:
                                 the main product.
                                 Note: this option takes a variable number of arguments. So
                                 it may be necessary to terminate the arg list with '--'.
+                                See Add-on notes below.
       --addon-name NAME         Use NAME as the add-on name.
                                 If unset, the auto-generated name 'Add-On NUM' is used, with NUM
                                 set to the smallest number that avoids name conflicts.
@@ -619,6 +620,25 @@ Signing notes:
 
     If there's no 'sign-key' option, a transient key is created. The public
     part is added to the initrd and the key is deleted.
+
+Add-on notes:
+
+    The add-on created here is just a repository, not a full add-on product.
+    If you need the latter, you will have to create that on your own and add
+    it to the iso.
+
+    Although it auto-generates a name for the repository, it's not a very
+    creative one and it's probably a good idea to choose one explicitly
+    using the --addon-name option.
+
+    The default installation repositories have priority 99. Any smaller
+    number for the add-on repository will prefer the add-on packages even
+    though the package version number is smaller than in the standard
+    repository.
+
+    The default priority of 60 is chosen to be between the priority of the
+    default installation repositories (99) and the repositories created by
+    driver updates (50).
 
 Configuration file:
 
@@ -1363,7 +1383,7 @@ sub run_createrepo
   my $dir = $_[0];
   my $ok;
 
-  my $cmd = "createrepo --simple-md-filenames $dir";
+  my $cmd = "createrepo --simple-md-filenames '$dir'";
 
   print "running:\n$cmd\n" if $opt_verbose >= 1;
 
@@ -3225,7 +3245,7 @@ sub new_products_xml
         </product_item>
 # product
 
-  # inhect the new product at the end of the list
+  # inject the new product at the end of the list
   for (@x) {
     if(m#\s*</product_items>#) {
       $_ = $product . $_;
