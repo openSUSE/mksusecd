@@ -3259,7 +3259,7 @@ sub prepare_addon
     # ok, be creative...
 
     my $idx = 1;
-    $idx++ while fname "addons/AddOn$idx";
+    $idx++ while fname "addons/Add-On_$idx";
 
     $addon_name = "Add-On $idx";
   }
