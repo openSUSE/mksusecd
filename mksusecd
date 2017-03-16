@@ -195,6 +195,7 @@ sub add_modules_to_initrd;
 sub replace_kernel_mods;
 sub new_products_xml;
 sub prepare_addon;
+sub check_mksquashfs_comp;
 
 my %config;
 my $sudo;
@@ -346,6 +347,7 @@ my $hybrid_part_type;
 my $kernel;
 my $warned;
 my $read_write;
+my $mksquashfs_has_comp;
 
 my $progress_start = 0;
 my $progress_end = 100;
@@ -354,6 +356,8 @@ my $progress_txt = 'building:';
 $mkisofs->{command} = "/usr/bin/genisoimage" if ! -x $mkisofs->{command};
 
 die "mkisofs: command not found\n" if ! -x $mkisofs->{command};
+
+$mksquashfs_has_comp = check_mksquashfs_comp;
 
 if($opt_create) {
 #  if(@opt_kernel_rpms) {
@@ -3143,7 +3147,10 @@ sub add_modules_to_initrd
       rename "$kernel->{new_dir}/lib/modules/$kernel->{version}/initrd/$_", "$tmp_dir/lib/modules/$kernel->{version}/initrd/$_";
     }
 
-    system "mksquashfs $kernel->{new_dir} $tmp_dir/parts/$p -comp xz -noappend -no-progress >/dev/null 2>&1";
+    my $err = system "mksquashfs $kernel->{new_dir} $tmp_dir/parts/$p" .
+      ($mksquashfs_has_comp ? " -comp xz" : "") .
+      " -noappend -no-progress >/dev/null 2>&1";
+    die "mksquashfs failed\n" if $err;
   }
   else {
     $tmp_dir = $kernel->{new_dir};
@@ -3336,5 +3343,27 @@ sub prepare_addon
   my $new_source = { dir => $tmp_dir, real_name => $tmp_dir, type => 'dir' };
   push @sources, $new_source;
   build_filelist [ $new_source ];
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# check_mksquashfs_comp()
+#
+# Return 1 if mksquahsfs supports '-comp' option, else 0.
+#
+sub check_mksquashfs_comp
+{
+  my $comp_ok = 0;
+
+  if(open my $f, "mksquashfs -help 2>&1 |") {
+    while(<$f>) {
+      $comp_ok = 1, last if /^\s*-comp\s/;
+    }
+    close $f;
+  }
+
+  print "mksquashfs has '-comp': $comp_ok\n" if $opt_verbose >= 2;
+
+  return $comp_ok;
 }
 
