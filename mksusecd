@@ -299,7 +299,7 @@ usage 1 if $opt_hybrid_fs !~ '^(|iso|fat)$';
 usage 1 if defined($opt_digest) && $opt_digest !~ '^(md5|sha1|sha224|sha256|sha384|sha512)$';
 
 if($opt_rebuild_initrd && $>) {
-  die "mksusecd bust be run with root permissions when --rebuild-initrd is used\n"
+  die "mksusecd must be run with root permissions when --rebuild-initrd is used\n"
 }
 
 if(open my $f, "$ENV{HOME}/.mksusecdrc") {
