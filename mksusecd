@@ -235,6 +235,8 @@ my @opt_addon_packages;
 my $opt_addon_name;
 my $opt_addon_alias;
 my $opt_addon_prio = 60;
+my $opt_rebuild_initrd;
+
 
 GetOptions(
   'create|c=s'       => sub { $opt_create = 1; $opt_dst = $_[1] },
@@ -263,6 +265,7 @@ GetOptions(
   'mbr-chs'          => sub { $opt_no_mbr_chs = 0 },
   'no-mbr-chs'       => \$opt_no_mbr_chs,
   'initrd=s'         => \@opt_initrds,
+  'rebuild-initrd'   => \$opt_rebuild_initrd,
   'boot=s'           => \$opt_boot_options,
   'grub2'            => sub { $opt_loader = "grub" },
   'isolinux'         => sub { $opt_loader = "isolinux" },
@@ -294,6 +297,10 @@ GetOptions(
 usage 1 unless $opt_create;
 usage 1 if $opt_hybrid_fs !~ '^(|iso|fat)$';
 usage 1 if defined($opt_digest) && $opt_digest !~ '^(md5|sha1|sha224|sha256|sha384|sha512)$';
+
+if($opt_rebuild_initrd && $>) {
+  die "mksusecd must be run with root permissions when --rebuild-initrd is used\n"
+}
 
 if(open my $f, "$ENV{HOME}/.mksusecdrc") {
   while(<$f>) {
@@ -538,6 +545,9 @@ Create ISO image:
       --no-zipl                 Don't make zIPL bootable (default except on s390x).
       --initrd DIR|RPM|DUD      Add directory DIR or package RPM or driver update DUD
                                 to initrd.
+      --rebuild-initrd          Rebuild the entire initrd instead of appending changes.
+                                This makes the initrd smaller but requires to run mksusecd
+                                with root permissions.
       --no-docs                 Don't include package documentation when updating the
                                 initrd (default).
       --keep-docs               Include package documentation when updating initrd.
@@ -1715,7 +1725,7 @@ sub create_initrd
   return undef if !@opt_initrds;
 
   my $tmp_initrd = $tmp->file();
-  my $tmp_dir = $tmp->dir();
+  my $tmp_dir = $opt_rebuild_initrd ? $orig_initrd : $tmp->dir();
 
   for my $i (@opt_initrds) {
     my $type = get_archive_type $i;
@@ -1817,7 +1827,12 @@ sub update_kernel_initrd
     }
 
     if(my $n = fname $x->{initrd}) {
-      system "cat '$add_initrd' >> '$n'";
+      if($opt_rebuild_initrd) {
+        system "cp '$add_initrd' '$n'";
+      }
+      else {
+        system "cat '$add_initrd' >> '$n'";
+      }
     }
   }
   else {
@@ -3137,6 +3152,9 @@ sub add_modules_to_initrd
     mkdir "$tmp_dir/parts", 0755;
 
     my $p = sprintf "%02u_lib", $initrd_has_parts++;
+    # XX_lib contains kernel modules - replace the original one if we are
+    # going to rebuild the initrd anyway
+    $p = "00_lib" if $opt_rebuild_initrd;
 
     mkdir "$tmp_dir/lib", 0755;
     mkdir "$tmp_dir/lib/modules", 0755;
