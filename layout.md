@@ -5,12 +5,12 @@ describes an image that can be both used as dvd (it has a valid
 [iso9660](https://en.wikipedia.org/wiki/ISO_9660) file system
 at offset 0) and as disk image (it also has a valid partition table).
 
-The partition table type (
-[gpt](https://en.wikipedia.org/wiki/GUID_Partition_Table),
+The partition table type
+([gpt](https://en.wikipedia.org/wiki/GUID_Partition_Table),
 [mbr](https://en.wikipedia.org/wiki/Master_boot_record),
 or even [apple](https://en.wikipedia.org/wiki/Apple_Partition_Map))
 doesn't matter - the
-iso fs leaves enough unassigned space at its start (32 kB) to accomodate any.
+iso fs leaves enough unassigned space at its start (32 kB) to accomodate any of those types.
 
 The catch is: Where should the data partition itself start? Obviously, at block 0
 would be a choice. But such a partition would again enclose the partition
@@ -178,6 +178,6 @@ This means we can add a partition table where:
 - part1 and part2 don't overlap
 
 Note that the fat fs is in fact **writable** but modifying any files will disrupt the
-iso fs side. This shouldn't cause any problems in real live as users
+iso fs side. This shouldn't cause any problems in real life as users
 probably don't copy the image onto a usb stick, use it for a while, and
 then later burn a dvd with it.
