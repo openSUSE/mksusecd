@@ -76,6 +76,7 @@ struct {
   unsigned no_mbr:1;		/* gpt: don't write protective mbr */
   unsigned no_code:1;		/* no mbr boot code */
   unsigned no_chs:1;		/* fill in 0xffffff instead of real chs values */
+  off_t size;			/* total size MBR partition table should cover */
 } opt;
 
 
@@ -252,6 +253,7 @@ printh(void)
     printf(FMT, "   --no-mbr", "Don't write protective MBR for GPT");
     printf(FMT, "   --no-code", "Don't include MBR boot code");
     printf(FMT, "   --no-chs", "Don't fill in CHS values, use 0xffffff instead");
+    printf(FMT, "   --size", "Specify disk size to assume when writing MBR (in 512 byte units)");
 
     printf("\n");
     printf(FMT, "   --forcehd0", "Assume we are loaded as disk ID 0");
@@ -279,6 +281,7 @@ check_option(int argc, char *argv[])
     {
         { "entry", required_argument, NULL, 'e' },
         { "offset", required_argument, NULL, 'o' },
+        { "size", required_argument, NULL, 1006 },
         { "type", required_argument, NULL, 't' },
         { "id", required_argument, NULL, 'i' },
         { "gpt", no_argument, NULL, 1001 },
@@ -383,6 +386,12 @@ check_option(int argc, char *argv[])
 
         case 1005:
             opt.no_chs = 1;
+            break;
+
+        case 1006:
+            opt.size = strtoul(optarg, &err, 0);
+            if (*err)
+                errx(1, "invalid size: `%s'", optarg);
             break;
 
         case 'V':
@@ -615,7 +624,11 @@ uint32_t ofs2chs(uint32_t ofs)
   s = (ofs % sector) + 1;
   h = (ofs / sector) % head;
   c = ofs / (sector * head);
-  if(c > 1023) c = 1023;
+  if(c > 1023) {
+    c = 1023;
+    s = sector;
+    h = head - 1;
+  }
 
   return ((c & 0xff) << 24) + ((s + ((c >> 8) << 6)) << 16) + (h << 8);
 }
@@ -689,7 +702,7 @@ initialise_mbr(uint8_t *mbr)
             mbr[1] = chs >> 8;
             mbr[2] = chs >> 16;
             mbr[3] = chs >> 24;
-            chs = ofs2chs(c * head * sector - 1);
+            chs = ofs2chs((opt.size ?: c * head * sector) - 1);
             mbr[4] = type;
             mbr[5] = chs >> 8;
             mbr[6] = chs >> 16;
@@ -698,7 +711,7 @@ initialise_mbr(uint8_t *mbr)
             tmp = lendian_int(offset);
             memcpy(&mbr[8], &tmp, sizeof(tmp));
 
-            tmp = lendian_int(c * head * sector - offset);
+            tmp = lendian_int((opt.size ?: c * head * sector) - offset);
             memcpy(&mbr[12], &tmp, sizeof(tmp));
         }
 
@@ -1219,7 +1232,7 @@ main(int argc, char *argv[])
 	fwrite(buf, sizeof(char), apm_size, fp);
     }
 
-    if (padding)
+    if (padding && !opt.size)
     {
         if (fsync(fileno(fp)))
             err(1, "%s: could not synchronise", argv[0]);
