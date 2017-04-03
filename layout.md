@@ -1,4 +1,4 @@
-##isohybrid images done right##
+## isohybrid images done right
 
 '[isohybrid](http://www.syslinux.org/wiki/index.php?title=Isohybrid)'
 describes an image that can be both used as dvd (it has a valid
@@ -30,7 +30,7 @@ So, we do it differently. For isohybrid images we aim to create an image that
     - one partition containing the same fs as 1. and
     - (optionally) another partition containing an EFI boot image
 
-###Using an iso9660 file system for the partition###
+### Using an iso9660 file system for the partition
 
 To achieve this, two [mkisofs](https://software.opensuse.org/package/mkisofs) runs are needed.
 To understand why the following works it's important to know that the iso fs layout starts with
@@ -110,7 +110,7 @@ whether they mount at offset 0 compared to partition 2. So, let's keep it
 and waste the few bytes.
 
 
-###Using a fat file system for the partition###
+### Using a fat file system for the partition
 
 Why not have an iso fs at offset 0 but a differnt fs type in partition 2?
 
