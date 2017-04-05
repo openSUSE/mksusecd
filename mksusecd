@@ -157,11 +157,13 @@ sub relocate_catalog;
 sub rerun_mkisofs;
 sub run_isohybrid;
 sub run_isozipl;
+sub run_syslinux;
 sub run_createrepo;
 sub isols;
 sub find_magic;
 sub meta_iso;
 sub meta_fat;
+sub fat_data_start;
 sub create_initrd;
 sub get_kernel_initrd;
 sub update_kernel_initrd;
@@ -196,6 +198,7 @@ sub replace_kernel_mods;
 sub new_products_xml;
 sub prepare_addon;
 sub check_mksquashfs_comp;
+sub eval_size;
 
 my %config;
 my $sudo;
@@ -236,6 +239,7 @@ my $opt_addon_name;
 my $opt_addon_alias;
 my $opt_addon_prio = 60;
 my $opt_rebuild_initrd;
+my $opt_size;
 
 
 GetOptions(
@@ -258,6 +262,8 @@ GetOptions(
   'hybrid'           => \$opt_hybrid,
   'no-hybrid'        => sub { $opt_hybrid = 0 },
   'hybrid-fs=s'      => sub { $opt_hybrid = 1; $opt_hybrid_fs = $_[1] },
+  'fat'              => sub { $opt_hybrid = 1; $opt_hybrid_fs = 'fat' },
+  'size=s'           => \$opt_size,
   'protective-mbr'   => sub { $opt_no_prot_mbr = 0 },
   'no-protective-mbr' => \$opt_no_prot_mbr,
   'mbr-code'         => sub { $opt_no_mbr_code = 0 },
@@ -297,6 +303,8 @@ GetOptions(
 usage 1 unless $opt_create;
 usage 1 if $opt_hybrid_fs !~ '^(|iso|fat)$';
 usage 1 if defined($opt_digest) && $opt_digest !~ '^(md5|sha1|sha224|sha256|sha384|sha512)$';
+
+$ENV{PATH} = "$LIBEXECDIR/mksusecd:/usr/bin:/bin:/usr/sbin:/sbin";
 
 if($opt_rebuild_initrd && $>) {
   die "mksusecd must be run with root permissions when --rebuild-initrd is used\n"
@@ -355,16 +363,22 @@ my $kernel;
 my $warned;
 my $read_write;
 my $mksquashfs_has_comp;
+my $image_size;
+my $syslinux_config;
 
 my $progress_start = 0;
 my $progress_end = 100;
 my $progress_txt = 'building:';
 
 $mkisofs->{command} = "/usr/bin/genisoimage" if ! -x $mkisofs->{command};
-
 die "mkisofs: command not found\n" if ! -x $mkisofs->{command};
 
 $mksquashfs_has_comp = check_mksquashfs_comp;
+
+if(defined $opt_size) {
+  $image_size = eval_size $opt_size;
+  die "$opt_size: invalid size\n" unless $image_size;
+}
 
 if($opt_create) {
 #  if(@opt_kernel_rpms) {
@@ -375,6 +389,8 @@ if($opt_create) {
   $two_runs = $opt_hybrid && $opt_hybrid_fs;
 
   $iso_file = $opt_dst;
+
+  die "$iso_file: block device not allowed\n" if -b $iso_file;
 
   for (@ARGV) {
     s#/*$##;
@@ -467,7 +483,10 @@ if($opt_create) {
   fix_catalog;
   relocate_catalog;
 
-  run_isohybrid if $opt_hybrid;
+  if($opt_hybrid) {
+    run_isohybrid;
+    run_syslinux if $opt_hybrid_fs eq 'fat';
+  }
   run_isozipl if $opt_zipl;
 
   if(defined $opt_digest) {
@@ -541,6 +560,13 @@ Create ISO image:
                                 image (partitioning tools don't really like this) or
                                 'iso' or 'fat' in which case you get a regular partition
                                 with an ISO960 or FAT file system (default: 'iso').
+      --fat                     An alias for '--hybrid-fs fat'.
+      --size SIZE_SPEC          When using a FAT file system, you can set the intended size of
+                                the disk image.
+                                SIZE_SPEC can be a number, optionally followed by a unit ('b',
+                                'k', 'm', 'g', 't') indicating blocks, kiB, MiB, GiB, or TiB.
+                                But SIZE_SPEC can also be a device name like '/dev/sda', in
+                                which casee the size of the device is used.
       --zipl                    Make zIPL bootable (default on s390x).
       --no-zipl                 Don't make zIPL bootable (default except on s390x).
       --initrd DIR|RPM|DUD      Add directory DIR or package RPM or driver update DUD
@@ -1298,6 +1324,10 @@ sub relocate_catalog
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# rerun_mkisofs()
+#
+# Prepare hybrid image and run mkisofs again.
+#
 sub rerun_mkisofs
 {
   my $iso_file_list = isols;
@@ -1323,10 +1353,20 @@ sub rerun_mkisofs
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# run_isohybrid()
+#
+# Add a partition table to the iso image and, on x86, add boot code to the
+# partition table.
+#
 sub run_isohybrid
 {
   my $opt;
   my $ok;
+  my $part_type = $hybrid_part_type;
+
+  if($opt_hybrid_fs eq 'fat') {
+    $part_type = 0x0c if !$part_type;
+  }
 
   $opt .= " --uefi" if $has_efi;
   $opt .= " --gpt" if $opt_hybrid_gpt;
@@ -1334,14 +1374,11 @@ sub run_isohybrid
   $opt .= " --no-mbr" if $opt_no_prot_mbr;
   $opt .= " --no-code" if $opt_no_mbr_code;
   $opt .= " --no-chs" if $opt_no_mbr_chs;
-  $opt .= sprintf(" --type 0x%x", $hybrid_part_type) if $hybrid_part_type;
+  $opt .= sprintf(" --type 0x%x", $part_type) if $part_type;
   $opt .= " --offset $mkisofs->{partition_start}" if $mkisofs->{partition_start};
+  $opt .= " --size $image_size" if $image_size;
 
-  # prefer our own isohybrid variant
-  my $cmd = "$LIBEXECDIR/mksusecd/isohybrid";
-  $cmd = "isohybrid" unless -x $cmd;
-
-  $cmd .= "$opt $iso_file";
+  my $cmd = "isohybrid $opt '$iso_file'";
 
   print "running:\n$cmd\n" if $opt_verbose >= 1;
 
@@ -1360,16 +1397,45 @@ sub run_isohybrid
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# run_syslinux()
+#
+# Make fat partition bootable using syslinux. This requires the 'real'
+# syslinux package and does not work on non-x86 achitectures.
+#
+sub run_syslinux
+{
+  return unless $syslinux_config && $mkisofs->{partition_start};
+
+  my $mbr;
+  if(open my $f, "/usr/share/syslinux/mbr.bin") {
+    local $/;
+    $mbr = <$f>;
+    close $f;
+  }
+
+  if(!-x "/usr/bin/syslinux" || length($mbr) != 440) {
+    die "syslinux is needed to build a bootable FAT image, please install package 'syslinux'\n"
+  }
+
+  system "syslinux -t " . ($mkisofs->{partition_start} << 9) . " -d '$syslinux_config' -i '$iso_file'";
+
+  die "$iso_file: $!\n" unless open $iso_fh, "+<", $iso_file;
+  syswrite $iso_fh, $mbr;
+  close $iso_fh;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# run_isozipl()
+#
+# Make iso image zipl bootable.
+#
 sub run_isozipl
 {
   my $opt;
   my $ok;
 
-  # prefer our own isozipl variant
-  my $cmd = "$LIBEXECDIR/mksusecd/isozipl";
-  $cmd = "isozipl" unless -x $cmd;
-
-  $cmd .= " $iso_file";
+  my $cmd = "isozipl '$iso_file'";
 
   print "running:\n$cmd\n" if $opt_verbose >= 1;
 
@@ -1474,7 +1540,15 @@ sub isols
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-# find magic block
+# magic = find_magic(file_list)
+#
+# Find magic block.
+# - file_list: array ref with file names as produced by isols()
+# - magic: hash ref with offset of magic block ('block') and
+#   offset of first (with lowest start offset) file ('extra')
+#
+# Offsets are in 2k units (due to iso fs heritage).
+#
 sub find_magic
 {
   my $cnt;
@@ -1513,6 +1587,11 @@ sub find_magic
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# metca_iso(magic)
+#
+# Prepare hybrid image using iso fs for partition.
+# - magic: hash ref as returned by find_magic()
+#
 sub meta_iso
 {
   my $magic = shift;
@@ -1538,6 +1617,33 @@ sub meta_iso
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# fat_mkfs(name, size, hidden)
+#
+# Create a fat file system image.
+# - name: image name
+# - size: size in blocks
+# - hidden: hidden blocks (aka planned partition offset)
+#
+sub fat_mkfs
+{
+  my ($name, $size, $hidden) = @_;
+
+  open my $fh, ">", $name;
+  close $fh;
+  truncate $name, $size << 9;
+  # try fat32 first
+  system "mformat -i '$name' -T $size -H $hidden -s 32 -h 64 -c 4 -F -d 1 -v 'SUSEDISK' :: 2>/dev/null" and
+  system "mformat -i '$name' -T $size -H $hidden -s 32 -h 64 -c 4 -d 1 -v 'SUSEDISK' ::";
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# meta_fat(magic, file_list)
+#
+# Prepare hybrid image using fat fs for partition.
+# - magic: hash ref as returned by find_magic()
+# - file_list: array ref with file names as produced by isols()
+#
 sub meta_fat
 {
   my $magic = shift;
@@ -1549,7 +1655,7 @@ sub meta_fat
 
   for (reverse @$iso_files) {
     next unless $_->{type} eq ' ';
-    $fat_size =  $_->{start} + (($_->{size} + 0x7ff) >> 11);
+    $fat_size = $_->{start} + (($_->{size} + 0x7ff) >> 11);
     last;
   }
 
@@ -1560,22 +1666,38 @@ sub meta_fat
    
   $fat_size += ($fat_size >> 8) + 4;
 
-  # add a bit free space (4MB)
-  $fat_size += 4 << 9;
+  # we want $fat_size to count 512 byte blocks, not 2k blocks as in iso fs
+  $fat_size *= 4;
+
+  # add a bit free space (4 MB)
+  $fat_size += 4 << 11;
 
   # and round up to full MB
-  my $fat_mb = ($fat_size + 511) >> 9;
+  my $fat_size = (($fat_size + 2047) >> 11) << 11;
 
-  $fat_size = $fat_mb << 9;
+  printf "fat_size (auto) = $fat_size\n" if $opt_verbose >= 2;
 
-  printf "fat_size = $fat_size\n" if $opt_verbose >= 2;
+  # disk size - partition offset - max alignment
+  my $user_fat_size = $image_size - ($magic->{block} << 2) - 3;
 
-  open my $fh, ">", $tmp_fat;
-  close $fh;
-  truncate $tmp_fat, $fat_mb << 20;
-  # try fat32 first
-  system "mformat -i '$tmp_fat|cylinders=" . $fat_mb * 4 . " heads=16 sectors=32' -c 4 -F -v 'SUSEDVD' :: 2>/dev/null" and
-  system "mformat -i '$tmp_fat|cylinders=" . $fat_mb * 4 . " heads=16 sectors=32' -c 4 -v 'SUSEDVD' ::";
+  # use user-specified value, if possible
+  $fat_size = $user_fat_size if $user_fat_size > $fat_size;
+
+  printf "fat_size (final) = $fat_size\n" if $opt_verbose >= 2;
+
+  fat_mkfs $tmp_fat, $fat_size, 0;
+
+  my $fat_data_start = fat_data_start $tmp_fat;
+
+  my $align = ($fat_data_start & 0x7ff) >> 9;
+  $align = (4 - $align) & 3;
+
+  print "fat fs alignment: $align blocks\n" if $opt_verbose >= 2;
+
+  $mkisofs->{partition_start} = ($magic->{block} << 2) + $align;
+
+  # remake, but with correct start offset stored in bpb
+  fat_mkfs $tmp_fat, $fat_size, $mkisofs->{partition_start};
 
   # 1.: directories
   for (@$iso_files) {
@@ -1651,36 +1773,29 @@ sub meta_fat
 
   print "last block: $last_block\n" if $opt_verbose >= 2;
 
-
-  my $data_start;
-  for (`dosfsck -v '$tmp_fat'`) {
-    if(/Data area starts at byte (\d+)/) {
-      $data_start = $1 + (($first - 2) << 11);
-      $last_block = ($1 >> 9) + (($last_block - 2) << 2);
+  # we're going to use syslinux instead of isolinux, so rename the config file
+  if($opt_hybrid_fs eq 'fat') {
+    for (@$iso_files) {
+      if($_->{name} =~ m#/isolinux.cfg$#) {
+        system "mren -i '$tmp_fat' '::$_->{name}' syslinux.cfg";
+        $syslinux_config = $_->{name};
+        $syslinux_config =~ s#^/##;
+        $syslinux_config =~ s#/[^/]+$##;
+        last;
+      }
     }
   }
 
-  printf "last_block = $last_block\n" if $opt_verbose >= 2;
+  my $data_start = $fat_data_start + (($first - 2) << 11);
+  $last_block = ($fat_data_start >> 9) + (($last_block - 2) << 2);
 
-  my $iso_pad = (($fat_size << 2) - $last_block) >> 2;
+  printf "last_block = $last_block\n" if $opt_verbose >= 2;
 
   die "$tmp_fat: oops, data start not found\n" unless $data_start;
 
   print "data start = $data_start\n" if $opt_verbose >= 2;
 
   truncate $tmp_fat, $data_start;
-
-  my $align = ($data_start & 0x7ff) >> 9;
-  $align = (4 - $align) & 3;
-
-  if($align) {
-    print "alignment needed: $align\n" if $opt_verbose >= 2;
-    $iso_pad++;
-  }
-   
-  printf "iso_pad = $iso_pad\n" if $opt_verbose >= 2;
-
-  $mkisofs->{partition_start} = ($magic->{block} << 2) + $align;
 
   # now copy the fat
 
@@ -1716,6 +1831,29 @@ sub meta_fat
   }
 
   close $fh;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# fat_data_start(fs_image_file)
+#
+# Returns the offset (in bytes) of the data area of the fat fs in
+# fs_image_file or not at all if there are problems detecting it.
+#
+sub fat_data_start
+{
+  my $data_start;
+
+  for (`dosfsck -v '$_[0]' 2>/dev/null`) {
+    if(/Data area starts at byte (\d+)/) {
+      $data_start = $1;
+      last;
+    }
+  }
+
+  die "error: dosfsck failed\n" unless $data_start;
+
+  return $data_start;
 }
 
 
@@ -3383,5 +3521,51 @@ sub check_mksquashfs_comp
   print "mksquashfs has '-comp': $comp_ok\n" if $opt_verbose >= 2;
 
   return $comp_ok;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# eval_size(size_string)
+#
+# Interpret size_string and return size in (512 byte)-blocks.
+#
+# size_string is either a numerical size like '64G' or a file or block
+# device name. In this case the size of the file or block device is used.
+#
+sub eval_size
+{
+  my $size = $_[0];
+  my $unit = { b => 9 - 9, k => 10 - 9, m => 20 - 9, g => 30 - 9, t => 40 - 9 };
+
+  return undef unless $size;
+
+  if($size =~ /^(\d+)\s*([bkmgt]?)/i) {
+    $size <<= $unit->{"\L$2"} if $2;
+  }
+  elsif($size =~ m#/dev/#) {
+    my $s;
+    my $x = `readlink -f $size 2>/dev/null`;
+    if($x =~ m#/dev/([^/]+?)\s*$#) {
+      my $dev = $1;
+      for (</sys/block/$dev/size /sys/block/*/$dev/size>) {
+        if(open(my $f, $_)) {
+          $s = <$f> + 0;
+          close $f;
+          last;
+        }
+      }
+    }
+    $size = $s;
+  }
+  elsif(-s $size) {
+    $size = (-s _) >> 9;
+  }
+  else {
+    $size = undef;
+  }
+
+  printf "target image size: %.2f GiB ($size blocks)\n", $size / (1 << 21);
+
+  return $size;
 }
 
