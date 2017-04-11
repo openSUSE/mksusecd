@@ -199,6 +199,7 @@ sub new_products_xml;
 sub prepare_addon;
 sub check_mksquashfs_comp;
 sub eval_size;
+sub add_linuxrc_option;
 
 my %config;
 my $sudo;
@@ -240,6 +241,9 @@ my $opt_addon_alias;
 my $opt_addon_prio = 60;
 my $opt_rebuild_initrd;
 my $opt_size;
+my $opt_net;
+my $opt_instsys;
+my $opt_defaultrepo;
 
 
 GetOptions(
@@ -280,6 +284,9 @@ GetOptions(
   'micro'            => sub { $opt_type = 'micro' },
   'nano'             => sub { $opt_type = 'nano' },
   'pico'             => sub { $opt_type = 'pico' },
+  'net=s'            => \$opt_net,
+  'instsys'          => \$opt_instsys,
+  'defaultrepo'      => \$opt_defaultrepo,
   'volume=s'         => \$opt_volume,
   'vendor=s'         => \$opt_vendor,
   'preparer=s'       => \$opt_preparer,
@@ -365,6 +372,8 @@ my $read_write;
 my $mksquashfs_has_comp;
 my $image_size;
 my $syslinux_config;
+my $linuxrc_options;
+my $has_content;
 
 my $progress_start = 0;
 my $progress_end = 100;
@@ -430,6 +439,34 @@ if($opt_create) {
   build_filelist \@sources;
   $boot = analyze_boot;
   get_initrd_format;
+
+  # assume repomd layout if 'content' file is missing
+  $has_content = 1 if fname "content";
+  if(!$has_content) {
+    print "assuming repo-md sources\n";
+    if(!$opt_instsys) {
+      my $x = get_kernel_initrd;
+      die "oops: no initrd?\n" unless $x;
+      if($x->{initrd} =~ m#(boot/[^/]+)/#) {
+        $opt_instsys = "disk:/$1/root";
+      }
+    }
+
+    exclude_files [ "README", "net" ];
+  }
+
+  if($opt_instsys) {
+    add_linuxrc_option "InstSys", $opt_instsys;
+  }
+
+  if($opt_net && !$opt_defaultrepo) {
+    $opt_defaultrepo = "cd:/,hd:/,$opt_net";
+  }
+
+  if($opt_defaultrepo) {
+    add_linuxrc_option "DefaultRepo", $opt_defaultrepo;
+  }
+
   if($opt_sign && (
     # we are going to change '/content' in one way or another
     @opt_initrds || @opt_kernel_rpms || $opt_boot_options || $opt_new_boot_entry || update_content)
@@ -615,6 +652,12 @@ Create ISO image:
       --nano                    Create an ISO with just enough files to test the boot
                                 process.
       --pico                    Even less than --nano. Keep just the bootloader.
+      --net URL                 Use URL as default network repository url.
+                                See Repository notes below.
+      --instsys URL             Load the installation system from the specified URL.
+                                See Repository notes below.
+      --defaultrepo URL_LIST    List of comma (',') separated URLs. The installer will try each URL
+                                in turn for an installation repository.
       --volume                  Set ISO volume id.
       --vendor                  Set ISO publisher id.
       --preparer                Set ISO data preparer id.
@@ -679,6 +722,35 @@ Add-on notes:
     The default priority of 60 is chosen to be between the priority of the
     default installation repositories (99) and the repositories created by
     driver updates (50).
+
+Repository notes:
+
+  The installer supports two types of repositories:
+  (a) the 'classical' variant and
+  (b) a repo-md repository.
+
+  (a) has a 'content' file at the repo location and package meta data
+  in a sub-directory 'suse/setup/descr', while
+  (b) does not require a 'content' file and has package meta data
+  in a 'suse/repodata' sub-directory.
+
+  (a) contains the to-be-installed packages together with the installation
+  system (the installer itself, in a 'boot/<ARCH>' sub-directory), while
+  (b) contains just the to-be-installed packages.
+
+  This means that for (a) the installer can just be loaded from the repository,
+  while for (b) the installer must be loaded from somewhere else.
+  mksusecd normally assumes that it can be loaded from a local disk or dvd.
+  But you can override this using the --instsys option.
+  Please look at the linuxrc documentation at https://en.opensuse.org/SDB:Linuxrc
+  for details before using this option.
+
+  The installer normally uses an internal list of repository locations that are
+  tried in turn. You can change it using the --defaultrepo option. For example,
+  --defaultrepo=cd:/,http://foo/bar means to check the local dvd drive first and
+  then try via network at http://foo/bar.
+
+  The --net option is just a short hand for --defaultrepo=cd:/,hd:/,<NET_URL>.
 
 Configuration file:
 
@@ -2571,8 +2643,8 @@ sub update_content
 {
   my $changed = 0;
 
-  # don't modify content if we're not going to re-sign it
-  return $changed if !$opt_sign;
+  # don't modify content if it doesn't exist or we're not going to re-sign it
+  return $changed if !$has_content || !$opt_sign;
 
   my $content_file = fname "content";
 
@@ -3567,5 +3639,43 @@ sub eval_size
   printf "target image size: %.2f GiB ($size blocks)\n", $size / (1 << 21);
 
   return $size;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# add_linuxrc_option(key, value)
+#
+# Add linxurc config option.
+# - key: option name
+# - value: option value
+#
+# Options are stored in /etc/linuxrc.d/60_mksusecd in the initrd.
+#
+sub add_linuxrc_option
+{
+  my ($key, $value) = @_;
+
+  my $linuxrc_cfg = "etc/linuxrc.d/60_mksusecd";
+
+  unpack_orig_initrd if !$orig_initrd;
+
+  if(!$linuxrc_options) {
+    $linuxrc_options = $tmp->dir();
+    push @opt_initrds, $linuxrc_options;
+
+    mkdir "$linuxrc_options/etc", 0755;
+    mkdir "$linuxrc_options/etc/linuxrc.d", 0755;
+
+    if($orig_initrd && -f "$orig_initrd/$linuxrc_cfg") {
+      system "cp $orig_initrd/$linuxrc_cfg $linuxrc_options/$linuxrc_cfg";
+    }
+  }
+
+  if(open my $f, ">>$linuxrc_options/$linuxrc_cfg") {
+    print $f "$key:\t\"$value\"\n";
+    close $f;
+  }
+
+  print "added linuxrc option $key=\"$value\"\n" if $opt_verbose >= 1;
 }
 
