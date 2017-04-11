@@ -734,7 +734,7 @@ Repository notes:
   (b) does not require a 'content' file and has package meta data
   in a 'suse/repodata' sub-directory.
 
-  (a) contains the to-be-istalled packages together with the installation
+  (a) contains the to-be-installed packages together with the installation
   system (the installer itself, in a 'boot/<ARCH>' sub-directory), while
   (b) contains just the to-be-installed packages.
 
