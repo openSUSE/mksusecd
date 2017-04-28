@@ -1,8 +1,22 @@
 # mksusecd
 
-This is a tool to create SUSE Linux installation ISOs, either from scratch or
-by modifying existing ISOs. A simple use case is to regenerate a ISO to
-include fixes, see below.
+This is a tool to create (open)SUSE Linux installation ISOs - either from scratch or
+by modifying existing ISOs. It is **not** intended to create an installation repository or
+completely new product media. For this, use [kiwi](https://suse.github.io/kiwi).
+
+mksusecd makes it easy to apply modifications to existing install media, like:
+
+- integrate driver updates ([DUD](http://ftp.suse.com/pub/people/hvogel/Update-Media-HOWTO/html))
+- modify the installation system
+- replace kernel and modules used during installation
+- add boot options
+- create and integrate add-on repositories
+- change the default repositories used during installation
+- create a mini ('network') boot iso from a regular dvd
+
+The images mksusecd creates can be put both on a cd/dvd or a (usb-)disk. For this mksusecd creates
+so-called 'isohybrid' images. If you are interested in the technical details,
+you can read more about it [here](layout.md).
 
 ## Installation
 
@@ -16,33 +30,95 @@ zypper in mksusecd mkdud
 
 [1]: https://github.com/openSUSE/mkdud
 
-## Simple use case
+## Simple use cases
+
+> **Note**
+>
+> _In all the examples below, when you use an iso image as source (and not a directory with the unpacked iso),
+you must run mksusecd with root permissions as it will need to mount the iso image temporarily._
+
+### 1. Update a package that is used in the installation system
 
 We have a patch for yast2-core that is needed during installation and the
 final system, e.g. for an AutoYaST installation. The patch is included in
 yast2-core-3.1.12-0.x86_64.rpm.
 
-1. Login as root since mksusecd needs root permissions for temporary mounting of
-   file systems.
+- Create a Driver Update Disk (DUD) from yast2-core.rpm:
 
-2. Create a Driver Update Disk (DUD) from yast2-core.rpm:
-    ```
+    ```sh
     mkdud --create bug-free.dud --dist 13.2 yast2-core-3.1.12-0.x86_64.rpm
     ```
 
-3. Create a new ISO from the original openSUSE 13.2 ISO and the DUD:
-    ```
-    mksusecd --create bug-free.iso --initrd bug-free.dud openSUSE-13.2-DVD-x86_64.iso
-    ```
+- Create a new ISO from the original openSUSE 13.2 ISO and the DUD:
+
+   ```sh
+   mksusecd --create bug-free.iso --initrd bug-free.dud openSUSE-13.2-DVD-x86_64.iso
+   ```
 
 Now you can use bug-free.iso as a replacement for openSUSE-13.2-DVD-x86_64.iso.
 
+### 2 .Create a network install iso
+
+Say, you need to walk around and install a lot from `http://foo/bar`, then do
+
+```sh
+mksusecd --create foo.iso --nano --net=http://foo/bar openSUSE-13.2-DVD-x86_64.iso
+```
+
+`--nano` puts only the necessary files for booting on the media (not the installer itself, for example).
+
+### 3. Add some boot options
+
+If you need to repeatedly enter the same boot options, create an iso that already has them:
+
+```sh
+mksusecd --create foo.iso --boot "sshd=1 password=*****" openSUSE-13.2-DVD-x86_64.iso
+```
+
+This would start an ssh daemon you can login to during installation.
+
+### 4. Modify some other things on the install iso
+
+- Unpack the iso into some temporary directory:
+
+    ```sh
+    mount -oloop,ro openSUSE-13.2-DVD-x86_64.iso /mnt
+    mkdir /tmp/foo
+    cp -a /mnt/* /tmp/foo
+    chmod -R u+w /tmp/foo
+    umount /mnt
+    ```
+
+- Do any changes you like in `/tmp/foo`
+
+- Build a new iso
+
+    ```sh
+    mksusecd --create foo.iso /tmp/foo
+    ```
+
 ## openSUSE Development
 
-The package is automatically submitted from the `master` branch to
-[system:install:head](https://build.opensuse.org/package/show/system:install:head/mksusecd)
-OBS project. From that place it is forwarded to
-[openSUSE Factory](https://build.opensuse.org/project/show/openSUSE:Factory).
+To build, simply run `make`. Install with `make install`.
 
-You can find more information about this workflow in the [linuxrc-devtools
+Basically every new commit into the master branch of the repository will be auto-submitted
+to all current SUSE products. No further action is needed except accepting the pull request.
+
+Submissions are managed by a SUSE internal [jenkins](https://jenkins.io) node in the InstallTools tab.
+
+Each time a new commit is integrated into the master branch of the repository,
+a new submit request is created to the openSUSE Build Service. The devel project
+is [system:install:head](https://build.opensuse.org/package/show/system:install:head/mksusecd).
+
+`*.changes` and version numbers are auto-generated from git commits, you don't have to worry about this.
+
+The spec file is maintained in the Build Service only. If you need to change it for the `master` branch,
+submit to the
+[devel project](https://build.opensuse.org/package/show/system:install:head/mksusecd)
+in the build service directly.
+
+Development happens exclusively in the `master` branch. The branch is used for all current products.
+
+You can find more information about the changes auto-generation and the
+tools used for jenkis submissions in the [linuxrc-devtools
 documentation](https://github.com/openSUSE/linuxrc-devtools#opensuse-development).
