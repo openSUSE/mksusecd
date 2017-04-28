@@ -540,9 +540,9 @@ if($opt_create) {
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-# usage($exit_code)
+# usage(exit_code)
 #
-# Print help text and exit.
+# Print help text and exit with exit_code.
 #
 sub usage
 {
@@ -784,6 +784,12 @@ Examples:
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# check_root(msg)
+#
+# Checks if we can get root privileges if required.
+#
+# - msg: message to show to user if things fail
+#
 sub check_root
 {
   my $p;
@@ -807,6 +813,12 @@ sub check_root
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# susystem(cmd)
+#
+# Run command with root privileges.
+#
+# - cmd: command to run
+#
 sub susystem
 {
   system $sudo . $_[0];
@@ -814,6 +826,12 @@ sub susystem
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# show_progress(percent)
+#
+# Helper function to update progress indicator.
+#
+# - percent: percentage to show
+#
 sub show_progress
 {
   my $p = shift;
@@ -830,6 +848,20 @@ sub show_progress
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# fname(name)
+#
+# Get full file name.
+#
+# - name: file name
+#
+# Returns full file name including path.
+#
+# We keep track of files and their locations as they can come from different
+# sources (directories). For mkisofs it's necessary to ensure file names are
+# unique.
+#
+# The function returns the current instance of the file.
+#
 sub fname
 {
   if(exists $files->{$_[0]}) {
@@ -874,6 +906,11 @@ sub build_filelist
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# analyze_boot()
+#
+# Scan sources and determne boot configuration. The result is put into the
+# global $boot var.
+#
 sub analyze_boot
 {
   my $boot;
@@ -944,6 +981,12 @@ sub analyze_boot
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# todo = build_todo()
+#
+# Build list of boot configurations the new image should have and return it.
+#
+# This list is later used contructing the mkisofs/isohybrid calls.
+#
 sub build_todo
 {
   my $todo;
@@ -1111,6 +1154,14 @@ sub copy_file
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# prepare_mkisofs()
+#
+# Gather information needed to build the mkisofs command line.
+#
+# The result is stored in the global $mkisofs var.
+#
+# This uses the todo list from build_todo() to setup the boot config.
+#
 sub prepare_mkisofs
 {
   my $iso_catalog;
@@ -1195,6 +1246,10 @@ sub prepare_mkisofs
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# run_mkisofs()
+#
+# Build actual mkisofs command line and run it.
+#
 sub run_mkisofs
 {
   my $log;
@@ -1254,6 +1309,14 @@ sub run_mkisofs
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# buf = read_sector(nr)
+#
+# Read 2k sector from iso image.
+#
+# - nr: sector number
+#
+# Uses global file handle $iso_fh.
+#
 sub read_sector
 {
   my $buf;
@@ -1266,6 +1329,15 @@ sub read_sector
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# write_sector(nr, buf)
+#
+# Write 2k sector to iso image.
+#
+# - nr: sector number
+# - buf: data to write
+#
+# Uses global file handle $iso_fh.
+#
 sub write_sector
 {
   die "$iso_file: seek error\n" unless seek($iso_fh, $_[0] * 0x800, 0);
@@ -1274,6 +1346,13 @@ sub write_sector
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# fix_catalog()
+#
+# Fixes el torito boot catalog.
+#
+# mkisofs writes a booot catalog that's not exactly standard conform. This
+# function fixes it.
+#
 sub fix_catalog
 {
   return unless $mkisofs->{fix_catalog};
@@ -1337,6 +1416,20 @@ sub fix_catalog
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# relocate_catalog()
+#
+# Relocate boot catalog.
+#
+# Some hardware has problems booting from dvd when the boot catalog is not
+# near the beginning of the iso image.
+#
+# The catalog can actually be nearly in any place in the iso image but
+# mkisofs doesn't let you influence it (much).
+#
+# But mkisofs puts a 'comment' block near the start of the iso image. So, we
+# take the somewhat drastic step to relocate the catalog into this 'comment'
+# block and have the catalog as much at the top of the image as possible.
+#
 sub relocate_catalog
 {
   return unless $mkisofs->{fix_catalog};
@@ -1930,6 +2023,13 @@ sub fat_data_start
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# create_initrd()
+#
+# Combine the various initrd parts into the new one.
+#
+# This will only _append_ the new parts to the original unless
+# $opt_rebuild_initrd is set.
+#
 sub create_initrd
 {
   return undef if !@opt_initrds;
@@ -1973,6 +2073,7 @@ sub create_initrd
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# get_kernel_initrd()
 #
 # Return hash with kernel/initrd pair used for booting.
 #
@@ -2017,6 +2118,10 @@ sub get_kernel_initrd
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# update_kernel_initrd()
+#
+# Put new kernel/initrd into the image (at the correct location).
+#
 sub update_kernel_initrd
 {
   my $x = get_kernel_initrd;
@@ -2075,6 +2180,14 @@ sub update_kernel_initrd
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# get_initrd_format()
+#
+# Analyze original initrd parts and remember compression type.
+#
+# Raise an error if you are about the combine initrd parts with different
+# compression types. While it _would_ technically be ok for the kernel to do
+# this, this is really a nightmare on the user level side.
+#
 sub get_initrd_format
 {
   my $f;
@@ -2104,6 +2217,10 @@ sub get_initrd_format
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# unpack_orig_initrd()
+#
+# Locate original initrd and unpack it into a temporary directory.
+#
 sub unpack_orig_initrd
 {
   if(my $x = get_kernel_initrd) {
@@ -2130,6 +2247,17 @@ sub unpack_orig_initrd
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# extract_installkeys()
+#
+# Get 'installkey.gpg' from the ooriginal initrd.
+#
+# Older SUSE install initrds has the gpg keys in a file installkey.gpg. To
+# be able to add keys we have to extract the file first, add the keys, and
+# then write the new file.
+#
+# Current SUSE initrds don't have this file and use keys in
+# /usr/lib/rpm/gnupg/keys directly.
+#
 sub extract_installkeys
 {
   return if !$opt_sign;
@@ -2146,6 +2274,10 @@ sub extract_installkeys
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# create_cd_ikr()
+#
+# Needed to handle s390x systems.
+#
 sub create_cd_ikr
 {
   local $_;
@@ -2205,6 +2337,10 @@ sub create_cd_ikr
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# isolinux_add_option()
+#
+# Add new boot option to isolinux.cfg.
+#
 sub isolinux_add_option
 {
   my $n = shift;
@@ -2275,6 +2411,10 @@ sub isolinux_add_option
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# grub2_add_option()
+#
+# Add new boot option to grub.cfg.
+#
 sub grub2_add_option
 {
   my $n = shift;
@@ -2323,6 +2463,10 @@ sub grub2_add_option
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# yaboot_add_option()
+#
+# Add new boot option to yaboot.txt.
+#
 sub yaboot_add_option
 {
   my $n = shift;
@@ -2387,6 +2531,10 @@ sub yaboot_add_option
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# update_boot_options()
+#
+# Add new booot option. Modifies files according to used boot loader.
+#
 sub update_boot_options
 {
   return unless defined $opt_boot_options || $opt_new_boot_entry;
@@ -2431,7 +2579,10 @@ sub update_boot_options
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-# wipe files we really don't want
+# prepare_normal()
+#
+# Wipe files we really don't want to see in our image.
+#
 sub prepare_normal
 {
   # cleaning up KIWI isos a bit
@@ -2467,6 +2618,11 @@ sub exclude_files
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# prepare_micro()
+#
+# Remove all files not needed to run the installer itself. Basicallly whis removes
+# the rpms from the repository in the image.
+#
 sub prepare_micro
 {
   exclude_files [
@@ -2487,6 +2643,11 @@ sub prepare_micro
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# prepare_nano()
+#
+# Remove all files not needed to run linuxrc. This will also remove the
+# installation system (as for the network iso).
+#
 sub prepare_nano
 {
   prepare_micro;
@@ -2516,6 +2677,11 @@ sub prepare_nano
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# prepare_pico()
+#
+# Remove all files not needed to run the boot loader. This makes only sense
+# for testing.
+#
 sub prepare_pico
 {
   prepare_nano;
@@ -2538,6 +2704,11 @@ sub prepare_pico
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# set_mkisofs_metadata()
+#
+# Construct iso metadata from existing iso and product files found in the
+# source image.
+#
 sub set_mkisofs_metadata
 {
   my $media;
@@ -2728,6 +2899,11 @@ sub update_content
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# create_sign_key()
+#
+# Create a temporary gpg keyring and either add the provided gpg key or
+# create a temporary key.
+#
 sub create_sign_key
 {
   my $gpg_dir = $tmp->dir();
@@ -2808,6 +2984,10 @@ Name-Comment: transient key
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# add_sign_key()
+#
+# Add public part of mksusecd sign key to image so it's used by the installer.
+#
 sub add_sign_key
 {
   return if !$sign_key_pub;
@@ -2833,6 +3013,10 @@ sub add_sign_key
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# sign_content()
+#
+# Re-sign 'content' file with our own key if we modified it.
+#
 sub sign_content
 {
   return if !$sign_key_dir;
@@ -3148,6 +3332,10 @@ sub format_array
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# get_initrd_modules()
+#
+# Get list of modules that are in the initrd.
+#
 sub get_initrd_modules
 {
   my $unpack_dir = $tmp->dir();
@@ -3187,6 +3375,10 @@ sub get_initrd_modules
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# unpack_kernel_rpms()
+#
+# Unpack al provided kernel packaged in a temporary location.
+#
 sub unpack_kernel_rpms
 {
   $kernel->{dir} = $tmp->dir();
@@ -3227,6 +3419,13 @@ sub unpack_kernel_rpms
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# build_module_list()
+#
+# Build list of modules to include in the new initrd.
+#
+# This is based on the list of modules in the original initrd minus modules
+# no longer exist plus modules needed to fulfill all module dependencies.
+#
 sub build_module_list
 {
   my %mods_remove;
@@ -3352,6 +3551,10 @@ sub build_module_list
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# add_modules_to_initrd()
+#
+# Add new modules to initrd.
+#
 sub add_modules_to_initrd
 {
   my $tmp_dir;
@@ -3412,6 +3615,13 @@ sub add_modules_to_initrd
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# replace_kernel_mods()
+#
+# Replace kernel modules.
+#
+# Includes getting the list of modules in the original initrd, unpacking the
+# kernel packages, and including the new modules to the new initrd.
+#
 sub replace_kernel_mods
 {
   my @modules;
