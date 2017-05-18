@@ -603,7 +603,11 @@ Create ISO image:
                                 image (partitioning tools don't really like this) or
                                 'iso' or 'fat' in which case you get a regular partition
                                 with an ISO960 or FAT file system (default: 'iso').
-      --fat                     An alias for '--hybrid-fs fat --no-efi --no-iso'.
+      --fat                     Create an image that's suitable to be put on a usb disk.
+                                The image holds a single FAT32 partition and it can NOT be
+                                used to write a DVD. You can adjust the file system size
+                                with the --size option.
+                                Technically an alias for '--hybrid-fs=fat --no-efi --no-iso'.
       --size SIZE_SPEC          When using a FAT file system, you can set the intended size of
                                 the disk image.
                                 SIZE_SPEC can be a number, optionally followed by a unit ('b',
