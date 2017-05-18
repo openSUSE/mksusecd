@@ -200,6 +200,7 @@ sub prepare_addon;
 sub check_mksquashfs_comp;
 sub eval_size;
 sub add_linuxrc_option;
+sub wipe_iso;
 
 my %config;
 my $sudo;
@@ -244,6 +245,7 @@ my $opt_size;
 my $opt_net;
 my $opt_instsys;
 my $opt_defaultrepo;
+my $opt_no_iso;
 
 
 GetOptions(
@@ -266,7 +268,8 @@ GetOptions(
   'hybrid'           => \$opt_hybrid,
   'no-hybrid'        => sub { $opt_hybrid = 0 },
   'hybrid-fs=s'      => sub { $opt_hybrid = 1; $opt_hybrid_fs = $_[1] },
-  'fat'              => sub { $opt_hybrid = 1; $opt_hybrid_fs = 'fat' },
+  'fat'              => sub { $opt_hybrid = 1; $opt_hybrid_fs = 'fat'; $opt_efi = 0; $opt_no_iso = 1 },
+  'no-iso'           => \$opt_no_iso,
   'size=s'           => \$opt_size,
   'protective-mbr'   => sub { $opt_no_prot_mbr = 0 },
   'no-protective-mbr' => \$opt_no_prot_mbr,
@@ -536,6 +539,8 @@ if($opt_create) {
   if($mkisofs->{partition_start}) {
     system "tagmedia --add-tag  'partition=$mkisofs->{partition_start}' '$iso_file' >/dev/null";
   }
+
+  wipe_iso if $opt_no_iso;
 }
 
 
@@ -588,6 +593,7 @@ Create ISO image:
       --no-mbr-code             Don't include x86 MBR boot code.
       --mbr-chs                 Fill in sensible CHS values in MBR partition table (default).
       --no-mbr-chs              Use 0xffffff instead of CHS values in MBR partition table.
+      --no-iso                  Don't make image accessible as ISO9660 file system.
       --hybrid                  Create an isohybrid image which is both an ISO and a
                                 regular disk image (default).
       --no-hybrid               Create a regular ISO image without extra gimmicks.
@@ -597,7 +603,7 @@ Create ISO image:
                                 image (partitioning tools don't really like this) or
                                 'iso' or 'fat' in which case you get a regular partition
                                 with an ISO960 or FAT file system (default: 'iso').
-      --fat                     An alias for '--hybrid-fs fat'.
+      --fat                     An alias for '--hybrid-fs fat --no-efi --no-iso'.
       --size SIZE_SPEC          When using a FAT file system, you can set the intended size of
                                 the disk image.
                                 SIZE_SPEC can be a number, optionally followed by a unit ('b',
@@ -3887,5 +3893,22 @@ sub add_linuxrc_option
   }
 
   print "added linuxrc option $key=\"$value\"\n" if $opt_verbose >= 1;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# wipe_iso()
+#
+# Wipe iso9660 file system header.
+#
+sub wipe_iso
+{
+  die "$iso_file: $!\n" unless open $iso_fh, "+<", $iso_file;
+
+  write_sector 0x10, ("\x00" x 0x800);
+  write_sector 0x11, ("\x00" x 0x800);
+
+  close $iso_fh;
+  undef $iso_fh;
 }
 
