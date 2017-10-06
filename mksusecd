@@ -2045,7 +2045,13 @@ sub create_initrd
   return undef if !@opt_initrds;
 
   my $tmp_initrd = $tmp->file();
-  my $tmp_dir = $opt_rebuild_initrd ? $orig_initrd : $tmp->dir();
+  my $tmp_dir = $tmp->dir();
+
+  if($opt_rebuild_initrd) {
+    unpack_orig_initrd if !$orig_initrd;
+    die "initrd unpacking failed\n" if !$orig_initrd;
+    $tmp_dir = $orig_initrd;
+  }
 
   for my $i (@opt_initrds) {
     my $type = get_archive_type $i;
