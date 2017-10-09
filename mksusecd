@@ -2045,7 +2045,13 @@ sub create_initrd
   return undef if !@opt_initrds;
 
   my $tmp_initrd = $tmp->file();
-  my $tmp_dir = $opt_rebuild_initrd ? $orig_initrd : $tmp->dir();
+  my $tmp_dir = $tmp->dir();
+
+  if($opt_rebuild_initrd) {
+    unpack_orig_initrd if !$orig_initrd;
+    die "initrd unpacking failed\n" if !$orig_initrd;
+    $tmp_dir = $orig_initrd;
+  }
 
   for my $i (@opt_initrds) {
     my $type = get_archive_type $i;
@@ -3122,15 +3128,17 @@ sub get_archive_type
 }
 
 
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-# Unpack cpio archive.
+# Unpack multiple concatenated cpio archives.
 #
-# unpack_cpiox(dir, file, part)
+# The archives are expected to be in cpio ASCII format ('cpio -H newc').
+# Between the idividual archives an arbitrary sequence of (binary) zeros is
+# allowed. (This is what the kernel allows for the initramfs image.)
 #
-# -  dir: the directory to unpack to
+# unpack_cpiox(dst, file, part)
+#
+# -  dst: the directory to unpack to
 # - file: the archive file name
-# - part: the part number of a multipart archive (kernel initramfs-like)
-#         (0 = unpack all)
+# - part: the part number (1 based) of a multipart archive (0 = unpack all)
 #
 sub unpack_cpiox
 {
@@ -3138,89 +3146,156 @@ sub unpack_cpiox
   my $file = shift;
   my $part = shift() + 0;
 
-  my ($f, $p, $buf, $cnt, $len, $magic, $head, $fname_len, $data_len, $fname, $ofs);
-
   my $cpio_cmd = 'cpio --quiet -dmiu --sparse --no-absolute-filenames 2>/dev/null';
 
-  $cnt = 1;
+  # the archive number we are looking for (1 based)
+  my $cnt = 1;
 
-  $read_write = sub
+  # input and output file handles
+  my ($f, $p);
+
+  # data transfer buffer
+  my $buf;
+
+  # search for cpio header in input stream on next read operation
+  my $sync = 0;
+
+  # track # of written bytes (reset at start of each cpio archive)
+  my $write_ofs;
+
+  # Read # of bytes from input and write to output.
+  #
+  # bytes = read_write(len)
+  # -   len: number of bytes to transfer
+  # - bytes: size of data actually transferred
+  #
+  # This function implicitly opens a new output pipe if none is open and data
+  # need to be written.
+  #
+  # If the $sync variable is set search the input stream for a valid cpio
+  # header (and reset $sync to 0).
+  #
+  sub read_write
   {
     my $len = $_[0];
-    my $read;
 
-    undef $buf;
-
-    open $p, "| ( cd $dst ; $cpio_cmd )" if !$p && ($part == 0 || $part == $cnt);
-
+    # nothing to do
     return $len if !$len;
 
+    # clear buffer
+    undef $buf;
+
+    # Search for next cpio header.
+    #
+    # This assumes there's a number of binary zeros in the input stream
+    # until the next cpio header.
+    # Actually this only looks for the next non-zero data blob.
+    if($sync) {
+      $sync = 0;
+      while(sysread($f, $buf, 1) == 1 && $buf eq "\x00") {};
+      $len -= length $buf;
+    }
+
+    # read $len bytes
     while($len) {
       my $x = sysread $f, substr($buf, length $buf), $len;
       last if !$x;
-      $read += $x;
       $len -= $x;
     };
 
-    syswrite $p, $buf, $read if $read && $p;
+    # In case we did read something, write it to output pipe.
+    if(length $buf) {
+      # Open a new pipe if needed.
+      # But only if part number matches or is 0 (== all parts).
+      if(!$p && ($part == 0 || $part == $cnt)) {
+        open $p, "| ( cd $dst ; $cpio_cmd )" or die "failed to open cpio: $!\n";
+        $write_ofs = 0;
+      }
 
-    return $read;
-  };
+      # Write data and track output size for padding calculation at the end.
+      if($p) {
+        syswrite $p, $buf;
+        $write_ofs += length $buf;
+      }
+    }
 
+    return length $buf;
+  }
+
+  # Write padding bytes (pad with 0 to full 512 byte blocks) and close
+  # output pipe.
+  #
+  # write_pad_and_close()
+  #
+  # This also sets a sync flag indicating that we should search for the next
+  # valid cpio header in the input stream.
+  #
+  sub write_pad_and_close
+  {
+    if($p) {
+      my $pad = (($write_ofs + 0x1ff) & ~0x1ff) - $write_ofs;
+      syswrite $p, "\x00" x $pad, $pad if $pad;
+      close $p;
+      undef $p;
+    }
+
+    # search for next cpio header in input stream
+    $sync = 1;
+  }
+
+  # open archive and get going...
   if(open $f, $file) {
-    while(($len = &$read_write(110)) == 110) {
-      $ofs += 110;
+    my $len;
 
-      # printf "header = \"%s\" %d\n", $buf, length($buf);
+    # We have to trace the cpio archive structure.
+    # Keep going as long as there's a header.
+    while(($len = read_write(110)) == 110) {
+      my $magic = substr($buf, 0, 6);
+      my $head = substr($buf, 6);
 
-      $magic = substr($buf, 0, 6);
-      $head = substr($buf, 6);
+      my $fname_len = hex substr $buf, 94, 8;
+      my $data_len = hex substr $buf, 54, 8;
 
-      $fname_len = hex substr $buf, 94, 8;
-      $data_len = hex substr $buf, 54, 8;
-
-      # print "$magic - $fname_len - $data_len\n";
-
-      die "broken cpio header\n" if $magic ne "070701" && $magic ne "070702";
+      die "broken cpio header\n" if $magic !~ /^07070[12]$/;
 
       $fname_len += (2, 1, 0, 3)[$fname_len & 3];
       $data_len = (($data_len + 3) & ~3);
 
-      &$read_write($fname_len);
-      $fname = $buf;
+      read_write $fname_len;
+
+      my $fname = $buf;
       $fname =~ s/\x00*$//;
 
-      &$read_write($data_len);
+      read_write $data_len;
 
-      $ofs += $fname_len + $data_len;
-
-      # print "fname = \"$fname\"\n";
-
-      # printf "ofs = 0x%x\n", $ofs;
-
+      # Look for cpio archive end marker.
+      # If found, close cpio process. A new process will be started at the
+      # next valid cpio archive header.
       if(
         $fname eq 'TRAILER!!!' &&
-        $head eq '00000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000B00000000'
+        $head =~ /^0{39}10{55}b0{8}$/i
       ) {
-        my $pad = ($ofs + 0x1ff) & ~0x1ff;
-        &$read_write($pad - $ofs);
-        $ofs = $pad;
-        $cnt++;
-        close $p if $p;
-        undef $p;
+        write_pad_and_close;
+        # exit if we're done
+        if($cnt++ == $part) {
+          close $f;
+          return;
+        }
       }
     }
 
-    close $p if $p;
-
+    # we're done, close input file...
     close $f;
 
-    if($len) {
-      die "error reading cpio archive $len\n";
-    }
+    # ...and output file.
+    write_pad_and_close;
+
+    # If $len is != 0 this means we've seen something that's not a header of
+    # a cpio archive entry.
+    die "invalid cpio data\n" if $len;
   }
   else {
-    die "failed to read file\n";
+    die "error reading cpio archive: $!\n";
   }
 }
 
