@@ -201,6 +201,8 @@ sub check_mksquashfs_comp;
 sub eval_size;
 sub add_linuxrc_option;
 sub wipe_iso;
+sub analyze_products;
+sub check_product;
 
 my %config;
 my $sudo;
@@ -246,6 +248,9 @@ my $opt_net;
 my $opt_instsys;
 my $opt_defaultrepo;
 my $opt_no_iso;
+my $opt_merge_repos = 1;
+my $opt_list_repos;
+my $opt_include_repos;
 
 
 GetOptions(
@@ -304,6 +309,10 @@ GetOptions(
   'addon-name=s'     => \$opt_addon_name,
   'addon-alias=s'    => \$opt_addon_alias,
   'addon-prio=i'     => \$opt_addon_prio,
+  'no-merge-repos'   => sub { $opt_merge_repos = 0 },
+  'merge-repos'      => \$opt_merge_repos,
+  'list-repos'       => \$opt_list_repos,
+  'include-repos=s'  => \$opt_include_repos,
   'save-temp'        => \$opt_save_temp,
   'verbose|v'        => sub { $opt_verbose++ },
   'version'          => sub { print "$VERSION\n"; exit 0 },
@@ -347,6 +356,7 @@ my $tmp_new = $tmp->dir('new');
 my $tmp_err = $tmp->file('err');
 my $tmp_sort = $tmp->file('sort');
 my $tmp_exclude = $tmp->file('exclude');
+my $tmp_filelist = $tmp->file('filelist');
 my $tmp_fat = $tmp->file('fat');
 
 my @sources;
@@ -377,6 +387,7 @@ my $image_size;
 my $syslinux_config;
 my $linuxrc_options;
 my $has_content;
+my $product_db;
 
 my $progress_start = 0;
 my $progress_end = 100;
@@ -439,6 +450,7 @@ if($opt_create) {
     die $msg;
   }
 
+  analyze_products \@sources;
   build_filelist \@sources;
   $boot = analyze_boot;
   get_initrd_format;
@@ -653,6 +665,13 @@ Create ISO image:
                                 If unset, an alias based on the repo name is generated.
       --addon-prio NUM          Set add-on repository priority to NUM; lower NUM means higher
                                 priority (default: 60).
+      --merge-repos             When mksusecd detects repositories in SOURCES it will try to make
+                                them all available and create a common media1/products file.
+      --no-merge-repos          Skip the special treatment of repositories and just merge all SOURCES.
+      --include-repos LIST      Comma-separated list of repository name to include in the final image.
+                                Use --list-repos to see valid values.
+                                Default: include all repos.
+      --list-repos              Just list all repositories and exit.
       --grub2                   Use grub2 for El-Torito legacy setup (for debugging).
       --isolinux                Use isolinux for El-Torito legacy setup (for debugging).
       --micro                   Create an ISO with just enough files to test the
@@ -1247,11 +1266,11 @@ sub prepare_mkisofs
     $mkisofs->{options} .= " -exclude-list '$tmp_exclude'";
   }
 
-  # add our source dirs
-  for (@sources) {
-    $mkisofs->{options} .= " '$_->{dir}'";
-  }
-  $mkisofs->{options} .= " '$tmp_new'";
+  $mkisofs->{filelist} = [ (map { $_->{dir} } grep { !$_->{skip} } @sources), $tmp_new ];
+
+  push @{$mkisofs->{filelist}}, @{$mkisofs->{grafts}};
+
+  $mkisofs->{options} .= " -graft-points -path-list '$tmp_filelist'";
 }
 
 
@@ -1282,13 +1301,23 @@ sub run_mkisofs
     }
   }
 
+  # create file list
+  if($mkisofs->{filelist}) {
+    if(open my $fh, ">$tmp_filelist") {
+      print $fh "$_\n" for @{$mkisofs->{filelist}};
+      close $fh;
+    }
+  }
+
   $cmd = "$mkisofs->{command}$mkisofs->{options}";
 
   print "running:\n$cmd\n" if $opt_verbose >= 2;
 
-  print "$mkisofs->{command} sort file:\n", join("\n", @{$mkisofs->{sort}}), "\n" if $opt_verbose >= 3;
-
-  print "$mkisofs->{command} exclude file:\n", join("\n", @{$mkisofs->{exclude}}), "\n" if $opt_verbose >= 3;
+  if($opt_verbose >= 3) {
+    print "$mkisofs->{command} file list:\n", join("\n", @{$mkisofs->{filelist}}), "\n";
+    print "$mkisofs->{command} sort file:\n", join("\n", @{$mkisofs->{sort}}), "\n";
+    print "$mkisofs->{command} exclude file:\n", join("\n", @{$mkisofs->{exclude}}), "\n";
+  }
 
   # seems to be necessary, else some changes are lost...
   system "sync";
@@ -3989,5 +4018,140 @@ sub wipe_iso
 
   close $iso_fh;
   undef $iso_fh;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# analyze_products(sources)
+#
+# sources is an array_ref containing a list of directories to be scanned and
+# added to our internal file list.
+#
+# The global vars $files and $mkisofs->{exclude} are updated.
+#
+# The point here is that mkisofs refuses to resolve name conflicts (when
+# merging several sources). So we have to do this ourselves and track
+# obsolete (that is, when duplicates show up) files in $mkisofs->{exclude}.
+#
+# That's only needed for regular files; directories don't matter.
+#
+sub analyze_products
+{
+  my $src = $_[0];
+
+  # print Dumper $src;
+
+  my $src_idx = 0;
+
+  for my $s (@$src) {
+    File::Find::find({
+      wanted => sub {
+        if(m#/media.1/products$#) {
+          if(open my $f, $_) {
+            my @fields;
+            while(my $l = <$f>) {
+              @fields = split /\s/, $l;
+              my $ok = check_product($src_idx, $_, @fields) if @fields == 3;
+              $s->{skip} = 1 if $ok && $src_idx > 0;
+            }
+            close $f;
+          }
+        }
+      },
+      no_chdir => 1
+    }, $s->{dir});
+    $src_idx++;
+  }
+
+  # print Dumper $product_db;
+
+  print "Repositories:\n";
+
+  for (@{$product_db->{list}}) {
+    next if !$_->{include};
+    print "  $_->{name} [$_->{ver}]";
+    print " ($_->{label})" if $_->{label};
+    print "\n";
+  }
+
+  exit 0 if $opt_list_repos;
+
+  return if !$opt_merge_repos;
+
+  mkdir "$tmp_new/media.1", 0755;
+  if(-r "$src->[0]{dir}/media.1/products") {
+    system "cp $src->[0]{dir}/media.1/products $tmp_new/media.1/products";
+    chmod 0644, "$tmp_new/media.1/products";
+  }
+
+  open my $prod_fd, ">>$tmp_new/media.1/products" or die "media.1/products: $!\n";
+
+  for (@{$product_db->{list}}) {
+    # $src->[0] is always included, skip it here
+    next if !$_->{src_idx};
+    next if !$_->{include};
+    # FIXME: add $label to name?
+    print $prod_fd "/$_->{repo_dir} $_->{name} $_->{ver}\n";
+    for my $d (@{$_->{dirs}}) {
+      push @{$mkisofs->{grafts}}, "$_->{repo_dir}/$d=$_->{base_dir}/$d";
+    }
+  }
+
+  close $prod_fd;
+}
+
+
+sub check_product
+{
+  my ($src_idx, $prod, $dir, $name, $ver) = @_;
+
+  my $base_dir = $prod;
+  $base_dir =~ s#/media.1/products$#$dir#;
+  $base_dir =~ s#/+$##;
+
+  return 0 if $product_db->{checked}{$base_dir};
+
+  $product_db->{checked}{$base_dir} = 1;
+
+  # print "$base_dir: $name, $ver\n";
+
+  my %repodirs;
+  my $debug = 0;
+
+  if(open my $f, "gunzip -c $base_dir/repodata/*-primary.xml.gz |") {
+    while(my $l = <$f>) {
+      $repodirs{$1} = 1 if $l =~ m#<location href="([^/]+)/#;
+      $debug = 1 if $l =~ m#<location href=".*-debug(info|source)-#;
+    }
+    close $f;
+  }
+
+  my @labels;
+  push @labels, "sources" if $repodirs{src} || $repodirs{nosrc};
+  push @labels, "debuginfo" if $debug;
+  my $label = join ",", @labels;
+
+  my $repo_dir = $name;		# FIXME: add "_$ver"?
+  $repo_dir .= "_$label" if $label ne "";
+
+  my $inc = 1;
+  if($opt_include_repos && $src_idx) {
+    my @repos = split /,/, $opt_include_repos;
+    $inc = grep { $_ eq $name } @repos;
+  }
+
+  push @{$product_db->{list}}, {
+    base_dir => $base_dir,
+    name => $name,
+    ver => $ver,
+    dirs => [ "repodata", sort keys %repodirs ],
+    debug => $debug,
+    label => $label,
+    src_idx => $src_idx,
+    repo_dir => $repo_dir,
+    include => $inc
+  };
+
+  return 1;
 }
 
