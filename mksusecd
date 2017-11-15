@@ -319,7 +319,7 @@ GetOptions(
   'help'             => sub { usage 0 },
 ) || usage 1;
 
-usage 1 unless $opt_create;
+usage 1 unless $opt_create || $opt_list_repos;
 usage 1 if $opt_hybrid_fs !~ '^(|iso|fat)$';
 usage 1 if defined($opt_digest) && $opt_digest !~ '^(md5|sha1|sha224|sha256|sha384|sha512)$';
 
@@ -403,7 +403,7 @@ if(defined $opt_size) {
   die "$opt_size: invalid size\n" unless $image_size;
 }
 
-if($opt_create) {
+if($opt_create || $opt_list_repos) {
 #  if(@opt_kernel_rpms) {
 #    die "Sorry, you must run mksusecd as root to replace kernel modules." if $>;
 #  }
@@ -666,11 +666,11 @@ Create ISO image:
       --addon-prio NUM          Set add-on repository priority to NUM; lower NUM means higher
                                 priority (default: 60).
       --merge-repos             When mksusecd detects repositories in SOURCES it will try to make
-                                them all available and create a common media1/products file.
+                                them all available and create a common media.1/products file (default).
+                                See Product module notes below.
       --no-merge-repos          Skip the special treatment of repositories and just merge all SOURCES.
-      --include-repos LIST      Comma-separated list of repository name to include in the final image.
-                                Use --list-repos to see valid values.
-                                Default: include all repos.
+      --include-repos LIST      Comma-separated list of repository names to include in the final image.
+                                Use --list-repos to see valid values. (Default: include all repos.)
       --list-repos              Just list all repositories and exit.
       --grub2                   Use grub2 for El-Torito legacy setup (for debugging).
       --isolinux                Use isolinux for El-Torito legacy setup (for debugging).
@@ -780,6 +780,19 @@ Repository notes:
   then try via network at http://foo/bar.
 
   The --net option is just a short hand for --defaultrepo=cd:/,hd:/,<NET_URL>.
+
+Product module notes:
+
+  In SLE 15 the product is split into several repositories called 'modules'
+  (don't confuse this with kernel modules). These modules are distributed
+  over several media or in separate directories on a network installation
+  server.
+
+  mksusecd lets you combine the installation medium together with the
+  modules you need into a single medium.
+
+  Check the available modules with --list-repos and then pick the modules
+  you need with --include-repos.
 
 Configuration file:
 
@@ -4025,15 +4038,18 @@ sub wipe_iso
 # analyze_products(sources)
 #
 # sources is an array_ref containing a list of directories to be scanned and
-# added to our internal file list.
+# checked for product repositories (aka "modules").
 #
-# The global vars $files and $mkisofs->{exclude} are updated.
+# Repositories can use the same directory on different source isos. So we
+# have to place them in new locations on the final medium. To avoid
+# temporary copies, we do this via mkisofs's graft points (cf. man mkisofs).
 #
-# The point here is that mkisofs refuses to resolve name conflicts (when
-# merging several sources). So we have to do this ourselves and track
-# obsolete (that is, when duplicates show up) files in $mkisofs->{exclude}.
+# Repositories on the first medium are not relocated.
 #
-# That's only needed for regular files; directories don't matter.
+# Only repomd-style repositories are considered.
+#
+# Note: this assumes the lines in media.1/products to be structured like
+# 'dir product version'.
 #
 sub analyze_products
 {
@@ -4101,6 +4117,21 @@ sub analyze_products
 }
 
 
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# check_product(source_idx, product_file, base_dir, name, version)
+#
+# -   source_idx: # of source medium (0-based)
+# - product_file: full path to 'media.1/products'
+# -     base_dir: directory the repos is in
+# -         name: product name
+# -      version: some version string
+#
+# Analyze a single repomd repository and add result to global $product_db
+# structure.
+#
+# This includes determining the directories belonging to the repository and
+# repo type (binaries, debug, source).
+#
 sub check_product
 {
   my ($src_idx, $prod, $dir, $name, $ver) = @_;
@@ -4114,6 +4145,8 @@ sub check_product
   $product_db->{checked}{$base_dir} = 1;
 
   # print "$base_dir: $name, $ver\n";
+
+  return 0 unless -d "$base_dir/repodata";
 
   my %repodirs;
   my $debug = 0;
