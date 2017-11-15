@@ -1281,7 +1281,7 @@ sub prepare_mkisofs
 
   $mkisofs->{filelist} = [ (map { $_->{dir} } grep { !$_->{skip} } @sources), $tmp_new ];
 
-  push @{$mkisofs->{filelist}}, @{$mkisofs->{grafts}};
+  push @{$mkisofs->{filelist}}, @{$mkisofs->{grafts}} if $mkisofs->{grafts};
 
   $mkisofs->{options} .= " -graft-points -path-list '$tmp_filelist'";
 }
@@ -4095,8 +4095,10 @@ sub analyze_products
   return if !$opt_merge_repos;
 
   mkdir "$tmp_new/media.1", 0755;
-  if(-r "$src->[0]{dir}/media.1/products") {
-    system "cp $src->[0]{dir}/media.1/products $tmp_new/media.1/products";
+  my $prod_file = "$src->[0]{dir}/media.1/products";
+  if(-r $prod_file) {
+    push @{$mkisofs->{exclude}}, $prod_file;
+    system "cp $prod_file $tmp_new/media.1/products";
     chmod 0644, "$tmp_new/media.1/products";
   }
 
