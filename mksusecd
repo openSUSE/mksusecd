@@ -203,6 +203,8 @@ sub add_linuxrc_option;
 sub wipe_iso;
 sub analyze_products;
 sub check_product;
+sub crypto_cleanup;
+sub run_crypto_disk;
 
 my %config;
 my $sudo;
@@ -251,6 +253,11 @@ my $opt_no_iso;
 my $opt_merge_repos = 1;
 my $opt_list_repos;
 my $opt_include_repos;
+my $opt_crypto;
+my $opt_crypto_fs = 'ext4';
+my $opt_crypto_password;
+my $opt_crypto_title;
+my $opt_crypto_top_dir;
 
 
 GetOptions(
@@ -274,6 +281,11 @@ GetOptions(
   'no-hybrid'        => sub { $opt_hybrid = 0 },
   'hybrid-fs=s'      => sub { $opt_hybrid = 1; $opt_hybrid_fs = $_[1] },
   'fat'              => sub { $opt_hybrid = 1; $opt_hybrid_fs = 'fat'; $opt_efi = 0; $opt_no_iso = 1 },
+  'crypto'           => sub { $opt_crypto = 1; $opt_hybrid = 0; },
+  'password=s'       => \$opt_crypto_password,
+  'title=s'          => \$opt_crypto_title,
+  'top-dir=s'        => \$opt_crypto_top_dir,
+  'filesystem=s'     => \$opt_crypto_fs,
   'no-iso'           => \$opt_no_iso,
   'size=s'           => \$opt_size,
   'protective-mbr'   => sub { $opt_no_prot_mbr = 0 },
@@ -322,6 +334,8 @@ GetOptions(
 usage 1 unless $opt_create || $opt_list_repos;
 usage 1 if $opt_hybrid_fs !~ '^(|iso|fat)$';
 usage 1 if defined($opt_digest) && $opt_digest !~ '^(md5|sha1|sha224|sha256|sha384|sha512)$';
+
+die "no password\n" if $opt_crypto && $opt_crypto_password eq "";
 
 $ENV{PATH} = "$LIBEXECDIR/mksusecd:/usr/bin:/bin:/usr/sbin:/sbin";
 
@@ -409,7 +423,7 @@ if($opt_create || $opt_list_repos) {
 #  }
 
   # we might need two mkisofs runs...
-  $two_runs = $opt_hybrid && $opt_hybrid_fs;
+  $two_runs = ($opt_hybrid && $opt_hybrid_fs) || $opt_crypto;
 
   $iso_file = $opt_dst;
 
@@ -518,9 +532,7 @@ if($opt_create || $opt_list_repos) {
   # print Dumper($mkisofs->{exclude});
 
   if($two_runs) {
-    if($opt_hybrid_fs eq 'iso') {
-      $progress_end = 50;
-    }
+    $progress_end = 50;
     if($opt_hybrid_fs eq 'fat') {
       $progress_end = 33;
     }
@@ -529,6 +541,13 @@ if($opt_create || $opt_list_repos) {
   run_mkisofs;
 
   if($two_runs) {
+    if($opt_crypto) {
+      $progress_start = 50;
+      $progress_end = 100;
+      run_crypto_disk;
+      exit
+    }
+
     rerun_mkisofs;
   }
 
@@ -620,12 +639,22 @@ Create ISO image:
                                 used to write a DVD. You can adjust the file system size
                                 with the --size option.
                                 Technically an alias for '--hybrid-fs=fat --no-efi --no-iso'.
-      --size SIZE_SPEC          When using a FAT file system, you can set the intended size of
-                                the disk image.
+      --size SIZE_SPEC          When using a FAT file system or the --crypto option, you can
+                                set the intended size of the disk image.
                                 SIZE_SPEC can be a number, optionally followed by a unit ('b',
                                 'k', 'm', 'g', 't') indicating blocks, kiB, MiB, GiB, or TiB.
                                 But SIZE_SPEC can also be a device name like '/dev/sda', in
                                 which casee the size of the device is used.
+      --crypto                  If set, an encrypted disk image is created.
+                                See Crypto notes below for details.
+      --password PASSWORD       Use PASSWORD for encrypting the disk image.
+      --title TITLE             The password query screen uses TITLE as title (default: openSUSE).
+      --top-dir DIR             The installation files are placed into subdir DIR in the created
+                                image. This helps keeping the directory structure nice and clean
+                                in case you are using the image also for other things. The boot
+                                config is adjusted accordingly.
+      --filesystem FS           Use FILESYSTEM for the encrypted image (default: ext4). Don't be
+                                too creative here - the filesystem must be supported by grub2.
       --zipl                    Make zIPL bootable (default on s390x).
       --no-zipl                 Don't make zIPL bootable (default except on s390x).
       --initrd DIR|RPM|DUD      Add directory DIR or package RPM or driver update DUD
@@ -717,40 +746,40 @@ Hybrid mode notes:
 
 Signing notes:
 
-    On all media there is a file '/content' holding SHA256 sums of all files
-    relevant during installation. The file is signed and is used to ensure
-    the integrity of the installation environment.
+  On all media there is a file '/content' holding SHA256 sums of all files
+  relevant during installation. The file is signed and is used to ensure
+  the integrity of the installation environment.
 
-    If you modify any file mentioned there (e.g. replacing it or implicitly
-    as a result of the --initrd or --boot options) '/content' is updated and
-    must be re-signed. Otherwise the installer will complain when it starts
-    up. For this, mksusecd will re-sign the file and add the public part of
-    the signing key to the initrd.
+  If you modify any file mentioned there (e.g. replacing it or implicitly
+  as a result of the --initrd or --boot options) '/content' is updated and
+  must be re-signed. Otherwise the installer will complain when it starts
+  up. For this, mksusecd will re-sign the file and add the public part of
+  the signing key to the initrd.
 
-    You can specify the key to use with the 'sign-key' option. The option
-    must point to a private key file.
+  You can specify the key to use with the 'sign-key' option. The option
+  must point to a private key file.
 
-    If there's no 'sign-key' option, a transient key is created. The public
-    part is added to the initrd and the key is deleted.
+  If there's no 'sign-key' option, a transient key is created. The public
+  part is added to the initrd and the key is deleted.
 
 Add-on notes:
 
-    The add-on created here is just a repository, not a full add-on product.
-    If you need the latter, you will have to create that on your own and add
-    it to the iso.
+  The add-on created here is just a repository, not a full add-on product.
+  If you need the latter, you will have to create that on your own and add
+  it to the iso.
 
-    Although it auto-generates a name for the repository, it's not a very
-    creative one and it's probably a good idea to choose one explicitly
-    using the --addon-name option.
+  Although it auto-generates a name for the repository, it's not a very
+  creative one and it's probably a good idea to choose one explicitly
+  using the --addon-name option.
 
-    The default installation repositories have priority 99. Any smaller
-    number for the add-on repository will prefer the add-on packages even
-    though the package version number is smaller than in the standard
-    repository.
+  The default installation repositories have priority 99. Any smaller
+  number for the add-on repository will prefer the add-on packages even
+  though the package version number is smaller than in the standard
+  repository.
 
-    The default priority of 60 is chosen to be between the priority of the
-    default installation repositories (99) and the repositories created by
-    driver updates (50).
+  The default priority of 60 is chosen to be between the priority of the
+  default installation repositories (99) and the repositories created by
+  driver updates (50).
 
 Repository notes:
 
@@ -793,6 +822,46 @@ Product module notes:
 
   Check the available modules with --list-repos and then pick the modules
   you need with --include-repos.
+
+Crypto notes:
+
+  The --crypto option allows you to create an encrypted installation disk.
+  Note that this image is explicitly *not* bootable as cd/dvd (no hybrid
+  image). It is both legacy BIOS and UEFI bootable, though.
+
+  Everything except the plain grub2 binaries is encrypted on a LUKS
+  partition. Including the installer specific boot config. So if you for
+  example put some password into the default boot options via --boot this
+  is also stored in the encrypted part.
+
+  At the moment only x86_64 is supported. And you have to run mksusecd on a
+  machine that has grub2-i386-pc installed (to get the legacy BIOS setup).
+
+  Unlike the usual setup, grub2 is used for both legacy BIOS and UEFI
+  booting. So the boot screen really looks identical in both cases.
+
+  The default image size is chosen to leave only minimal free space. To
+  adjust the image size to your needs, use the --size option.
+
+  ***  Important  ***
+
+    For this to work, the 'cryptsetup' tools must be available in the
+    installer's initrd. This is not the case for older media (prior to
+    recent Tumbleweed and SLE/Leap 15).
+
+    If you work with these old media you must also add the following two
+    packages to the initrd explicitly:
+
+      - cryptsetup
+      - libpwquality1
+
+    You can find the required versions on the install medium in either the
+    /suse/x86_64 or /x86_64 directory. Copy them to some temporary location
+    and add
+
+      --initrd cryptsetup.rpm --initrd libpwquality1.rpm
+
+    to your mksusecd command line.
 
 Configuration file:
 
@@ -1843,14 +1912,17 @@ sub meta_iso
 #
 sub fat_mkfs
 {
-  my ($name, $size, $hidden) = @_;
+  my ($name, $size, $hidden, $cluster_size, $label) = @_;
+
+  $cluster_size = 4 if !$cluster_size;
+  $label = "SUSEDISK" if $label eq "";
 
   open my $fh, ">", $name;
   close $fh;
   truncate $name, $size << 9;
   # try fat32 first
-  system "mformat -i '$name' -T $size -H $hidden -s 32 -h 64 -c 4 -F -d 1 -v 'SUSEDISK' :: 2>/dev/null" and
-  system "mformat -i '$name' -T $size -H $hidden -s 32 -h 64 -c 4 -d 1 -v 'SUSEDISK' ::";
+  system "mformat -i '$name' -T $size -H $hidden -s 32 -h 64 -c $cluster_size -F -d 1 -v '$label' :: 2>/dev/null" and
+  system "mformat -i '$name' -T $size -H $hidden -s 32 -h 64 -c $cluster_size -d 1 -v '$label' ::";
 }
 
 
@@ -2720,9 +2792,9 @@ sub prepare_nano
     "boot/.*/sax2",
     "boot/.*/libstoragemgmt",
     "boot/.*/branding",
-    "boot/.*/openSUSE",
-    "boot/.*/SLES",
-    "boot/.*/SLED",
+    "boot/[^/]*/openSUSE",
+    "boot/[^/]*/SLES",
+    "boot/[^/]*/SLED",
     "boot/.*/.*-xen",
     "control\\.xml",
     "gpg-.*",
@@ -4081,7 +4153,7 @@ sub analyze_products
 
   # print Dumper $product_db;
 
-  print "Repositories:\n";
+  print "Repositories:\n" if $product_db->{list};
 
   for (@{$product_db->{list}}) {
     next if !$_->{include};
@@ -4188,5 +4260,444 @@ sub check_product
   };
 
   return 1;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# crypto_cleanup(image_file, crypt_vol, crypt_loop, crypt_mount, esp_loop, esp_mount, iso_mount)
+#
+# Cleanup things in case we have to leave run_crypto_disk() early.
+#
+sub crypto_cleanup
+{
+  my ($image_file, $crypt_vol, $crypt_loop, $crypt_mount, $esp_loop, $esp_mount, $iso_mount) = @_;
+
+  # unmount things that might have been mounted
+  susystem "umount $crypt_mount" if -d $crypt_mount;
+  susystem "umount $esp_mount" if -d $esp_mount;
+  susystem "umount $iso_mount" if -d $iso_mount;
+
+  # close the luks volume
+  susystem "cryptsetup close $crypt_vol" if -b "/dev/mapper/$crypt_vol";
+
+  # detach loop devices
+  susystem "losetup -d $esp_loop" if -b $esp_loop;
+  susystem "losetup -d $crypt_loop" if -b $crypt_loop;
+
+  # remove the temporary image
+  unlink $image_file;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# run_crypto_disk()
+#
+# Create an LUKS-encrypted install disk.
+#
+# Notes:
+#   - this is not a hybrid image - you cannot use it as dvd image
+#   - so far only for x86_64
+#   - the image is UEFI and legacy BIOS bootable
+#   - there are two partitions: an (unencrypted) EFI system partition and
+#     the encrypted install partition
+#   - everything except the grub binary is encrypted - including the boot
+#     config files used for installation
+#   - a lot of things have to be done with root permissions, even though
+#     we are working only on image files :-(
+#
+# This function uses the iso produced in the first pass as basis.
+#
+sub run_crypto_disk
+{
+  die "\nsorry, package grub2-i386-pc must be installed\n" unless -f "/usr/lib/grub2/i386-pc/boot.img";
+
+  die "\nfilesystem '$opt_crypto_fs' not supported\n" unless -x "/usr/sbin/mkfs.$opt_crypto_fs";
+
+  die "\nno password\n" if $opt_crypto && $opt_crypto_password eq "";
+
+  # if set, it must have a "/" at the end (e.g. "foo/")
+  my $top_dir = $opt_crypto_top_dir;
+  die "\n$top_dir: top-dir value not allowed\n" if $top_dir =~ m#/# || $top_dir eq '.' || $top_dir eq '..';
+  $top_dir .= "/" if $top_dir ne "";
+
+  # EFI system partition start in MiB
+  my $esp_start_mb = 1;
+
+  # EFI system partition size in MiB
+  my $esp_size_mb = 7;
+
+  # install partition start in MiB
+  my $crypt_start_mb = $esp_start_mb + $esp_size_mb;
+
+  # we need a temporary device mapper target - just use our tmp dir name
+  my $crypt_vol;
+  $crypt_vol = $1 if $tmp_new =~ m#/tmp/([^/]+)#;
+  die "\noops: can't generate device mapper name\n" if $crypt_vol eq "";
+
+  # get the image size
+  if(!$image_size) {
+    my $size = (-s $iso_file) >> 20;
+    # increase size slightly to ensure we have enough space
+    $size = $size * 1.2;
+    $size += $esp_size_mb + $esp_start_mb + 8;
+    $image_size = int($size) << 11;
+  }
+
+  my $image_file = "${iso_file}.tmp.$crypt_vol";
+
+  my ($crypt_loop, $crypt_mount, $esp_loop, $esp_mount, $iso_mount, $fh);
+
+  # store the password to be used by cryptsetup later
+  my $crypt_pw = $tmp->file('pw');
+  open $fh, ">$crypt_pw" or die "\npassword file: $!\n";
+  print $fh $opt_crypto_password;
+  close $fh;
+
+  # register cleanup function in case we error out
+  END { crypto_cleanup $image_file, $crypt_vol, $crypt_loop, $crypt_mount, $esp_loop, $esp_mount, $iso_mount }
+
+  # create the empty image
+  open $fh, ">", $image_file;
+  close $fh;
+  truncate $image_file, $image_size << 9;
+
+  # partition it
+  system "parted -s '$image_file' mklabel msdos";
+  system "parted -s '$image_file' mkpart p ${esp_start_mb}MiB ${crypt_start_mb}MiB";
+  system "parted -s '$image_file' mkpart p ${crypt_start_mb}MiB 100%";
+  system "parted -s '$image_file' set 1 boot on";
+  system "sfdisk --change-id '$image_file' 1 0xef 2>/dev/null";
+
+  # make an efi system partition (fat)
+  fat_mkfs $tmp_fat, $esp_size_mb << 11, $esp_start_mb << 11, 1, "EFI_PART";
+
+  # ... and copy it into the efi system partition
+  system "dd if='$tmp_fat' of='$image_file' bs=1b seek=" . ($esp_start_mb << 11) . " conv=notrunc status=none ; sync";
+
+  # get loop device for install partition
+  $crypt_loop = `${sudo}losetup --show -f -o ${\($crypt_start_mb << 20)} '$image_file'`;
+  chomp $crypt_loop;
+
+  die "\noops: no loop device\n" unless -b $crypt_loop;
+
+  show_progress 10;
+
+  # create luks container
+  susystem "cryptsetup --batch-mode --force-password --key-file=$crypt_pw luksFormat $crypt_loop";
+  susystem "cryptsetup --key-file=$crypt_pw open $crypt_loop $crypt_vol";
+
+  # add filesystem
+  susystem "mkfs.$opt_crypto_fs -q /dev/mapper/$crypt_vol";
+
+  # get filesystem uuid
+  my $fs_uuid=`${sudo}blkid -o value -s UUID /dev/mapper/$crypt_vol`;
+  chomp $fs_uuid;
+
+  # ... and luks partition uuid
+  my $luks_uuid=`${sudo}blkid -o value -s UUID $crypt_loop`;
+  chomp $luks_uuid;
+
+  # grub prefers the uuid without dashes ('-')
+  my $grub_uuid = $luks_uuid;
+  $grub_uuid =~ tr/-//d;
+
+  die "\noops: cryptsetup failed\n" if $fs_uuid eq "" || $luks_uuid eq "";
+
+  show_progress 30;
+
+  # get loop device for efi system partition
+  $esp_loop = `${sudo}losetup --show -f -o ${\($esp_start_mb << 20)} --sizelimit ${\($esp_size_mb << 20)} '$image_file'`;
+  chomp $esp_loop;
+
+  die "\noops: no loop device\n" unless -b $esp_loop;
+
+  # create temporary mount points
+  $esp_mount = $tmp->dir('esp');
+  $crypt_mount = $tmp->dir('crypt');
+  $iso_mount = $tmp->dir('iso');
+
+  # mount install partition, efi partition, and the prepared iso image
+  die "\ncrypto mount failed\n" if susystem "mount /dev/mapper/$crypt_vol $crypt_mount";
+  die "\nesp mount failed\n" if susystem "mount -oumask=0 $esp_loop $esp_mount";
+  die "\niso mount failed\n" if susystem "mount -oloop,ro '$iso_file' $iso_mount";
+
+  # some checks
+  die "\nsorry, only x86_64 media supported atm\n" unless -d "$iso_mount/boot/x86_64/grub2-efi";
+  die "\nsorry, efi boot is required\n" unless -d "$iso_mount/EFI/BOOT";
+
+  # now our partitions are prepared and mounted
+
+  show_progress 50;
+
+  my $tmp_dir = $tmp->dir();
+
+  my $title = $opt_crypto_title || "openSUSE";
+
+  # ---  1. grub2 legacy setup  ---
+
+  (my $grub_mods = <<"  = = = = = = = =") =~ s/\s+/ /g;
+    gfxmenu gfxterm
+    video videoinfo vga vbe
+    biosdisk linux
+    ext2 btrfs xfs jfs reiserfs iso9660 tar memdisk probe
+    cryptodisk luks gcry_rijndael gcry_sha1 gcry_sha256
+    all_video boot cat chain configfile echo
+    font gzio halt
+    jpeg minicmd normal part_apple part_msdos part_gpt
+    password_pbkdf2 png reboot search search_fs_uuid
+    search_fs_file search_label sleep test video fat loadenv
+  = = = = = = = =
+
+  # copy grub boot block to the required place for grub2-mkimage
+  File::Path::make_path "$esp_mount/BOOT/grub2/i386-pc";
+  system "cp /usr/lib/grub2/i386-pc/boot.img $esp_mount/boot/grub2/i386-pc";
+
+  my $title_centered = $title;
+  if(length $title <= 78) {
+    $title_centered = (" " x ((80 - length $title) / 2)) . $title;
+  }
+
+  # This is the initial grub config - just ask for password and mount
+  # the luks volume.
+  # The real grub config with the install menu is inside the luks volume.
+  (my $load_cfg = <<"  = = = = = = = =") =~ s/^ +//mg;
+    locale_dir=\$prefix/locale
+    lang=en_US
+    clear
+    echo
+    echo "$title_centered"
+    echo
+    echo "                                   -- BIOS --"
+    echo
+    cryptomount -u $grub_uuid
+    root=crypto0
+    set prefix=(\$root)/${top_dir}boot/x86_64/grub2-efi
+  = = = = = = = =
+
+  (my $grub_po = <<"  = = = = = = = =") =~ s/^ +//mg;
+    msgid "GNU GRUB  version %s"
+    msgstr "$title"
+
+    msgid "Attempting to decrypt master key..."
+    msgstr " "
+
+    msgid "Enter passphrase for %s%s%s (%s): "
+    msgstr "Enter passphrase: "
+  = = = = = = = =
+
+  open $fh, ">$tmp_dir/load.cfg";
+  print $fh $load_cfg;
+  close $fh;
+
+  # The default grub password dialog looks dead ugly; (ab)use
+  # localization to make it look nice.
+  # The en.mo file is placed into a memdisk which is then embedded into the
+  # grub image.
+  File::Path::make_path "$tmp_dir/memdisk/locale";
+  open $fh, "| msgfmt -o $tmp_dir/memdisk/locale/en.mo -";
+  print $fh $grub_po;
+  close $fh;
+  system "cd $tmp_dir/memdisk ; tar -cf ../memdisk.tar *";
+
+  system "grub2-mkimage -O i386-pc -m $tmp_dir/memdisk.tar -p '(memdisk)'" .
+    " -c $tmp_dir/load.cfg -o $esp_mount/boot/grub2/i386-pc/core.img $grub_mods";
+
+  # grub2-bios-setup behaves a bit weird; I've seen no way to stop it from
+  # trying to figure out things on its own. So it needs root permissions
+  # to trace things through the loop device.
+  susystem "grub2-bios-setup -s -d $esp_mount/boot/grub2/i386-pc '$image_file'";
+
+  # the grub stuff is no longer needed, clear the efi partition
+  system "rm -r $esp_mount/boot";
+
+  # ---  grub2 legacy setup done  ---
+
+  # ---  2. grub2 efi setup  ---
+
+  # copy the efi config from the prepared iso and add our en.mo file
+  system "cp -r $iso_mount/EFI $esp_mount/";
+  system "cp $tmp_dir/memdisk/locale/en.mo $esp_mount/EFI/BOOT/locale";
+
+  # adjust the startup message to indicate we've booted via efi
+  $load_cfg =~ s/BIOS/UEFI/g;
+
+  # we have to explicitly load the final grub config (in the legacy case it
+  # is done automatically)
+  $load_cfg .= "configfile \$prefix/efi.cfg\n";
+
+  # write initial grub config
+  open $fh, ">$esp_mount/EFI/BOOT/grub.cfg";
+  print $fh $load_cfg;
+  close $fh;
+
+  # ---  grub2 efi setup done  ---
+
+  show_progress 60;
+
+  # ---  3. install partition setup  ---
+
+  # 3.1. copy everything
+
+  # maybe put everything into a separate directory
+  susystem "mkdir $crypt_mount/$top_dir" if $top_dir;
+
+  # copy everything except the efi config - it's already on the efi system
+  # partition
+  system "${sudo}tar -C $iso_mount --exclude EFI -cf - . | ${sudo}tar -C $crypt_mount/$top_dir -xpf -";
+
+  show_progress 90;
+
+  # move locale settings to the correct place
+  susystem "cp -r $iso_mount/EFI/BOOT/locale $crypt_mount/${top_dir}boot/x86_64/grub2-efi";
+
+  # sanitize permissions (everything is ro on an iso9660 fs)
+  susystem "chmod -R u+w $crypt_mount";
+
+  # the el-torito efi image is not needed
+  susystem "rm -f $crypt_mount/${top_dir}boot/x86_64/efi";
+
+  # 3.2. adjust grub install config
+
+  # There's only a grub config for efi on our media. We derive the legacy
+  # config from it - it needs just a few modifications.
+
+  # get it
+  my $grub_cfg = `cat $iso_mount/EFI/BOOT/grub.cfg`;
+  die "\nno grub config found\n" if $grub_cfg eq "";
+
+  # strip things we don't want (it's been setup in the initial grub config)
+  $grub_cfg =~ s/^search .*\n//m;
+  $grub_cfg =~ s/^prefix=.*\n//m;
+  $grub_cfg =~ s/^insmod efi_.*\n//mg;
+
+   # adjust paths
+  if($top_dir ne "") {
+    $grub_cfg =~ s#/boot/#/${top_dir}boot/#g
+  }
+
+  # write grub efi config
+
+  # Due to permission issues (the install partition is only root-writable)
+  # write it to a tmp file and copy later.
+  open $fh, ">$tmp_dir/grub.cfg";
+  print $fh $grub_cfg;
+  close $fh;
+
+  # it's the efi config
+  susystem "cp $tmp_dir/grub.cfg $crypt_mount/${top_dir}boot/x86_64/grub2-efi/efi.cfg";
+
+  # convert efi config to legacy config
+
+  # Basically replace linuxefi/initrdefi with linux/initrd and replace the
+  # 'local boot' entry.
+  $grub_cfg =~ s/\b(linux|initrd)efi\b/$1/g;
+
+  (my $local_boot = <<"  = = = = = = = =") =~ s/^ {4}//mg;
+    menuentry "Boot from Hard Disk" --class opensuse --class gnu-linux --class gnu --class os {
+      set root=hd1
+      chainloader (hd1)+1
+    }
+  = = = = = = = =
+
+  $grub_cfg =~ s/^menuentry "Boot from Hard Disk".*?^\}\n/$local_boot/sm;
+
+  # write grub legacy config
+
+  # Due to permission issues (the install partition is only root-writable)
+  # write it to a tmp file and copy later.
+  open $fh, ">$tmp_dir/grub.cfg";
+  print $fh $grub_cfg;
+  close $fh;
+
+  susystem "cp $tmp_dir/grub.cfg $crypt_mount/${top_dir}boot/x86_64/grub2-efi/grub.cfg";
+
+  # adjust initrd
+
+  # Now inject code to decrypt and mount the install partition. Also, point
+  # the install source to the luks volume.
+
+  # find the initrd
+  my $initrd_file = "$crypt_mount/${top_dir}boot/x86_64/loader/initrd";
+  $initrd_file = "$crypt_mount/${top_dir}boot/x86_64/initrd" unless -f $initrd_file;
+  die "\nsorry, no initrd found\n" unless -f $initrd_file;
+
+  File::Path::make_path "$tmp_dir/initrd/etc/linuxrc.d";
+
+  # Store the password in the initrd so the user doesn't have to enter it twice.
+  # (Note the initrd is on the encrypted volume.)
+  # To avoid accidentally leaking the password when the user hands out the
+  # initrd to someone else, encrypt the password file with the luks and
+  # filesystem uuid as key. The uuid info is separate from the initrd. So even
+  # if you copy the whole install souces from the unlocked luks volume, it
+  # doesn't leak your password.
+  open $fh, "| gpg --passphrase '$luks_uuid $fs_uuid' -c --batch --cipher-algo aes256 -o $tmp_dir/initrd/.password 2>/dev/null";
+  print $fh "$opt_crypto_password";
+  close $fh;
+
+  die "\noops: password setup failed\n" unless -s "$tmp_dir/initrd/.password";
+
+  # strip the final slash
+  my $t = ${top_dir};
+  $t =~ s#/$##;
+
+  # Inject a linuxrc config entry to unlock the luks volume and point the
+  # install source to the volume.
+  # Note: we cannot unlock the volume directly here but have to append the
+  # call to the 'early_setup' script as the config files are parsed _before_
+  # udev sets up the devices.
+  # The install option can still be overriden by anything passed via kernel
+  # command line.
+  (my $linuxrc_setup = <<"  = = = = = = = =") =~ s/^ +//mg;
+    exec=echo /scripts/crypt_setup >>/scripts/early_setup
+    install=hd:/$t?device=/dev/mapper/install.luks
+  = = = = = = = =
+
+  open $fh, ">$tmp_dir/initrd/etc/linuxrc.d/90_crypto";
+  print $fh $linuxrc_setup;
+  close $fh;
+
+  # Store a small part of the id in the script to help identify the right
+  # volume.
+  # It's strictly not necessary but this way we don't waste too much efford
+  # on systems with lots of volumes.
+  my $short_uuid = substr $luks_uuid, 0, 4;
+
+  # Here's the script. It iterates over all volumes, tries to decrypt the
+  # password with the uuids it sees, and on success sets up the luks volume
+  # and deletes the password files and itself.
+  (my $crypt_setup = <<"  = = = = = = = =") =~ s/^ {4}//mg;
+    #! /bin/bash
+    cd /dev/disk/by-uuid
+    for uuid in $short_uuid* ; do
+      gpg --passphrase \"\$uuid $fs_uuid\" -d --batch --cipher-algo aes256 -o /.password. /.password 2>/dev/null
+      if [ -f /.password. ] ; then
+        cryptsetup --key-file=/.password. open /dev/disk/by-uuid/\$uuid install.luks
+        break
+      fi
+    done
+    rm -f /.password* /scripts/crypt_setup
+  = = = = = = = =
+
+  # add the script to our initrd tree
+  mkdir "$tmp_dir/initrd/scripts";
+  open $fh, ">$tmp_dir/initrd/scripts/crypt_setup";
+  print $fh $crypt_setup;
+  close $fh;
+  chmod 0755, "$tmp_dir/initrd/scripts/crypt_setup";
+
+  # pack, compress, and append our initrd stuff to the initrd
+  system "( cd $tmp_dir/initrd ; find . | cpio --quiet -o -H newc --owner 0:0 | xz --check=crc32 -c ) > $tmp_dir/initrd.xz";
+  susystem "sh -c 'cat $tmp_dir/initrd.xz >> $initrd_file'";
+
+  # ---  install partition setup done  ---
+
+  # That's it, we're done.
+
+  show_progress 100;
+
+  # rename our temporary image to the final name
+  rename $image_file, $iso_file;
+
+  print "\n";
 }
 
