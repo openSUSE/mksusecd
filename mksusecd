@@ -201,6 +201,8 @@ sub check_mksquashfs_comp;
 sub eval_size;
 sub add_linuxrc_option;
 sub wipe_iso;
+sub analyze_products;
+sub check_product;
 
 my %config;
 my $sudo;
@@ -246,6 +248,9 @@ my $opt_net;
 my $opt_instsys;
 my $opt_defaultrepo;
 my $opt_no_iso;
+my $opt_merge_repos = 1;
+my $opt_list_repos;
+my $opt_include_repos;
 
 
 GetOptions(
@@ -304,13 +309,17 @@ GetOptions(
   'addon-name=s'     => \$opt_addon_name,
   'addon-alias=s'    => \$opt_addon_alias,
   'addon-prio=i'     => \$opt_addon_prio,
+  'no-merge-repos'   => sub { $opt_merge_repos = 0 },
+  'merge-repos'      => \$opt_merge_repos,
+  'list-repos'       => \$opt_list_repos,
+  'include-repos=s'  => \$opt_include_repos,
   'save-temp'        => \$opt_save_temp,
   'verbose|v'        => sub { $opt_verbose++ },
   'version'          => sub { print "$VERSION\n"; exit 0 },
   'help'             => sub { usage 0 },
 ) || usage 1;
 
-usage 1 unless $opt_create;
+usage 1 unless $opt_create || $opt_list_repos;
 usage 1 if $opt_hybrid_fs !~ '^(|iso|fat)$';
 usage 1 if defined($opt_digest) && $opt_digest !~ '^(md5|sha1|sha224|sha256|sha384|sha512)$';
 
@@ -347,10 +356,12 @@ my $tmp_new = $tmp->dir('new');
 my $tmp_err = $tmp->file('err');
 my $tmp_sort = $tmp->file('sort');
 my $tmp_exclude = $tmp->file('exclude');
+my $tmp_filelist = $tmp->file('filelist');
 my $tmp_fat = $tmp->file('fat');
 
 my @sources;
 my $files;
+my $files_to_keep;
 my $boot;
 my $todo;
 my $iso_cnt = 0;
@@ -377,6 +388,7 @@ my $image_size;
 my $syslinux_config;
 my $linuxrc_options;
 my $has_content;
+my $product_db;
 
 my $progress_start = 0;
 my $progress_end = 100;
@@ -392,7 +404,7 @@ if(defined $opt_size) {
   die "$opt_size: invalid size\n" unless $image_size;
 }
 
-if($opt_create) {
+if($opt_create || $opt_list_repos) {
 #  if(@opt_kernel_rpms) {
 #    die "Sorry, you must run mksusecd as root to replace kernel modules." if $>;
 #  }
@@ -439,6 +451,7 @@ if($opt_create) {
     die $msg;
   }
 
+  analyze_products \@sources;
   build_filelist \@sources;
   $boot = analyze_boot;
   get_initrd_format;
@@ -653,6 +666,13 @@ Create ISO image:
                                 If unset, an alias based on the repo name is generated.
       --addon-prio NUM          Set add-on repository priority to NUM; lower NUM means higher
                                 priority (default: 60).
+      --merge-repos             When mksusecd detects repositories in SOURCES it will try to make
+                                them all available and create a common media.1/products file (default).
+                                See Product module notes below.
+      --no-merge-repos          Skip the special treatment of repositories and just merge all SOURCES.
+      --include-repos LIST      Comma-separated list of repository names to include in the final image.
+                                Use --list-repos to see valid values. (Default: include all repos.)
+      --list-repos              Just list all repositories and exit.
       --grub2                   Use grub2 for El-Torito legacy setup (for debugging).
       --isolinux                Use isolinux for El-Torito legacy setup (for debugging).
       --micro                   Create an ISO with just enough files to test the
@@ -761,6 +781,19 @@ Repository notes:
   then try via network at http://foo/bar.
 
   The --net option is just a short hand for --defaultrepo=cd:/,hd:/,<NET_URL>.
+
+Product module notes:
+
+  In SLE 15 the product is split into several repositories called 'modules'
+  (don't confuse this with kernel modules). These modules are distributed
+  over several media or in separate directories on a network installation
+  server.
+
+  mksusecd lets you combine the installation medium together with the
+  modules you need into a single medium.
+
+  Check the available modules with --list-repos and then pick the modules
+  you need with --include-repos.
 
 Configuration file:
 
@@ -1247,11 +1280,13 @@ sub prepare_mkisofs
     $mkisofs->{options} .= " -exclude-list '$tmp_exclude'";
   }
 
-  # add our source dirs
-  for (@sources) {
-    $mkisofs->{options} .= " '$_->{dir}'";
-  }
-  $mkisofs->{options} .= " '$tmp_new'";
+  # pass source locations via separate file to mksusecd, not as command line options
+  $mkisofs->{filelist} = [ (map { $_->{dir} } grep { !$_->{skip} } @sources), $tmp_new ];
+
+  # add relocated directory trees (graft points in mkisofs speak)
+  push @{$mkisofs->{filelist}}, @{$mkisofs->{grafts}} if $mkisofs->{grafts};
+
+  $mkisofs->{options} .= " -graft-points -path-list '$tmp_filelist'";
 }
 
 
@@ -1282,13 +1317,23 @@ sub run_mkisofs
     }
   }
 
+  # create file with file list
+  if($mkisofs->{filelist}) {
+    if(open my $fh, ">$tmp_filelist") {
+      print $fh "$_\n" for @{$mkisofs->{filelist}};
+      close $fh;
+    }
+  }
+
   $cmd = "$mkisofs->{command}$mkisofs->{options}";
 
   print "running:\n$cmd\n" if $opt_verbose >= 2;
 
-  print "$mkisofs->{command} sort file:\n", join("\n", @{$mkisofs->{sort}}), "\n" if $opt_verbose >= 3;
-
-  print "$mkisofs->{command} exclude file:\n", join("\n", @{$mkisofs->{exclude}}), "\n" if $opt_verbose >= 3;
+  if($opt_verbose >= 3) {
+    print "$mkisofs->{command} file list:\n", join("\n", @{$mkisofs->{filelist}}), "\n";
+    print "$mkisofs->{command} sort file:\n", join("\n", @{$mkisofs->{sort}}), "\n";
+    print "$mkisofs->{command} exclude file:\n", join("\n", @{$mkisofs->{exclude}}), "\n";
+  }
 
   # seems to be necessary, else some changes are lost...
   system "sync";
@@ -2627,7 +2672,29 @@ sub exclude_files
   for (sort keys %$files) {
     if(m#^($ex)$#) {
       my $f = fname($_);
-      push @{$mkisofs->{exclude}}, $f if $f;
+      push @{$mkisofs->{exclude}}, $f if $f && !$files_to_keep->{$f};
+    }
+  }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# Register files that must _not_ be removed from iso.
+#
+# keep_files(ref_to_file_list)
+#
+# ref_to_file_list is an array ref with file name patterns (regexp) to exclude
+#
+sub keep_files
+{
+  my $list = $_[0];
+
+  my $ex = join "|", @$list;
+
+  for (sort keys %$files) {
+    if(m#^($ex)$#) {
+      my $f = fname($_);
+      $files_to_keep->{$f} = 1;
     }
   }
 }
@@ -2641,8 +2708,14 @@ sub exclude_files
 #
 sub prepare_micro
 {
+  # be careful not to remove yast's control files
+  keep_files [
+    "x86_64/skelcd-control-.*",
+  ];
+
   exclude_files [
     (map { "suse/$_" } @boot_archs, "i586", "noarch"),
+    "(aarch64|ppc64le|s390x|x86_64)/.*", "src", "nosrc", "noarch",
     "docu",
     "ls-lR\\.gz",
     "INDEX\\.gz",
@@ -2678,9 +2751,10 @@ sub prepare_nano
     "boot/.*/sax2",
     "boot/.*/libstoragemgmt",
     "boot/.*/branding",
-    "boot/.*/openSUSE",
-    "boot/.*/SLES",
-    "boot/.*/SLED",
+    # be more specific, else we'll kill the grub themes
+    "boot/[^/]*/openSUSE",
+    "boot/[^/]*/SLES",
+    "boot/[^/]*/SLED",
     "boot/.*/.*-xen",
     "control\\.xml",
     "gpg-.*",
@@ -2688,6 +2762,8 @@ sub prepare_nano
     "license\\.tar\\.gz",
     "(|.*/)directory\\.yast",
     "suse",
+    "(aarch64|ppc64le|s390x|x86_64)",
+    "repodata",
   ];
 }
 
@@ -3989,5 +4065,180 @@ sub wipe_iso
 
   close $iso_fh;
   undef $iso_fh;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# analyze_products(sources)
+#
+# sources is an array_ref containing a list of directories to be scanned and
+# checked for product repositories (aka "modules").
+#
+# Repositories can use the same directory on different source isos. So we
+# have to place them in new locations on the final medium. To avoid
+# temporary copies, we do this via mkisofs's graft points (cf. man mkisofs).
+#
+# Repositories on the first medium are not relocated.
+#
+# Only repomd-style repositories are considered.
+#
+# Note: this assumes the lines in media.1/products to be structured like
+# 'dir product version'.
+#
+sub analyze_products
+{
+  my $src = $_[0];
+
+  my $src_idx = 0;
+
+  for my $s (@$src) {
+    File::Find::find({
+      wanted => sub {
+        if(m#/media.1/products$#) {
+          # read any product file we find ...
+          if(open my $f, $_) {
+            my @fields;
+            while(my $l = <$f>) {
+              @fields = split /\s/, $l;
+              # ... and for each product definition, analyse it
+              my $ok = check_product($src_idx, $_, @fields) if @fields == 3;
+              # If we find a valid product, skip the source dir (except if it's the first).
+              # Instead, only the product (the repository) is added to the final medium.
+              $s->{skip} = 1 if $ok && $src_idx > 0;
+            }
+            close $f;
+          }
+        }
+      },
+      no_chdir => 1
+    }, $s->{dir});
+    $src_idx++;
+  }
+
+  # inform the user
+  print "Repositories:\n" if $product_db->{list};
+
+  for (@{$product_db->{list}}) {
+    next if !$_->{include};
+    print "  $_->{name} [$_->{ver}]";
+    print " ($_->{label})" if $_->{label};
+    print "\n";
+  }
+
+  exit 0 if $opt_list_repos;
+
+  # don't merge repos if the user doesn't want to
+  return if !$opt_merge_repos;
+
+  # copy products file from first source (if any) ...
+  mkdir "$tmp_new/media.1", 0755;
+  my $prod_file = "$src->[0]{dir}/media.1/products";
+  if(-r $prod_file) {
+    push @{$mkisofs->{exclude}}, $prod_file;
+    system "cp $prod_file $tmp_new/media.1/products";
+    chmod 0644, "$tmp_new/media.1/products";
+  }
+
+  open my $prod_fd, ">>$tmp_new/media.1/products" or die "media.1/products: $!\n";
+
+  # ... and append any products we found above
+  for (@{$product_db->{list}}) {
+    # $src->[0] is always included, skip it here
+    next if !$_->{src_idx};
+    next if !$_->{include};
+    # FIXME: add $label to name?
+    print $prod_fd "/$_->{repo_dir} $_->{name} $_->{ver}\n";
+    for my $d (@{$_->{dirs}}) {
+      push @{$mkisofs->{grafts}}, "$_->{repo_dir}/$d=$_->{base_dir}/$d";
+    }
+  }
+
+  close $prod_fd;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# check_product(source_idx, product_file, base_dir, name, version)
+#
+# -   source_idx: # of source medium (0-based)
+# - product_file: full path to 'media.1/products'
+# -     base_dir: directory the repos is in
+# -         name: product name
+# -      version: some version string
+#
+# Analyze a single repomd repository and add result to global $product_db
+# structure.
+#
+# This includes determining the directories belonging to the repository and
+# repo type (binaries, debug, source).
+#
+sub check_product
+{
+  my ($src_idx, $prod, $dir, $name, $ver) = @_;
+
+  my $base_dir = $prod;
+  $base_dir =~ s#/media.1/products$#$dir#;
+  $base_dir =~ s#/+$##;
+
+  # skip if we did this already
+  return 0 if $product_db->{checked}{$base_dir};
+
+  $product_db->{checked}{$base_dir} = 1;
+
+  # print "$base_dir: $name, $ver\n";
+
+  # not repo-md
+  return 0 unless -d "$base_dir/repodata";
+
+  my %repodirs;
+  my $debug = 0;
+
+  # scan primary.xml for directories belonging to the repo and check if
+  # there are debuginfo packages
+  if(open my $f, "gunzip -c $base_dir/repodata/*-primary.xml.gz |") {
+    while(my $l = <$f>) {
+      $repodirs{$1} = 1 if $l =~ m#<location href="([^/]+)/#;
+      $debug = 1 if $l =~ m#<location href=".*-debug(info|source)-#;
+    }
+    close $f;
+  }
+
+  # tag repo if it's a debuginfo or a source repo
+  my @labels;
+  push @labels, "sources" if $repodirs{src} || $repodirs{nosrc};
+  push @labels, "debuginfo" if $debug;
+  my $label = join ",", @labels;
+
+  # Include label in new product base dir.
+  # The reason is that on our module media the same directory is used for
+  # binary, source, and debuginfo modules. So we'd have a file conflict when
+  # putting them on the same medium..
+  my $repo_dir = $name;		# FIXME: add "_$ver"?
+  $repo_dir .= "_$label" if $label ne "";
+
+  # Check repo list if the repo should be included on the final medium. See
+  # --include-repos option. If unset, include everything.
+  #
+  # Again, things on the first source are always included.
+  my $inc = 1;
+  if($opt_include_repos && $src_idx) {
+    my @repos = split /,/, $opt_include_repos;
+    $inc = grep { $_ eq $name } @repos;
+  }
+
+  # create internal product database entry
+  push @{$product_db->{list}}, {
+    base_dir => $base_dir,
+    name => $name,
+    ver => $ver,
+    dirs => [ "repodata", sort keys %repodirs ],
+    debug => $debug,
+    label => $label,
+    src_idx => $src_idx,
+    repo_dir => $repo_dir,
+    include => $inc
+  };
+
+  return 1;
 }
 
