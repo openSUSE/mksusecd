@@ -182,10 +182,12 @@ sub prepare_nano;
 sub prepare_pico;
 sub set_mkisofs_metadata;
 sub add_to_content_file;
+sub update_content_or_checksums;
 sub update_content;
+sub update_checksums;
 sub create_sign_key;
 sub add_sign_key;
-sub sign_content;
+sub sign_content_or_checksums;
 sub file_magic;
 sub get_archive_type;
 sub unpack_cpiox;
@@ -222,7 +224,7 @@ my $opt_no_mbr_code;
 my $opt_no_mbr_chs;
 my $opt_zipl;
 my $opt_check;
-my $opt_digest = 'sha1';
+my $opt_digest = 'sha256';
 my @opt_initrds;
 my $opt_boot_options;
 my $opt_type;
@@ -484,8 +486,8 @@ if($opt_create || $opt_list_repos) {
   }
 
   if($opt_sign && (
-    # we are going to change '/content' in one way or another
-    @opt_initrds || @opt_kernel_rpms || $opt_boot_options || $opt_new_boot_entry || update_content)
+    # we are going to change '/content' resp. '/CHECKSUMS' in one way or another
+    @opt_initrds || @opt_kernel_rpms || $opt_boot_options || $opt_new_boot_entry || update_content_or_checksums)
   ) {
     extract_installkeys;
     create_sign_key;
@@ -500,7 +502,7 @@ if($opt_create || $opt_list_repos) {
 
   prepare_addon;
 
-  sign_content if update_content;
+  sign_content_or_checksums if update_content_or_checksums;
   $todo = build_todo;
   set_mkisofs_metadata;
 
@@ -2899,6 +2901,20 @@ sub add_to_content_file
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# update_content_or_checksums()
+#
+# Create a new /content or /CHECKSUMS file and return 1 if it is different
+# from the existing one (meaning it needs to be re-signed).
+#
+sub update_content_or_checksums
+{
+  return $has_content ? update_content : update_checksums;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# update_content()
+#
 # Create a new /content file and return 1 if it is different from the
 # existing one.
 #
@@ -2979,6 +2995,83 @@ sub update_content
             next if !$cont->{$type}{$_}{new};
             printf $f "%-4s SHA%s  %s\n", $type, $cont->{$type}{$_}{new}, $_;
           }
+        }
+
+        close $f;
+      }
+    }
+  }
+
+  return $changed;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# update_checksums()
+#
+# Create a new /CHECKSUMS file and return 1 if it is different from the
+# existing one.
+#
+sub update_checksums
+{
+  my $changed = 0;
+
+  # don't modify CHECKSUMS if it doesn't exist or we're not going to re-sign it
+  return $changed if $has_content || !$opt_sign;
+
+  my $content_file = fname "CHECKSUMS";
+
+  my $cont;
+
+  # $cont is modelled after $cont in update_content() so that
+  # it can be passed to add_to_content_file()
+  $cont->{bits} = 256;
+
+  # first, read existing file
+  # ($content_file may be undefined - which is ok)
+  if(open(my $f, $content_file)) {
+    while(<$f>) {
+      next if /^\s*$/;
+      if(/^(\S+)\s+(\S+)/) {
+        my $sum = "\L$1";
+        my $name = $2;
+
+        $cont->{HASH}{$name}{old} = "$cont->{bits} $sum";
+        add_to_content_file $cont, "HASH", $name, '^';
+      }
+    }
+    close $f;
+  }
+
+  # then, pick the files we want to be checksummed
+  for (sort keys %$files) {
+    next if m#directory\.yast$#;
+
+    add_to_content_file $cont, "HASH", $_, '^boot/';
+    add_to_content_file $cont, "HASH", $_, '^media\.1/';
+    add_to_content_file $cont, "HASH", $_, '^docu/';
+    add_to_content_file $cont, "HASH", $_, '^EFI/';
+  }
+
+  # compare new and old file checksums
+  for (keys %{$cont->{HASH}}) {
+    if($cont->{HASH}{$_}{new} ne $cont->{HASH}{$_}{old}) {
+      $changed = 1;
+      last;
+    }
+  }
+
+  # if something changed, write new file
+  if($changed) {
+    my $n = copy_or_new_file "CHECKSUMS";
+
+    if($n) {
+      if(open my $f, ">", $n) {
+        for (sort keys %{$cont->{HASH}}) {
+          next if !$cont->{HASH}{$_}{new};
+          my $hash = $cont->{HASH}{$_}{new};
+          $hash = (split ' ', $hash)[1];
+          printf $f "%s  %s\n", $hash, $_;
         }
 
         close $f;
@@ -3105,24 +3198,26 @@ sub add_sign_key
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-# sign_content()
+# sign_content_or_checksums()
 #
-# Re-sign 'content' file with our own key if we modified it.
+# Re-sign 'content' or 'CHECKSUMS' with our own key if we modified it.
 #
-sub sign_content
+sub sign_content_or_checksums
 {
   return if !$sign_key_dir;
 
-  my $c = copy_file "content";
+  my $name = $has_content ? "content" : "CHECKSUMS";
+
+  my $c = copy_file $name;
   return if !defined $c;
 
-  my $k = copy_or_new_file "content.key";
+  my $k = copy_or_new_file "$name.key";
 
-  copy_file "content.asc";
+  copy_file "$name.asc";
 
   system "cp $sign_key_pub $k";
 
-  print "re-signing '/content'\n" if $opt_verbose >= 1;
+  print "re-signing '/$name'\n" if $opt_verbose >= 1;
 
   system "gpg --homedir=$sign_key_dir --batch --yes --armor --detach-sign $c";
 }
