@@ -405,6 +405,7 @@ my $syslinux_config;
 my $linuxrc_options;
 my $has_content;
 my $product_db;
+my $repomd_instsys_location;
 
 my $progress_start = 0;
 my $progress_end = 100;
@@ -480,7 +481,13 @@ if($opt_create || $opt_list_repos) {
       my $x = get_kernel_initrd;
       die "oops: no initrd?\n" unless $x;
       if($x->{initrd} =~ m#(boot/[^/]+)/#) {
-        $opt_instsys = "disk:/$1/root";
+        $repomd_instsys_location = "$1/root";
+        # Note
+        #   When encryption is in use we must not set the instsys location
+        #   here. This would cause linuxrc to miss the instsys as the URL
+        #   below does never point inside an encrypted volume.
+        #   Instead, run_crypto_disk() handles this when writing 90_crypto.
+        $opt_instsys = "disk:/$repomd_instsys_location" unless $opt_crypto;
       }
     }
 
@@ -4459,8 +4466,6 @@ sub run_crypto_disk
 
   die "\nfilesystem '$opt_crypto_fs' not supported\n" unless -x "/usr/sbin/mkfs.$opt_crypto_fs";
 
-  die "\nno password\n" if $opt_crypto && $opt_crypto_password eq "";
-
   # if set, it must have a "/" at the end (e.g. "foo/")
   my $top_dir = $opt_crypto_top_dir;
   die "\n$top_dir: top-dir value not allowed\n" if $top_dir =~ m#/# || $top_dir eq '.' || $top_dir eq '..';
@@ -4797,6 +4802,14 @@ sub run_crypto_disk
     exec=echo /scripts/crypt_setup >>/scripts/early_setup
     install=hd:/$t?device=/dev/mapper/install.luks
   = = = = = = = =
+
+  # for repo-md, instsys location should be set explicitly
+  if($repomd_instsys_location) {
+    my $dir = "/$t/$repomd_instsys_location";
+    # be careful to have only single slashes
+    $dir =~ s#//#/#g;
+    $linuxrc_setup .= "instsys=hd:$dir?device=/dev/mapper/install.luks\n";
+  }
 
   open $fh, ">$tmp_dir/initrd/etc/linuxrc.d/90_crypto";
   print $fh $linuxrc_setup;
