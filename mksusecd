@@ -3414,7 +3414,7 @@ sub unpack_cpiox
 
   # Read # of bytes from input and write to output.
   #
-  # bytes = read_write(len)
+  # bytes = $read_write->(len)
   # -   len: number of bytes to transfer
   # - bytes: size of data actually transferred
   #
@@ -3424,7 +3424,7 @@ sub unpack_cpiox
   # If the $sync variable is set search the input stream for a valid cpio
   # header (and reset $sync to 0).
   #
-  sub read_write
+  my $read_write = sub
   {
     my $len = $_[0];
 
@@ -3469,17 +3469,17 @@ sub unpack_cpiox
     }
 
     return length $buf;
-  }
+  };
 
   # Write padding bytes (pad with 0 to full 512 byte blocks) and close
   # output pipe.
   #
-  # write_pad_and_close()
+  # $write_pad_and_close->()
   #
   # This also sets a sync flag indicating that we should search for the next
   # valid cpio header in the input stream.
   #
-  sub write_pad_and_close
+  my $write_pad_and_close = sub
   {
     if($p) {
       my $pad = (($write_ofs + 0x1ff) & ~0x1ff) - $write_ofs;
@@ -3490,7 +3490,7 @@ sub unpack_cpiox
 
     # search for next cpio header in input stream
     $sync = 1;
-  }
+  };
 
   # open archive and get going...
   if(open $f, $file) {
@@ -3498,7 +3498,7 @@ sub unpack_cpiox
 
     # We have to trace the cpio archive structure.
     # Keep going as long as there's a header.
-    while(($len = read_write(110)) == 110) {
+    while(($len = $read_write->(110)) == 110) {
       my $magic = substr($buf, 0, 6);
       my $head = substr($buf, 6);
 
@@ -3510,12 +3510,12 @@ sub unpack_cpiox
       $fname_len += (2, 1, 0, 3)[$fname_len & 3];
       $data_len = (($data_len + 3) & ~3);
 
-      read_write $fname_len;
+      $read_write->($fname_len);
 
       my $fname = $buf;
       $fname =~ s/\x00*$//;
 
-      read_write $data_len;
+      $read_write->($data_len);
 
       # Look for cpio archive end marker.
       # If found, close cpio process. A new process will be started at the
@@ -3524,7 +3524,7 @@ sub unpack_cpiox
         $fname eq 'TRAILER!!!' &&
         $head =~ /^0{39}10{55}b0{8}$/i
       ) {
-        write_pad_and_close;
+        $write_pad_and_close->();
         # exit if we're done
         if($cnt++ == $part) {
           close $f;
@@ -3537,7 +3537,7 @@ sub unpack_cpiox
     close $f;
 
     # ...and output file.
-    write_pad_and_close;
+    $write_pad_and_close->();
 
     # If $len is != 0 this means we've seen something that's not a header of
     # a cpio archive entry.
@@ -3554,7 +3554,7 @@ sub unpack_cpiox
 #
 # unpack_archive(type, file, dir, part)
 #
-# - type: a type sring as returned by get_archive_type
+# - type: a type string as returned by get_archive_type
 # - file: the archive
 # -  dir: the directory to unpack to
 # - part: is the part number of a multipart archive (0 = unpack all)
