@@ -18,6 +18,10 @@ The images mksusecd creates can be put both on a cd/dvd or a (usb-)disk. For thi
 so-called 'isohybrid' images. If you are interested in the technical details,
 you can read more about it [here](layout.md).
 
+## Downloads
+
+Get the latest version from the [openSUSE Build Service](https://software.opensuse.org/package/mksusecd).
+
 ## Installation
 
 Often you will need [mkdud][1] along with mksusecd. Both mksusecd and mkdud are
