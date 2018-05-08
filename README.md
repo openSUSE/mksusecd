@@ -22,17 +22,14 @@ you can read more about it [here](layout.md).
 
 Get the latest version from the [openSUSE Build Service](https://software.opensuse.org/package/mksusecd).
 
-## Installation
+## Blog
 
-Often you will need [mkdud][1] along with mksusecd. Both mksusecd and mkdud are
-included in openSUSE Tumbleweed. So on openSUSE Tumbleweed installation is as
-simple as
+See also my mini-series of articles around SUSE installation media and driver updates that highlight specific use-cases:
 
-```
-zypper in mksusecd mkdud
-```
-
-[1]: https://github.com/openSUSE/mkdud
+- [Update the update process!](https://lizards.opensuse.org/2017/02/16/fun-things-to-do-with-driver-updates)
+- [But what if I need a new kernel?](https://lizards.opensuse.org/2017/03/16/fun-things-to-do-with-driver-updates-2)
+- [And what if I want to **remove** some files?](https://lizards.opensuse.org/2017/04/25/fun-things-to-do-with-driver-updates-3)
+- [Encrypted installation media](https://lizards.opensuse.org/2017/11/17/encrypted-installation-media)
 
 ## Simple use cases
 
@@ -100,6 +97,18 @@ This would start an ssh daemon you can login to during installation.
     ```sh
     mksusecd --create foo.iso /tmp/foo
     ```
+
+## Installation
+
+Often you will need [mkdud][1] along with mksusecd. Both mksusecd and mkdud are
+included in openSUSE Tumbleweed. So on openSUSE Tumbleweed installation is as
+simple as
+
+```
+zypper in mksusecd mkdud
+```
+
+[1]: https://github.com/openSUSE/mkdud
 
 ## openSUSE Development
 
