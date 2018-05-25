@@ -1295,7 +1295,7 @@ sub prepare_mkisofs
   $mkisofs->{options} .= " -A '" . substr($opt_application, 0, 128) . "'";
   $mkisofs->{options} .= " -p '" . substr($opt_preparer, 0, 128) . "'";
   $mkisofs->{options} .= " -publisher '" . substr($opt_vendor, 0, 128) . "'";
-  $mkisofs->{options} .= " -J -f" if $opt_joliet;
+  $mkisofs->{options} .= " -J -f -joliet-long" if $opt_joliet;
 
   # special loader options
   for (@$todo) {
