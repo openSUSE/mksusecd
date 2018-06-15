@@ -579,10 +579,6 @@ if($opt_create || $opt_list_repos) {
     print "\n";
   }
 
-  if($mkisofs->{partition_start}) {
-    system "tagmedia --add-tag  'partition=$mkisofs->{partition_start}' '$iso_file' >/dev/null";
-  }
-
   wipe_iso if $opt_no_iso;
 }
 
