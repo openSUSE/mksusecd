@@ -1717,7 +1717,8 @@ sub run_syslinux
     die "syslinux is needed to build a bootable FAT image, please install package 'syslinux'\n"
   }
 
-  system "syslinux -t " . ($mkisofs->{partition_start} << 9) . " -d '$syslinux_config' -i '$iso_file'";
+  # syslinux must be run as root now
+  susystem "syslinux -t " . ($mkisofs->{partition_start} << 9) . " -d '$syslinux_config' -i '$iso_file'";
 
   die "$iso_file: $!\n" unless open $iso_fh, "+<", $iso_file;
   syswrite $iso_fh, $mbr;
@@ -1799,6 +1800,10 @@ sub isols
       $dir = $1;
       next;
     }
+
+    # isoinfo format change
+    # cf. https://sourceforge.net/p/cdrtools/mailman/message/35173024
+    s/^\s*\d+\s+//;
 
     if(/^(.)(.*)\s\[\s*(\d+)(\s+\d+)?\]\s+(.*?)\s*$/) {
       my $type = $1;
