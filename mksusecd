@@ -572,14 +572,14 @@ if($opt_create || $opt_list_repos) {
   }
   run_isozipl if $opt_zipl;
 
+  wipe_iso if $opt_no_iso;
+
   if(defined $opt_digest) {
     my $chk = $opt_check ? " --check" : "";
     print "calculating $opt_digest...";
     system "tagmedia $chk --digest '$opt_digest' --pad 150 '$iso_file' >/dev/null";
     print "\n";
   }
-
-  wipe_iso if $opt_no_iso;
 }
 
 
@@ -4234,7 +4234,17 @@ sub wipe_iso
 {
   die "$iso_file: $!\n" unless open $iso_fh, "+<", $iso_file;
 
-  write_sector 0x10, ("\x00" x 0x800);
+  # keep some data:
+  #   - application id: 0x80 bytes at 0x823e
+  #   - tags set by tagmedia: 0x200 bytes starting at file offset 0x8373
+  my $buf = read_sector 0x10;
+  my $appid = substr $buf, 0x23e, 0x80;
+  my $tags = substr $buf, 0x373, 0x200;
+  $buf = "\x00" x 0x800;
+  substr $buf, 0x23e, 0x80, $appid;
+  substr $buf, 0x373, 0x200, $tags;
+
+  write_sector 0x10, $buf;
   write_sector 0x11, ("\x00" x 0x800);
 
   close $iso_fh;
