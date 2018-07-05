@@ -3909,8 +3909,8 @@ sub add_modules_to_initrd
     mkdir "$tmp_dir/lib/modules/$kernel->{version}", 0755;
     mkdir "$tmp_dir/lib/modules/$kernel->{version}/initrd", 0755;
 
-    for ("loop.ko", "squashfs.ko", "lz4_decompress.ko") {
-      rename "$kernel->{new_dir}/lib/modules/$kernel->{version}/initrd/$_", "$tmp_dir/lib/modules/$kernel->{version}/initrd/$_";
+    for (qw (loop squashfs lz4_decompress xxhash zstd_decompress)) {
+      rename "$kernel->{new_dir}/lib/modules/$kernel->{version}/initrd/$_.ko", "$tmp_dir/lib/modules/$kernel->{version}/initrd/$_.ko";
     }
 
     my $err = system "mksquashfs $kernel->{new_dir} $tmp_dir/parts/$p" .
