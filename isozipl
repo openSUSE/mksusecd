@@ -117,6 +117,10 @@ sub isols
       next;
     }
 
+    # isoinfo format change
+    # cf. https://sourceforge.net/p/cdrtools/mailman/message/35173024
+    s/^\s*\d+\s+//;
+
     if(/^(.)(.*)\s\[\s*(\d+)(\s+\d+)?\]\s+(.*?)\s*$/) {
       my $type = $1;
       my @x = split ' ', $2;
