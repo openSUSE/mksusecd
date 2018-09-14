@@ -260,6 +260,7 @@ my $opt_crypto_fs = 'ext4';
 my $opt_crypto_password;
 my $opt_crypto_title;
 my $opt_crypto_top_dir;
+my $opt_instsys_in_repo = 1;
 
 
 GetOptions(
@@ -309,6 +310,7 @@ GetOptions(
   'net=s'            => \$opt_net,
   'instsys=s'        => \$opt_instsys,
   'defaultrepo=s'    => \$opt_defaultrepo,
+  'instsys-in-repo!' => \$opt_instsys_in_repo,
   'volume=s'         => \$opt_volume,
   'vendor=s'         => \$opt_vendor,
   'preparer=s'       => \$opt_preparer,
@@ -477,7 +479,7 @@ if($opt_create || $opt_list_repos) {
   $has_content = 1 if fname "content";
   if(!$has_content) {
     print "assuming repo-md sources\n";
-    if(!$opt_instsys) {
+    if(!$opt_instsys && !$opt_instsys_in_repo) {
       my $x = get_kernel_initrd;
       die "oops: no initrd?\n" unless $x;
       if($x->{initrd} =~ m#(boot/[^/]+)/#) {
@@ -722,6 +724,12 @@ Create ISO image:
                                 See Repository notes below.
       --instsys URL             Load the installation system from the specified URL.
                                 See Repository notes below.
+      --instsys-in-repo         Load installation system from repository (default). The option --instsys
+                                overrides this setting.
+                                See Repository notes below.
+      --no-instsys-in-repo      Do not load installation system from repository but search for it on
+                                local disks. The option --instsys overrides this setting.
+                                See Repository notes below.
       --defaultrepo URL_LIST    List of comma (',') separated URLs. The installer will try each URL
                                 in turn for an installation repository.
       --volume                  Set ISO volume id.
@@ -795,21 +803,27 @@ Repository notes:
   (a) the 'classical' variant and
   (b) a repo-md repository.
 
-  (a) has a 'content' file at the repo location and package meta data
-  in a sub-directory 'suse/setup/descr', while
-  (b) does not require a 'content' file and has package meta data
-  in a 'suse/repodata' sub-directory.
+  (a) Has a 'content' file with product meta data and file checksums at the
+  repo location and package meta data in a sub-directory 'suse/setup/descr'.
 
-  (a) contains the to-be-installed packages together with the installation
-  system (the installer itself, in a 'boot/<ARCH>' sub-directory), while
-  (b) contains just the to-be-installed packages.
+  (b) Uses '.treeinfo' for product meta data, 'CHECKSUMS' for file checksums,
+  and has package meta data in a 'repodata' sub-directory.
 
-  This means that for (a) the installer can just be loaded from the repository,
-  while for (b) the installer must be loaded from somewhere else.
-  mksusecd normally assumes that it can be loaded from a local disk or dvd.
-  But you can override this using the --instsys option.
-  Please look at the linuxrc documentation at https://en.opensuse.org/SDB:Linuxrc
-  for details before using this option.
+  A repository usually also contains the installation system. If so, the
+  image files are placed in a 'boot/<ARCH>' sub-directory and the installer
+  can simply be loaded from the repository.
+
+  But if it is just a plain repository without the installation system the
+  installer has to be loaded from somewhere else.
+
+  Use the --no-instsys-in-repo option to tell mksusecd that it can be loaded
+  from a local disk or dvd. It will be searched for on any mountable local
+  device at startup.
+
+  You can override this using the --instsys option to load the
+  installation system from any location. Please look at the linuxrc
+  documentation at https://en.opensuse.org/SDB:Linuxrc for details before
+  using this option.
 
   The installer normally uses an internal list of repository locations that are
   tried in turn. You can change it using the --defaultrepo option. For example,
