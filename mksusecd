@@ -341,7 +341,7 @@ usage 1 if defined($opt_digest) && $opt_digest !~ '^(md5|sha1|sha224|sha256|sha3
 
 die "no password\n" if $opt_crypto && $opt_crypto_password eq "";
 
-$ENV{PATH} = "$LIBEXECDIR/mksusecd:/usr/bin:/bin:/usr/sbin:/sbin";
+$ENV{PATH} = "/usr/bin:/bin:/usr/sbin:/sbin";
 
 if($opt_rebuild_initrd && $>) {
   die "mksusecd must be run with root permissions when --rebuild-initrd is used\n"
@@ -392,6 +392,7 @@ my $add_initrd;
 my $orig_initrd;
 my $initrd_has_parts;
 my $has_efi = 0;
+my $has_el_torito = 0;
 my $sign_key_pub;
 my $sign_key_dir;
 my $initrd_installkeys;
@@ -1312,6 +1313,7 @@ sub prepare_mkisofs
     my $t = (keys %$_)[0];
 
     if($t eq 'eltorito') {
+      $has_el_torito = 1;
       copy_file "$_->{$t}{base}/$_->{$t}{file}";
       push @{$mkisofs->{sort}}, "$tmp_new/$_->{$t}{base}/boot.catalog 4";
       # push @{$mkisofs->{sort}}, fname("$_->{$t}{base}/$_->{$t}{file}") . " 3";
@@ -1547,6 +1549,13 @@ sub fix_catalog
 
   substr($boot_catalog, 32 * 1, 32) = $entry[0];
 
+  if(!$has_el_torito && $has_efi) {
+    # change platform id (1 byte at offset 1) from 0x0 to 0xef (EFI)...
+    substr($boot_catalog, 1, 1) = "\xef";
+    # ... and adjust header checksum (16 bits at offset 0x1c)
+    substr($boot_catalog, 0x1c, 2) = pack("v", unpack("v", substr($boot_catalog, 0x1c, 2)) - 0xef00);
+  }
+
   for (my $i = 1; $i < $entries; $i++) {
     my $section_head = pack "CCva28", $i == $entries - 1 ? 0x91 : 0x90, 0xef, 1, "";
     substr($boot_catalog, 32 * (2 * $i), 32) = $section_head;
@@ -1679,6 +1688,7 @@ sub run_isohybrid
   }
 
   $opt .= " --uefi" if $has_efi;
+  $opt .= " --no-legacy" if !$has_el_torito;
   $opt .= " --gpt" if $opt_hybrid_gpt;
   $opt .= " --mbr" if $opt_hybrid_mbr;
   $opt .= " --no-mbr" if $opt_no_prot_mbr;
@@ -1688,7 +1698,7 @@ sub run_isohybrid
   $opt .= " --offset $mkisofs->{partition_start}" if $mkisofs->{partition_start};
   $opt .= " --size $image_size" if $image_size;
 
-  my $cmd = "isohybrid $opt '$iso_file'";
+  my $cmd = "$LIBEXECDIR/mksusecd/isohybrid $opt '$iso_file'";
 
   print "running:\n$cmd\n" if $opt_verbose >= 1;
 
