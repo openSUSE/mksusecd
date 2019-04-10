@@ -255,6 +255,7 @@ my $opt_no_iso;
 my $opt_merge_repos = 1;
 my $opt_list_repos;
 my $opt_include_repos;
+my $opt_enable_repos;
 my $opt_crypto;
 my $opt_crypto_fs = 'ext4';
 my $opt_crypto_password;
@@ -329,6 +330,7 @@ GetOptions(
   'merge-repos'      => \$opt_merge_repos,
   'list-repos'       => \$opt_list_repos,
   'include-repos=s'  => \$opt_include_repos,
+  'enable-repos=s'   => \$opt_enable_repos,
   'save-temp'        => \$opt_save_temp,
   'verbose|v'        => sub { $opt_verbose++ },
   'version'          => sub { print "$VERSION\n"; exit 0 },
@@ -338,6 +340,7 @@ GetOptions(
 usage 1 unless $opt_create || $opt_list_repos;
 usage 1 if $opt_hybrid_fs !~ '^(|iso|fat)$';
 usage 1 if defined($opt_digest) && $opt_digest !~ '^(md5|sha1|sha224|sha256|sha384|sha512)$';
+usage 1 if defined($opt_enable_repos) && $opt_enable_repos !~ /^(0|1|no|yes|auto|ask)$/i;
 
 die "no password\n" if $opt_crypto && $opt_crypto_password eq "";
 
@@ -711,6 +714,10 @@ Create ISO image:
       --no-merge-repos          Skip the special treatment of repositories and just merge all SOURCES.
       --include-repos LIST      Comma-separated list of repository names to include in the final image.
                                 Use --list-repos to see valid values. (Default: include all repos.)
+      --enable-repos WHEN       If WHEN is set to 'auto' or 'yes' the included repositories are
+                                automatically added. If set to 'ask' the user may interactively deselect
+                                repositories. The default is not to add any repository. Instead, the user
+                                is expected to add the medium as 'add-on' during the installation.
       --list-repos              Just list all repositories and exit.
       --grub2                   Use grub2 for El-Torito legacy setup (for debugging).
       --isolinux                Use isolinux for El-Torito legacy setup (for debugging).
@@ -4031,7 +4038,7 @@ sub replace_kernel_mods
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-# new_products_xml(old_xml, dir, name, alias, prio)
+# new_products_xml(old_xml, dir, name, alias, prio, ask_user)
 #
 # Add a product to an existing add_on_products.xml or create a new one.
 #
@@ -4040,9 +4047,11 @@ sub replace_kernel_mods
 #
 sub new_products_xml
 {
-  my ($old_xml, $dir, $name, $alias, $prio) = @_;
+  my ($old_xml, $dir, $name, $alias, $prio, $ask_user) = @_;
   my $new_xml;
   my @x;
+
+  $ask_user = $ask_user ? 'true' : 'false';
 
   @x = split /^/m, $old_xml || <<'# template';
 <?xml version="1.0"?>
@@ -4058,7 +4067,7 @@ sub new_products_xml
             <name>$name</name>
             <url>relurl://$dir?alias=$alias</url>
             <priority config:type="integer">$prio</priority>
-            <ask_user config:type="boolean">false</ask_user>
+            <ask_user config:type="boolean">$ask_user</ask_user>
             <selected config:type="boolean">true</selected>
             <check_name config:type="boolean">false</check_name>
         </product_item>
@@ -4359,6 +4368,17 @@ sub analyze_products
     chmod 0644, "$tmp_new/media.1/products";
   }
 
+  # create/update add_on_products.xml
+  my $products_xml;
+  my $products_xml_updated;
+
+  my $f = fname "add_on_products.xml";
+  if($f && open my $fh, "<", $f) {
+    local $/;
+    $products_xml = <$fh>;
+    close $fh;
+  }
+
   open my $prod_fd, ">>$tmp_new/media.1/products" or die "media.1/products: $!\n";
 
   # ... and append any products we found above
@@ -4371,6 +4391,20 @@ sub analyze_products
     for my $d (@{$_->{dirs}}) {
       push @{$mkisofs->{grafts}}, "$_->{repo_dir}/$d=$_->{base_dir}/$d";
     }
+
+    if($opt_enable_repos =~ /^(1|yes|auto|ask)$/i) {
+      my $ask_user = $opt_enable_repos =~ /^ask$/i;
+      $products_xml = new_products_xml(
+        $products_xml, "$_->{repo_dir}", $_->{repo_dir}, $_->{repo_dir},
+        $opt_addon_prio, $ask_user
+      );
+      $products_xml_updated = 1;
+    }
+  }
+
+  if($products_xml_updated && open my $fh, ">", "$tmp_new/add_on_products.xml") {
+    print $fh $products_xml;
+    close $fh;
   }
 
   close $prod_fd;
