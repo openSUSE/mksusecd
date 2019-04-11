@@ -99,18 +99,45 @@ with the kernel rpms and integrate the driver update or create an add-on with th
 
 
 
-## SLES 15 and later: modules and repositories
+## SLES 15 and later: modules (extensions) and repositories
 
-SLES 15 supports so-called 'modules' (not to be confused with kernel modules) which are basically repositories for different product components.
+SLES 15 supports so-called 'modules' or 'extensions' (not to be confused with kernel modules)
+for different product components.
+
+Technically they look like software repositories and are treated similar to add-ons.
 
 `mksusecd` lets you create a single medium containing the parts you need.
 
 ```sh
-mksusecd --list-repos suse.iso extra.iso
+mksusecd --list-repos sle-installer.iso sle-packages.iso
 ```
 
-shows the modules that are on the medium. Pick the modules you need and do, for example:
+shows the modules that are on the media. Pick the modules you need and do, for example:
 
 ```sh
-mksusecd --create foo.iso --include-repos SLES15,Basesystem-Module,HPC-Module suse.iso extra.iso
+mksusecd --create foo.iso \
+  --include-repos Basesystem-Module,Desktop-Applications-Module \
+  sle-installer.iso sle-packages.iso
 ```
+
+The created image then has to be added as add-on during the installation workflow.
+
+You can skip that extra step using the `--enable-repos` option. Like:
+
+```sh
+mksusecd --create foo.iso \
+  --enable-repos auto --include-repos Basesystem-Module,Desktop-Applications-Module \
+  sle-installer.iso sle-packages.iso
+```
+
+In that case a file `add_on_products.xml` is added to the medium that activates all
+modules automatically.
+
+Alternatively, use `--enable-repos ask` to have the installer present a dialog that lets you manually pick
+the modules you need.
+
+> Note
+>
+> If you are doing an installation with
+> [AutoYaST](https://doc.opensuse.org/projects/autoyast) you do not have to mention these modules
+> separately in the AutoYaST control file when `--enable-repos` is used.
