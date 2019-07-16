@@ -238,6 +238,7 @@ my $opt_no_docs = 1;
 my $opt_loader;
 my $opt_sign = 1;
 my $opt_sign_key;
+my $opt_no_sign_image;
 my @opt_kernel_rpms;
 my @opt_kernel_modules;
 my $opt_arch;
@@ -278,6 +279,7 @@ GetOptions(
   'no-digest'        => sub { $opt_digest = undef },
   'sign'             => \$opt_sign,
   'no-sign'          => sub { $opt_sign = 0 },
+  'no-sign-image'    => \$opt_no_sign_image,
   'sign-key=s'       => \$opt_sign_key,
   'gpt'              => sub { $opt_hybrid = 1; $opt_hybrid_gpt = 1 },
   'mbr'              => sub { $opt_hybrid = 1; $opt_hybrid_mbr = 1 },
@@ -585,6 +587,14 @@ if($opt_create || $opt_list_repos) {
     print "calculating $opt_digest...";
     system "tagmedia $chk --digest '$opt_digest' --pad 150 '$iso_file' >/dev/null";
     print "\n";
+    if($opt_sign && $sign_key_dir && !$opt_no_sign_image) {
+      system "tagmedia --export-tags $sign_key_dir/tags $iso_file >/dev/null 2>&1";
+      if(-s "$sign_key_dir/tags") {
+        print "signing $iso_file\n" if $opt_verbose >= 1;
+        system "gpg --homedir=$sign_key_dir --batch --yes --armor --detach-sign $sign_key_dir/tags";
+        system "tagmedia --import-signature $sign_key_dir/tags.asc $iso_file";
+      }
+    }
   }
 }
 
@@ -625,6 +635,7 @@ Create ISO image:
       --sign                    Re-sign '/content' if it has changed. The public part of
                                 the sign key is added to the initrd. (default)
       --no-sign                 Don't re-sign '/content'.
+      --no-sign-image           Don't embed signature for whole image. See Signing notes.
       --sign-key KEY_FILE       Use this key instead of generating a transient key.
                                 See Signing notes below.
       --gpt                     Add GPT when in isohybrid mode.
@@ -784,7 +795,15 @@ Signing notes:
   must point to a private key file.
 
   If there's no 'sign-key' option, a transient key is created. The public
-  part is added to the initrd and the key is deleted.
+  part is added to the initrd and the root directory of the image and the
+  key is deleted.
+  
+  The key file is named 'gpg-pubkey-xxxxxxxx-xxxxxxxx.asc'.
+
+  mksusecd also embeds a signature of the checksum metadata into the image.
+  This can be used by the checkmedia tool to verify the integrity of the
+  image. As older versions (checkmedia < version 4.2) cannot handle this,
+  it is possible to prevent adding this signature with '--no-sign-image'.
 
 Add-on notes:
 
@@ -3313,9 +3332,15 @@ sub add_sign_key
     system "cp $sign_key_pub $tmp_dir/usr/lib/rpm/gnupg/keys";
   }
 
-  print "signing key added to initrd\n" if $opt_verbose >= 1;
-
   push @opt_initrds, $tmp_dir;
+
+  my $name = $sign_key_pub;
+  $name =~ s#.*/##;
+
+  my $k = copy_or_new_file "$name";
+  system "cp $sign_key_pub $k";
+
+  print "signing key added to image and initrd\n" if $opt_verbose >= 1;
 }
 
 
