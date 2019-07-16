@@ -238,7 +238,7 @@ my $opt_no_docs = 1;
 my $opt_loader;
 my $opt_sign = 1;
 my $opt_sign_key;
-my $opt_no_sign_image;
+my $opt_sign_image;
 my @opt_kernel_rpms;
 my @opt_kernel_modules;
 my $opt_arch;
@@ -279,7 +279,8 @@ GetOptions(
   'no-digest'        => sub { $opt_digest = undef },
   'sign'             => \$opt_sign,
   'no-sign'          => sub { $opt_sign = 0 },
-  'no-sign-image'    => \$opt_no_sign_image,
+  'sign-image'       => \$opt_sign_image,
+  'no-sign-image'    => sub { $opt_sign_image = 0 },
   'sign-key=s'       => \$opt_sign_key,
   'gpt'              => sub { $opt_hybrid = 1; $opt_hybrid_gpt = 1 },
   'mbr'              => sub { $opt_hybrid = 1; $opt_hybrid_mbr = 1 },
@@ -587,7 +588,7 @@ if($opt_create || $opt_list_repos) {
     print "calculating $opt_digest...";
     system "tagmedia $chk --digest '$opt_digest' --pad 150 '$iso_file' >/dev/null";
     print "\n";
-    if($opt_sign && $sign_key_dir && !$opt_no_sign_image) {
+    if($opt_sign && $sign_key_dir && $opt_sign_image) {
       system "tagmedia --export-tags $sign_key_dir/tags $iso_file >/dev/null 2>&1";
       if(-s "$sign_key_dir/tags") {
         print "signing $iso_file\n" if $opt_verbose >= 1;
@@ -635,7 +636,8 @@ Create ISO image:
       --sign                    Re-sign '/content' if it has changed. The public part of
                                 the sign key is added to the initrd. (default)
       --no-sign                 Don't re-sign '/content'.
-      --no-sign-image           Don't embed signature for whole image. See Signing notes.
+      --sign-image              Embed signature for whole image. See Signing notes.
+      --no-sign-image           Don't embed signature for whole image. (default)
       --sign-key KEY_FILE       Use this key instead of generating a transient key.
                                 See Signing notes below.
       --gpt                     Add GPT when in isohybrid mode.
@@ -800,10 +802,12 @@ Signing notes:
   
   The key file is named 'gpg-pubkey-xxxxxxxx-xxxxxxxx.asc'.
 
-  mksusecd also embeds a signature of the checksum metadata into the image.
+  mksusecd can also embed a signature of the checksum metadata into the image.
   This can be used by the checkmedia tool to verify the integrity of the
-  image. As older versions (checkmedia < version 4.2) cannot handle this,
-  it is possible to prevent adding this signature with '--no-sign-image'.
+  image.
+
+  As older versions (checkmedia < version 4.2) cannot handle this, it is not
+  the default and you have to explicitly request it with '--sign-image'.
 
 Add-on notes:
 
