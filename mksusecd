@@ -1100,9 +1100,9 @@ sub analyze_boot
       }
       if(-f fname("boot/$_/cd.ikr")) {
         $boot->{$_}{bl}{ikr} = { base => "boot/$_/cd.ikr", arch => $_ };
-      }
-      elsif(-f fname("boot/$_/suse.ins")) {
-        $boot->{$_}{bl}{ikr} = { base => "boot/$_/cd.ikr", arch => $_, ins => "boot/$_/suse.ins" };
+        if(-f fname("boot/$_/suse.ins")) {
+          $boot->{$_}{bl}{ikr}{ins} = "boot/$_/suse.ins";
+        }
       }
       if(-f fname("boot/$_/grub2-efi/cd.img")) {
         $boot->{$_}{bl}{grub2} = { base => "boot/$_/grub2-efi", file => "cd.img", arch => $_ };
@@ -2493,31 +2493,38 @@ sub create_cd_ikr
   my $ikr = $_[0];
   my $ins = $_[1];
 
-  my $src = fname($ins);
+  my $src = $ins;
   $src =~ s#/[^/]*$##;
 
   my $dst = $ikr;
   $dst =~ s#/[^/]*$##;
+
+  my $new_initrd_siz = copy_or_new_file "$src/initrd.siz";
+  if(open my $f, ">", $new_initrd_siz) {
+    syswrite $f, pack("N", -s fname("$src/initrd"));
+    close $f;
+  }
 
   my @layout;
 
   if(open my $s, fname($ins)) {
     while(<$s>) {
       next if /^\s*\*/;
-      push @layout, { file => "$src/$1", ofs => oct($2) } if /^\s*(\S+)\s+(\S+)/;
+      push @layout, { file => fname("$src/$1"), ofs => oct($2) } if /^\s*(\S+)\s+(\S+)/;
     }
     close $s;
   }
 
   die "$ins: nothing to do?\n" if !@layout;
 
-  system("mkdir -p $tmp_new/$dst");
+  my $new_ikr = copy_or_new_file $ikr;
 
-  if(open my $d, ">", "$tmp_new/$ikr") {
+  if(open my $d, ">", $new_ikr) {
     for (@layout) {
       my $fname = $_->{file};
       my $is_parmfile;
-      $is_parmfile = 1 if $fname =~ s#(/parmfile)$#$1.cd#;
+      # FIXME: does not work this way as parmfile is ro
+      $is_parmfile = 1 if $fname =~ m#/parmfile$#;
       if(open my $f, $fname) {
         sysread $f, my $buf, -s($f);
         close $f;
