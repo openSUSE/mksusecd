@@ -1193,6 +1193,13 @@ sub build_todo
     if($_ eq 's390x') {
       $opt_no_mbr_code = 1 if !defined $opt_no_mbr_code;
       $opt_zipl = 1 if !defined $opt_zipl;
+      if($opt_boot_options) {
+        my $f = copy_or_new_file "boot/s390x/parmfile";
+        if(open my $f, ">$f") {
+          print $f "$opt_boot_options\n";
+          close $f;
+        }
+      }
       if($opt_zipl) {
         if(!fname("boot/s390x/zipl.map")) {
           # add zipl map file, if necessary
@@ -1786,7 +1793,9 @@ sub run_isozipl
   my $opt;
   my $ok;
 
-  my $cmd = "isozipl '$iso_file'";
+  $opt = " --options '$opt_boot_options'" if $opt_boot_options;
+
+  my $cmd = "isozipl$opt '$iso_file'";
 
   print "running:\n$cmd\n" if $opt_verbose >= 1;
 
@@ -2523,14 +2532,18 @@ sub create_cd_ikr
     for (@layout) {
       my $fname = $_->{file};
       my $is_parmfile;
-      # FIXME: does not work this way as parmfile is ro
       $is_parmfile = 1 if $fname =~ m#/parmfile$#;
       if(open my $f, $fname) {
         sysread $f, my $buf, -s($f);
         close $f;
         sysseek $d, $_->{ofs}, 0;
-        # remove newlines from parmfile
-        $buf =~ s/\n+/ /g if $is_parmfile;
+        if($is_parmfile) {
+          # write at least 1 block
+          my $pad = 0x200 - length($buf);
+          $buf .= "\x00" x $pad if $pad > 0;
+          # remove newlines from parmfile
+          $buf =~ s/\n+/ /g;
+        }
         syswrite $d, $buf;
         # print "$fname: $_->{ofs} ", length($buf), "\n";
       }
@@ -2777,7 +2790,7 @@ sub update_boot_options
       my $n = copy_file $boot->{$b}{bl}{efi}{base};
       if(defined $n) {
         my $tmp = $tmp->file();
-        if(!system "mcopy -n -i $n ::/efi/boot/grub.cfg $tmp") {
+        if(!system "mcopy -n -i $n ::/efi/boot/grub.cfg $tmp 2>/dev/null") {
           grub2_add_option $tmp, $opt_boot_options;
           if(system "mcopy -D o -i $n $tmp ::/efi/boot/grub.cfg") {
             print STDERR "Warning: failed to update grub.cfg\n";
