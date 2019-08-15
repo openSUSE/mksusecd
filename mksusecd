@@ -1100,9 +1100,9 @@ sub analyze_boot
       }
       if(-f fname("boot/$_/cd.ikr")) {
         $boot->{$_}{bl}{ikr} = { base => "boot/$_/cd.ikr", arch => $_ };
-      }
-      elsif(-f fname("boot/$_/suse.ins")) {
-        $boot->{$_}{bl}{ikr} = { base => "boot/$_/cd.ikr", arch => $_, ins => "boot/$_/suse.ins" };
+        if(-f fname("boot/$_/suse.ins")) {
+          $boot->{$_}{bl}{ikr}{ins} = "boot/$_/suse.ins";
+        }
       }
       if(-f fname("boot/$_/grub2-efi/cd.img")) {
         $boot->{$_}{bl}{grub2} = { base => "boot/$_/grub2-efi", file => "cd.img", arch => $_ };
@@ -1193,6 +1193,13 @@ sub build_todo
     if($_ eq 's390x') {
       $opt_no_mbr_code = 1 if !defined $opt_no_mbr_code;
       $opt_zipl = 1 if !defined $opt_zipl;
+      if($opt_boot_options) {
+        my $f = copy_or_new_file "boot/s390x/parmfile";
+        if(open my $f, ">$f") {
+          print $f "$opt_boot_options\n";
+          close $f;
+        }
+      }
       if($opt_zipl) {
         if(!fname("boot/s390x/zipl.map")) {
           # add zipl map file, if necessary
@@ -1786,7 +1793,9 @@ sub run_isozipl
   my $opt;
   my $ok;
 
-  my $cmd = "isozipl '$iso_file'";
+  $opt = " --options '$opt_boot_options'" if $opt_boot_options;
+
+  my $cmd = "isozipl$opt '$iso_file'";
 
   print "running:\n$cmd\n" if $opt_verbose >= 1;
 
@@ -2493,37 +2502,48 @@ sub create_cd_ikr
   my $ikr = $_[0];
   my $ins = $_[1];
 
-  my $src = fname($ins);
+  my $src = $ins;
   $src =~ s#/[^/]*$##;
 
   my $dst = $ikr;
   $dst =~ s#/[^/]*$##;
+
+  my $new_initrd_siz = copy_or_new_file "$src/initrd.siz";
+  if(open my $f, ">", $new_initrd_siz) {
+    syswrite $f, pack("N", -s fname("$src/initrd"));
+    close $f;
+  }
 
   my @layout;
 
   if(open my $s, fname($ins)) {
     while(<$s>) {
       next if /^\s*\*/;
-      push @layout, { file => "$src/$1", ofs => oct($2) } if /^\s*(\S+)\s+(\S+)/;
+      push @layout, { file => fname("$src/$1"), ofs => oct($2) } if /^\s*(\S+)\s+(\S+)/;
     }
     close $s;
   }
 
   die "$ins: nothing to do?\n" if !@layout;
 
-  system("mkdir -p $tmp_new/$dst");
+  my $new_ikr = copy_or_new_file $ikr;
 
-  if(open my $d, ">", "$tmp_new/$ikr") {
+  if(open my $d, ">", $new_ikr) {
     for (@layout) {
       my $fname = $_->{file};
       my $is_parmfile;
-      $is_parmfile = 1 if $fname =~ s#(/parmfile)$#$1.cd#;
+      $is_parmfile = 1 if $fname =~ m#/parmfile$#;
       if(open my $f, $fname) {
         sysread $f, my $buf, -s($f);
         close $f;
         sysseek $d, $_->{ofs}, 0;
-        # remove newlines from parmfile
-        $buf =~ s/\n+/ /g if $is_parmfile;
+        if($is_parmfile) {
+          # write at least 1 block
+          my $pad = 0x200 - length($buf);
+          $buf .= "\x00" x $pad if $pad > 0;
+          # remove newlines from parmfile
+          $buf =~ s/\n+/ /g;
+        }
         syswrite $d, $buf;
         # print "$fname: $_->{ofs} ", length($buf), "\n";
       }
@@ -2770,7 +2790,7 @@ sub update_boot_options
       my $n = copy_file $boot->{$b}{bl}{efi}{base};
       if(defined $n) {
         my $tmp = $tmp->file();
-        if(!system "mcopy -n -i $n ::/efi/boot/grub.cfg $tmp") {
+        if(!system "mcopy -n -i $n ::/efi/boot/grub.cfg $tmp 2>/dev/null") {
           grub2_add_option $tmp, $opt_boot_options;
           if(system "mcopy -D o -i $n $tmp ::/efi/boot/grub.cfg") {
             print STDERR "Warning: failed to update grub.cfg\n";
