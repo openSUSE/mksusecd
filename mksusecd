@@ -3804,7 +3804,7 @@ sub get_initrd_modules
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # unpack_kernel_rpms()
 #
-# Unpack al provided kernel packaged in a temporary location.
+# Unpack all provided kernel packages in a temporary location.
 #
 sub unpack_kernel_rpms
 {
@@ -3825,7 +3825,16 @@ sub unpack_kernel_rpms
     die "Couldn't determine kernel version. No kernel package?\n";
   }
 
+  # kernel image names, per architecture
+  #
+  #  aarch64:	Image, Image-*; vmlinux-*
+  #  i586:	vmlinuz, vmlinuz-*; vmlinux-*
+  #  ppc64le:	vmlinux, vmlinux-*
+  #  s390x:	image, image-*; vmlinux-*
+  #  x86_64:	vmlinuz, vmlinuz-*; vmlinux-*
+  #
   $kernel->{image} = (glob "$kernel->{dir}/boot/vmlinuz-*")[0];
+  $kernel->{image} = (glob "$kernel->{dir}/boot/Image-*")[0] if !$kernel->{image};
   $kernel->{image} = (glob "$kernel->{dir}/boot/image-*")[0] if !$kernel->{image};
   $kernel->{image} = (glob "$kernel->{dir}/boot/vmlinux-*")[0] if !$kernel->{image};
 
