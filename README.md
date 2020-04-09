@@ -2,7 +2,7 @@
 
 This is a tool to create (open)SUSE Linux installation ISOs - either from scratch or
 by modifying existing ISOs. It is **not** intended to create an installation repository or
-completely new product media. For this, use [kiwi](https://suse.github.io/kiwi).
+completely new product media. For this, use [kiwi](https://opensuse.github.io/kiwi).
 
 mksusecd makes it easy to apply modifications to existing install media, like:
 
