@@ -516,8 +516,10 @@ if($opt_create || $opt_list_repos) {
   }
 
   if($opt_sign && (
-    # we are going to change '/content' resp. '/CHECKSUMS' in one way or another
-    @opt_initrds || @opt_kernel_rpms || $opt_boot_options || $opt_new_boot_entry || update_content_or_checksums)
+      # we are going to change '/content' resp. '/CHECKSUMS' in one way or another
+      @opt_initrds || @opt_kernel_rpms || $opt_boot_options ||
+      $opt_new_boot_entry || $opt_include_repos || update_content_or_checksums
+    )
   ) {
     extract_installkeys;
     create_sign_key;
@@ -4417,14 +4419,8 @@ sub analyze_products
   # don't merge repos if the user doesn't want to
   return if !$opt_merge_repos;
 
-  # copy products file from first source (if any) ...
-  mkdir "$tmp_new/media.1", 0755;
-  my $prod_file = "$src->[0]{dir}/media.1/products";
-  if(-r $prod_file) {
-    push @{$mkisofs->{exclude}}, $prod_file;
-    system "cp $prod_file $tmp_new/media.1/products";
-    chmod 0644, "$tmp_new/media.1/products";
-  }
+  # rebuild products file
+  my $prod_file = copy_or_new_file "media.1/products";
 
   # create/update add_on_products.xml
   my $products_xml;
@@ -4437,17 +4433,19 @@ sub analyze_products
     close $fh;
   }
 
-  open my $prod_fd, ">>$tmp_new/media.1/products" or die "media.1/products: $!\n";
+  # rewrite entire product file
+  open my $prod_fd, ">$prod_file" or die "media.1/products: $!\n";
 
   # ... and append any products we found above
   for (@{$product_db->{list}}) {
-    # $src->[0] is always included, skip it here
-    next if !$_->{src_idx};
-    next if !$_->{include};
+    if(!$_->{include}) {
+      push @{$mkisofs->{exclude}}, $_->{base_dir} if $_->{product_dir};
+      next;
+    }
     # FIXME: add $label to name?
     print $prod_fd "/$_->{repo_dir} $_->{name} $_->{ver}\n";
     for my $d (@{$_->{dirs}}) {
-      push @{$mkisofs->{grafts}}, "$_->{repo_dir}/$d=$_->{base_dir}/$d";
+      push @{$mkisofs->{grafts}}, "$_->{repo_dir}/$d=$_->{base_dir}/$d" if $_->{repo_dir} ne $_->{product_dir};
     }
 
     if($opt_enable_repos =~ /^(1|yes|auto|ask)$/i) {
@@ -4474,7 +4472,7 @@ sub analyze_products
 #
 # -   source_idx: # of source medium (0-based)
 # - product_file: full path to 'media.1/products'
-# -     base_dir: directory the repos is in
+# -     base_dir: directory the repos are in
 # -         name: product name
 # -      version: some version string
 #
@@ -4491,6 +4489,8 @@ sub check_product
   my $base_dir = $prod;
   $base_dir =~ s#/media.1/products$#$dir#;
   $base_dir =~ s#/+$##;
+
+  $dir =~ s#^/##;
 
   # skip if we did this already
   return 0 if $product_db->{checked}{$base_dir};
@@ -4525,15 +4525,20 @@ sub check_product
   # The reason is that on our module media the same directory is used for
   # binary, source, and debuginfo modules. So we'd have a file conflict when
   # putting them on the same medium..
-  my $repo_dir = $name;		# FIXME: add "_$ver"?
-  $repo_dir .= "_$label" if $label ne "";
+  my $repo_dir = $dir;
 
-  # Check repo list if the repo should be included on the final medium. See
-  # --include-repos option. If unset, include everything.
+  if($label) {
+    $repo_dir = $name if !$repo_dir;
+    $repo_dir .= "_$label";
+  }
+
+  # Check repo list if the repo should be included on the final medium.
+  # See --include-repos option.
+  # If unset, include everything.
   #
-  # Again, things on the first source are always included.
+  # Products in media root dir are always included.
   my $inc = 1;
-  if($opt_include_repos && $src_idx) {
+  if($opt_include_repos && $dir) {
     my @repos = split /,/, $opt_include_repos;
     $inc = grep { $_ eq $name } @repos;
   }
@@ -4541,6 +4546,7 @@ sub check_product
   # create internal product database entry
   push @{$product_db->{list}}, {
     base_dir => $base_dir,
+    product_dir => $dir,
     name => $name,
     ver => $ver,
     dirs => [ "repodata", sort keys %repodirs ],
