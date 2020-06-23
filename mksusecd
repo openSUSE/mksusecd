@@ -516,8 +516,10 @@ if($opt_create || $opt_list_repos) {
   }
 
   if($opt_sign && (
-    # we are going to change '/content' resp. '/CHECKSUMS' in one way or another
-    @opt_initrds || @opt_kernel_rpms || $opt_boot_options || $opt_new_boot_entry || update_content_or_checksums)
+      # we are going to change '/content' resp. '/CHECKSUMS' in one way or another
+      @opt_initrds || @opt_kernel_rpms || $opt_boot_options ||
+      $opt_new_boot_entry || $opt_include_repos || update_content_or_checksums
+    )
   ) {
     extract_installkeys;
     create_sign_key;
@@ -4417,14 +4419,8 @@ sub analyze_products
   # don't merge repos if the user doesn't want to
   return if !$opt_merge_repos;
 
-  # copy products file from first source (if any) ...
-  mkdir "$tmp_new/media.1", 0755;
-  my $prod_file = "$src->[0]{dir}/media.1/products";
-  if(-r $prod_file) {
-    push @{$mkisofs->{exclude}}, $prod_file;
-    system "cp $prod_file $tmp_new/media.1/products";
-    chmod 0644, "$tmp_new/media.1/products";
-  }
+  # rebuild products file
+  my $prod_file = copy_or_new_file "media.1/products";
 
   # create/update add_on_products.xml
   my $products_xml;
@@ -4438,7 +4434,7 @@ sub analyze_products
   }
 
   # rewrite entire product file
-  open my $prod_fd, ">$tmp_new/media.1/products" or die "media.1/products: $!\n";
+  open my $prod_fd, ">$prod_file" or die "media.1/products: $!\n";
 
   # ... and append any products we found above
   for (@{$product_db->{list}}) {
