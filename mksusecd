@@ -238,6 +238,7 @@ my $opt_no_docs = 1;
 my $opt_loader;
 my $opt_sign = 1;
 my $opt_sign_key;
+my $opt_sign_key_id;
 my $opt_sign_image;
 my @opt_kernel_rpms;
 my @opt_kernel_modules;
@@ -282,6 +283,7 @@ GetOptions(
   'sign-image'       => \$opt_sign_image,
   'no-sign-image'    => sub { $opt_sign_image = 0 },
   'sign-key=s'       => \$opt_sign_key,
+  'sign-key-id=s'    => \$opt_sign_key_id,
   'gpt'              => sub { $opt_hybrid = 1; $opt_hybrid_gpt = 1 },
   'mbr'              => sub { $opt_hybrid = 1; $opt_hybrid_mbr = 1 },
   'hybrid'           => \$opt_hybrid,
@@ -372,6 +374,7 @@ if($config{sudo}) {
 }
 
 $opt_sign_key ||= $config{'sign-key'};
+$opt_sign_key_id ||= $config{'sign-key-id'};
 
 my $tmp = Tmp::new($opt_save_temp);
 
@@ -401,6 +404,7 @@ my $has_efi = 0;
 my $has_el_torito = 0;
 my $sign_key_pub;
 my $sign_key_dir;
+my $sign_key_id;
 my $initrd_installkeys;
 my $initrd_format;
 my $rebuild_initrd;
@@ -591,11 +595,12 @@ if($opt_create || $opt_list_repos) {
     system "tagmedia $chk --digest '$opt_digest' --pad 150 '$iso_file' >/dev/null";
     print "\n";
     if($opt_sign && $sign_key_dir && $opt_sign_image) {
-      system "tagmedia --export-tags $sign_key_dir/tags $iso_file >/dev/null 2>&1";
-      if(-s "$sign_key_dir/tags") {
+      my $tmp_dir = $tmp->dir();
+      system "tagmedia --export-tags $tmp_dir/tags $iso_file >/dev/null 2>&1";
+      if(-s "$tmp_dir/tags") {
         print "signing $iso_file\n" if $opt_verbose >= 1;
-        system "gpg --homedir=$sign_key_dir --batch --yes --armor --detach-sign $sign_key_dir/tags";
-        system "tagmedia --import-signature $sign_key_dir/tags.asc $iso_file";
+        system "gpg --homedir=$sign_key_dir --local-user '$sign_key_id' --batch --yes --armor --detach-sign $tmp_dir/tags";
+        system "tagmedia --import-signature $tmp_dir/tags.asc $iso_file";
       }
     }
   }
@@ -640,7 +645,11 @@ Create ISO image:
       --no-sign                 Don't re-sign '/content'.
       --sign-image              Embed signature for whole image. See Signing notes.
       --no-sign-image           Don't embed signature for whole image. (default)
-      --sign-key KEY_FILE       Use this key instead of generating a transient key.
+      --sign-key KEY_FILE       Use this key file instead of generating a transient key.
+                                See Signing notes below.
+      --sign-key-id KEY_ID      Use this key id instead of generating a transient key.
+                                Note: gpg might show an interactive dialog asking for a
+                                password to unlock the key.
                                 See Signing notes below.
       --gpt                     Add GPT when in isohybrid mode.
       --mbr                     Add MBR when in isohybrid mode (default).
@@ -795,12 +804,15 @@ Signing notes:
   up. For this, mksusecd will re-sign the file and add the public part of
   the signing key to the initrd.
 
-  You can specify the key to use with the 'sign-key' option. The option
-  must point to a private key file.
+  You can specify the key to use with either the 'sign-key' or 'sign-key-id'
+  option. 'sign-key' must point to a private key file, 'sign-key-id' is a
+  key id recognized by gpg.
 
-  If there's no 'sign-key' option, a transient key is created. The public
-  part is added to the initrd and the root directory of the image and the
-  key is deleted.
+  If both '--sign-key' and '--sign-key-id' are specified, '--sign-key-id' wins.
+
+  If there's neither a 'sign-key' nor a 'sign-key-id' option, a transient
+  key is created. The public part is added to the initrd and the root
+  directory of the image and the key is deleted.
   
   The key file is named 'gpg-pubkey-xxxxxxxx-xxxxxxxx.asc'.
 
@@ -928,6 +940,9 @@ Configuration file:
 
     sign-key: File name of the private key file with the signing key. The
       same as the 'sign-key' option. See Signing notes above.
+
+    sign-key-id: Key id of the signing key. The same as the --sign-key-id
+      option. See Signing notes above.
 
 Examples:
 
@@ -1851,7 +1866,7 @@ sub run_createrepo
 
   print "signing '$name'\n" if $opt_verbose >= 1;
 
-  system "gpg --homedir=$sign_key_dir --batch --yes --armor --detach-sign $name";
+  system "gpg --homedir=$sign_key_dir --local-user '$sign_key_id' --batch --yes --armor --detach-sign $name";
 }
 
 
@@ -3273,6 +3288,43 @@ Name-Comment: transient key
 %commit
 = = = = = = = =
 
+  if($opt_sign_key_id) {
+    # step 1: export the public key, using the supplied id - this also ensures
+    #         the key exists
+    # step 2: get the canonical key id and creation date from the exported blob
+
+    $sign_key_dir = $gpg_dir = "$ENV{HOME}/.gnupg";
+    die "$sign_key_dir: no such gpg directory\n" unless -d $sign_key_dir;
+
+    my $tmp_dir = $tmp->dir();
+    system "gpg --homedir=$gpg_dir --export --armor --output $tmp_dir/key.pub '$opt_sign_key_id' >/dev/null 2>&1";
+
+    my $keyid;
+    my $date;
+
+    if(-f "$tmp_dir/key.pub" && open(my $p, "gpg -v -v $tmp_dir/key.pub 2>&1 |")) {
+      while(<$p>) {
+        $keyid = $1 if !$keyid && /^:signature packet:.*keyid\s+([0-9a-zA-Z]+)/;
+        $date = $1, last if !$date && $keyid && /created\s+(\d+)/;
+      }
+      close $p;
+    }
+
+    if(!$keyid || !$date) {
+      die "$opt_sign_key_id: failed to extract public key\n";
+    }
+
+    my $cname = sprintf "gpg-pubkey-%08x-%08x.asc", hex($keyid) & 0xffffffff, $date;
+    $sign_key_pub = "$tmp_dir/$cname";
+    rename "$tmp_dir/key.pub", $sign_key_pub;
+
+    $sign_key_id = $keyid;
+
+    print "using signing key, keyid = $sign_key_id\n";
+
+    return;
+  }
+
   my $key;
   my $is_gpg21;
 
@@ -3317,11 +3369,13 @@ Name-Comment: transient key
     $sign_key_pub = "$gpg_dir/$cname";
     system "gpg --homedir=$gpg_dir --export --armor --output $sign_key_pub >/dev/null 2>&1";
 
+    $sign_key_id = $keyid;
+
     if($opt_sign_key) {
-      print "using signing key, keyid = $keyid\n" if $opt_verbose >= 1;
+      print "using signing key, keyid = $sign_key_id\n";
     }
     else {
-      print "transient signing key created, keyid = $keyid\n" if $opt_verbose >= 1;
+      print "transient signing key created, keyid = $sign_key_id\n";
     }
   }
   else {
@@ -3392,7 +3446,7 @@ sub sign_content_or_checksums
 
   print "re-signing '/$name'\n" if $opt_verbose >= 1;
 
-  system "gpg --homedir=$sign_key_dir --batch --yes --armor --detach-sign $c";
+  system "gpg --homedir=$sign_key_dir --local-user '$sign_key_id' --batch --yes --armor --detach-sign $c";
 }
 
 
