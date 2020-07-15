@@ -239,6 +239,7 @@ my $opt_loader;
 my $opt_sign = 1;
 my $opt_sign_key;
 my $opt_sign_key_id;
+my $opt_sign_pass_file;
 my $opt_sign_image;
 my @opt_kernel_rpms;
 my @opt_kernel_modules;
@@ -284,6 +285,7 @@ GetOptions(
   'no-sign-image'    => sub { $opt_sign_image = 0 },
   'sign-key=s'       => \$opt_sign_key,
   'sign-key-id=s'    => \$opt_sign_key_id,
+  'sign-pass-file=s' => \$opt_sign_pass_file,
   'gpt'              => sub { $opt_hybrid = 1; $opt_hybrid_gpt = 1 },
   'mbr'              => sub { $opt_hybrid = 1; $opt_hybrid_mbr = 1 },
   'hybrid'           => \$opt_hybrid,
@@ -419,6 +421,7 @@ my $linuxrc_options;
 my $has_content;
 my $product_db;
 my $repomd_instsys_location;
+my $sign_passwd_option;
 
 my $progress_start = 0;
 my $progress_end = 100;
@@ -432,6 +435,14 @@ $mksquashfs_has_comp = check_mksquashfs_comp;
 if(defined $opt_size) {
   $image_size = eval_size $opt_size;
   die "$opt_size: invalid size\n" unless $image_size;
+}
+
+if ($opt_sign_pass_file) {
+  if (-e $opt_sign_pass_file) {
+    $sign_passwd_option = "--pinentry-mode loopback --passphrase-file $opt_sign_pass_file"
+  } else {
+    die "Passphrasefile $opt_sign_pass_file does not exist\n";
+  }
 }
 
 if($opt_create || $opt_list_repos) {
@@ -599,7 +610,7 @@ if($opt_create || $opt_list_repos) {
       system "tagmedia --export-tags $tmp_dir/tags $iso_file >/dev/null 2>&1";
       if(-s "$tmp_dir/tags") {
         print "signing $iso_file\n" if $opt_verbose >= 1;
-        system "gpg --homedir=$sign_key_dir --local-user '$sign_key_id' --batch --yes --armor --detach-sign $tmp_dir/tags";
+        system "gpg --homedir=$sign_key_dir --local-user '$sign_key_id' --batch --yes --armor --detach-sign $sign_passwd_option $tmp_dir/tags";
         system "tagmedia --import-signature $tmp_dir/tags.asc $iso_file";
       }
     }
@@ -649,7 +660,10 @@ Create ISO image:
                                 See Signing notes below.
       --sign-key-id KEY_ID      Use this key id instead of generating a transient key.
                                 Note: gpg might show an interactive dialog asking for a
-                                password to unlock the key.
+                                password to unlock the key unless you use the 'sign-pass-file'
+                                option.
+                                See Signing notes below.
+      --sign-pass-file          Use the password stored in this file to open the key.
                                 See Signing notes below.
       --gpt                     Add GPT when in isohybrid mode.
       --mbr                     Add MBR when in isohybrid mode (default).
@@ -809,6 +823,10 @@ Signing notes:
   key id recognized by gpg.
 
   If both '--sign-key' and '--sign-key-id' are specified, '--sign-key-id' wins.
+  
+  You can specify a file which contains the passphrase to the key specified with 
+  '--sign-key' or '--sign-key-id' to avoid an interactive dialog to enter
+  the passphrase.
 
   If there's neither a 'sign-key' nor a 'sign-key-id' option, a transient
   key is created. The public part is added to the initrd and the root
@@ -1866,7 +1884,7 @@ sub run_createrepo
 
   print "signing '$name'\n" if $opt_verbose >= 1;
 
-  system "gpg --homedir=$sign_key_dir --local-user '$sign_key_id' --batch --yes --armor --detach-sign $name";
+  system "gpg --homedir=$sign_key_dir --local-user '$sign_key_id' --batch --yes --armor --detach-sign $sign_passwd_option $name";
 }
 
 
@@ -3297,7 +3315,7 @@ Name-Comment: transient key
     die "$sign_key_dir: no such gpg directory\n" unless -d $sign_key_dir;
 
     my $tmp_dir = $tmp->dir();
-    system "gpg --homedir=$gpg_dir --export --armor --output $tmp_dir/key.pub '$opt_sign_key_id' >/dev/null 2>&1";
+    system "gpg --homedir=$gpg_dir --export --armor --output $tmp_dir/key.pub $sign_passwd_option '$opt_sign_key_id'  >/dev/null 2>&1";
 
     my $keyid;
     my $date;
@@ -3334,7 +3352,7 @@ Name-Comment: transient key
     die "$key: no such key file\n" unless -f $key;
   }
   else {
-    if(open my $p, "| cd $gpg_dir ; gpg --homedir=$gpg_dir --batch --armor --debug-quick-random --gen-key - 2>/dev/null") {
+    if(open my $p, "| cd $gpg_dir ; gpg --homedir=$gpg_dir --batch --armor --debug-quick-random $sign_passwd_option --gen-key - 2>/dev/null") {
       print $p $c;
       close $p;
     }
@@ -3362,12 +3380,11 @@ Name-Comment: transient key
 
   if(($priv || ($is_gpg21 && $pub)) && $date) {
     $sign_key_dir = $gpg_dir;
-
-    system "gpg --homedir=$gpg_dir --import $key >/dev/null 2>&1";
+    system "gpg --homedir=$gpg_dir $sign_passwd_option --import $key  >/dev/null 2>&1";
 
     my $cname = sprintf "gpg-pubkey-%08x-%08x.asc", hex($keyid) & 0xffffffff, $date;
     $sign_key_pub = "$gpg_dir/$cname";
-    system "gpg --homedir=$gpg_dir --export --armor --output $sign_key_pub >/dev/null 2>&1";
+    system "gpg --homedir=$gpg_dir $sign_passwd_option --export --armor --output $sign_key_pub   2>&1";
 
     $sign_key_id = $keyid;
 
@@ -3403,7 +3420,7 @@ sub add_sign_key
   if($initrd_installkeys) {
     # old style, gpg key ring
     system "cp $initrd_installkeys $tmp_dir/installkey.gpg";
-    system "gpg --homedir=$sign_key_dir --batch --no-default-keyring --ignore-time-conflict --ignore-valid-from --keyring $tmp_dir/installkey.gpg --import $sign_key_pub 2>/dev/null";
+    system "gpg --homedir=$sign_key_dir --batch $sign_passwd_option --no-default-keyring --ignore-time-conflict --ignore-valid-from --keyring $tmp_dir/installkey.gpg --import $sign_key_pub  2>/dev/null";
     unlink "$tmp_dir/installkey.gpg~";
   }
   else {
@@ -3446,7 +3463,7 @@ sub sign_content_or_checksums
 
   print "re-signing '/$name'\n" if $opt_verbose >= 1;
 
-  system "gpg --homedir=$sign_key_dir --local-user '$sign_key_id' --batch --yes --armor --detach-sign $c";
+  system "gpg --homedir=$sign_key_dir --local-user '$sign_key_id' --batch --yes --armor --detach-sign $sign_passwd_option $c";
 }
 
 
