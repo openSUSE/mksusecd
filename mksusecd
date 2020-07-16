@@ -439,7 +439,7 @@ if(defined $opt_size) {
   die "$opt_size: invalid size\n" unless $image_size;
 }
 
-if ($opt_sign_pass_file) {
+if ($opt_sign_pass_file && $opt_sign_key ) {
   if (-e $opt_sign_pass_file) {
     $sign_passwd_option = "--pinentry-mode loopback --passphrase-file $opt_sign_pass_file"
   } else {
@@ -622,7 +622,6 @@ if($opt_create || $opt_list_repos) {
     }
   }
 }
-print "All Done";
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # usage(exit_code)
@@ -3358,7 +3357,7 @@ Name-Comment: transient key
     die "$key: no such key file\n" unless -f $key;
   }
   else {
-    if(open my $p, "| cd $gpg_dir ; gpg --homedir=$gpg_dir --batch --armor --debug-quick-random $sign_passwd_option --gen-key - 2>/dev/null") {
+    if(open my $p, "| cd $gpg_dir ; gpg --homedir=$gpg_dir --batch --armor --debug-quick-random --gen-key - 2>/dev/null") {
       print $p $c;
       close $p;
     }
