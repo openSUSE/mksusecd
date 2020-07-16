@@ -265,10 +265,12 @@ my $opt_crypto_password;
 my $opt_crypto_title;
 my $opt_crypto_top_dir;
 my $opt_instsys_in_repo = 1;
+my $opt_create_repo;
 
 
 GetOptions(
   'create|c=s'       => sub { $opt_create = 1; $opt_dst = $_[1] },
+  'create_repo'      => sub { $opt_create_repo = 1;},
   'joliet'           => \$opt_joliet,
   'no-joliet'        => sub { $opt_joliet = 0 },
   'efi'              => \$opt_efi,
@@ -546,6 +548,10 @@ if($opt_create || $opt_list_repos) {
   $add_initrd = create_initrd;
   update_kernel_initrd;
   update_boot_options;
+  
+  if($opt_create_repo) {
+    run_createrepo $sources[0]{dir};
+  }
 
   prepare_addon;
 
@@ -616,7 +622,7 @@ if($opt_create || $opt_list_repos) {
     }
   }
 }
-
+print "All Done";
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # usage(exit_code)
@@ -643,6 +649,7 @@ Create ISO image:
 
   -c, --create FILE             Create ISO image from SOURCES.
                                 SOURCES are either directories or existing ISO images.
+      --create_repo             (Re)Create and sign the repository.
       --joliet                  Use Joliet extensions (default).
       --no-joliet               Don't use Joliet extensions.
       --uefi                    Make ISO UEFI bootable (default).
@@ -1859,7 +1866,6 @@ sub run_createrepo
   my $ok;
 
   my $cmd = "createrepo --simple-md-filenames '$dir'";
-
   print "running:\n$cmd\n" if $opt_verbose >= 1;
 
   $ok = !system("$cmd 2>$tmp_err >&2");
