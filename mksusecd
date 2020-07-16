@@ -445,6 +445,8 @@ if ($opt_sign_pass_file && $opt_sign_key ) {
   } else {
     die "Passphrasefile $opt_sign_pass_file does not exist\n";
   }
+} else {
+  print "--sign-pass-file ignored because of missing --sign-key \n"
 }
 
 if($opt_create || $opt_list_repos) {
