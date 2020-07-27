@@ -439,14 +439,16 @@ if(defined $opt_size) {
   die "$opt_size: invalid size\n" unless $image_size;
 }
 
-if ($opt_sign_pass_file && $opt_sign_key ) {
-  if (-e $opt_sign_pass_file) {
-    $sign_passwd_option = "--pinentry-mode loopback --passphrase-file $opt_sign_pass_file"
+if ($opt_sign_pass_file) { 
+  if ($opt_sign_key || $opt_sign_key_id) {
+    if (-e $opt_sign_pass_file) {
+      $sign_passwd_option = "--pinentry-mode loopback --passphrase-file $opt_sign_pass_file"
+    } else {
+      die "Passphrasefile $opt_sign_pass_file does not exist\n";
+    }
   } else {
-    die "Passphrasefile $opt_sign_pass_file does not exist\n";
+    print "--sign-pass-file ignored because of missing --sign-key or --sign-key-id\n"
   }
-} else {
-  print "--sign-pass-file ignored because of missing --sign-key \n"
 }
 
 if($opt_create || $opt_list_repos) {
@@ -1867,6 +1869,7 @@ sub run_createrepo
   my $ok;
 
   my $cmd = "createrepo --simple-md-filenames '$dir'";
+  
   print "running:\n$cmd\n" if $opt_verbose >= 1;
 
   $ok = !system("$cmd 2>$tmp_err >&2");
@@ -3427,7 +3430,7 @@ sub add_sign_key
   if($initrd_installkeys) {
     # old style, gpg key ring
     system "cp $initrd_installkeys $tmp_dir/installkey.gpg";
-    system "gpg --homedir=$sign_key_dir --batch $sign_passwd_option --no-default-keyring --ignore-time-conflict --ignore-valid-from --keyring $tmp_dir/installkey.gpg --import $sign_key_pub  2>/dev/null";
+    system "gpg --homedir=$sign_key_dir --batch --no-default-keyring --ignore-time-conflict --ignore-valid-from --keyring $tmp_dir/installkey.gpg --import $sign_key_pub  2>/dev/null";
     unlink "$tmp_dir/installkey.gpg~";
   }
   else {
