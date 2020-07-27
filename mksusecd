@@ -439,7 +439,7 @@ if(defined $opt_size) {
   die "$opt_size: invalid size\n" unless $image_size;
 }
 
-if ($opt_sign_pass_file) { 
+if ($opt_sign_pass_file) {
   if ($opt_sign_key || $opt_sign_key_id) {
     if (-e $opt_sign_pass_file) {
       $sign_passwd_option = "--pinentry-mode loopback --passphrase-file $opt_sign_pass_file"
@@ -552,7 +552,7 @@ if($opt_create || $opt_list_repos) {
   $add_initrd = create_initrd;
   update_kernel_initrd;
   update_boot_options;
-  
+
   if($opt_create_repo) {
     run_createrepo $sources[0]{dir};
   }
@@ -833,15 +833,15 @@ Signing notes:
   key id recognized by gpg.
 
   If both '--sign-key' and '--sign-key-id' are specified, '--sign-key-id' wins.
-  
-  You can specify a file which contains the passphrase to the key specified with 
+
+  You can specify a file which contains the passphrase to the key specified with
   '--sign-key' or '--sign-key-id' to avoid an interactive dialog to enter
   the passphrase.
 
   If there's neither a 'sign-key' nor a 'sign-key-id' option, a transient
   key is created. The public part is added to the initrd and the root
   directory of the image and the key is deleted.
-  
+
   The key file is named 'gpg-pubkey-xxxxxxxx-xxxxxxxx.asc'.
 
   mksusecd can also embed a signature of the checksum metadata into the image.
@@ -1233,7 +1233,7 @@ sub build_todo
     }
   }
 
-  # s390 also uses el-torito 
+  # s390 also uses el-torito
   for (sort keys %$boot) {
     if($_ eq 's390x') {
       $opt_no_mbr_code = 1 if !defined $opt_no_mbr_code;
@@ -1929,7 +1929,7 @@ sub isols
         push @$files, { name => "$dir$5", type => $type, start => $3 + 0, size => $x[4] };
       }
     }
-  } 
+  }
 
   close $fd;
 
@@ -2084,7 +2084,7 @@ sub meta_fat
     next unless $_->{type} eq 'd';
     $fat_size++;
   }
-   
+
   $fat_size += ($fat_size >> 8) + 4;
 
   # we want $fat_size to count 512 byte blocks, not 2k blocks as in iso fs
@@ -2125,7 +2125,7 @@ sub meta_fat
     next unless $_->{type} eq 'd';
     system "mmd -i '$tmp_fat' -D o ::$_->{name}";
   }
-   
+
   # 2.: directory entries
   for (@$iso_files) {
     next unless $_->{type} eq ' ';
@@ -2151,16 +2151,16 @@ sub meta_fat
       system "mcopy -i '$tmp_fat' -D o $tmp ::padding$pad_cnt";
     }
     show_progress 100 * $pr_cnt / $pr_size;
-  }  
-     
+  }
+
   system "mdel -i '$tmp_fat' '::padding*'" if $pad;
 
   # 4.: read file offsets
   for (@$iso_files) {
-    $_->{fat} = 0;   
+    $_->{fat} = 0;
     $_->{fat} = $1 if `mshowfat -i '$tmp_fat' ::$_->{name}` =~ /<(\d+)/;
   }
-   
+
   # 5.: verify file offsets
   my $dif;
   my $first;
@@ -2170,7 +2170,7 @@ sub meta_fat
     $dif = $_->{start} - $_->{fat};
     last;
   }
-   
+
   # for (@$iso_files) {
   #   printf "%6d %6d  [%4d]  (%d)\t%s %8d %s\n", $_->{start}, $_->{fat}, $_->{start} - $_->{fat}, $_->{pad} ? $_->{pad} : 0, $_->{type}, $_->{size}, $_->{name};
   # }
@@ -3430,7 +3430,7 @@ sub add_sign_key
   if($initrd_installkeys) {
     # old style, gpg key ring
     system "cp $initrd_installkeys $tmp_dir/installkey.gpg";
-    system "gpg --homedir=$sign_key_dir --batch --no-default-keyring --ignore-time-conflict --ignore-valid-from --keyring $tmp_dir/installkey.gpg --import $sign_key_pub  2>/dev/null";
+    system "gpg --homedir=$sign_key_dir --batch --no-default-keyring --ignore-time-conflict --ignore-valid-from --keyring $tmp_dir/installkey.gpg --import $sign_key_pub 2>/dev/null";
     unlink "$tmp_dir/installkey.gpg~";
   }
   else {
