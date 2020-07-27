@@ -239,6 +239,7 @@ my $opt_loader;
 my $opt_sign = 1;
 my $opt_sign_key;
 my $opt_sign_key_id;
+my $opt_sign_pass_file;
 my $opt_sign_image;
 my @opt_kernel_rpms;
 my @opt_kernel_modules;
@@ -264,10 +265,12 @@ my $opt_crypto_password;
 my $opt_crypto_title;
 my $opt_crypto_top_dir;
 my $opt_instsys_in_repo = 1;
+my $opt_create_repo;
 
 
 GetOptions(
   'create|c=s'       => sub { $opt_create = 1; $opt_dst = $_[1] },
+  'create_repo'      => sub { $opt_create_repo = 1;},
   'joliet'           => \$opt_joliet,
   'no-joliet'        => sub { $opt_joliet = 0 },
   'efi'              => \$opt_efi,
@@ -284,6 +287,7 @@ GetOptions(
   'no-sign-image'    => sub { $opt_sign_image = 0 },
   'sign-key=s'       => \$opt_sign_key,
   'sign-key-id=s'    => \$opt_sign_key_id,
+  'sign-pass-file=s' => \$opt_sign_pass_file,
   'gpt'              => sub { $opt_hybrid = 1; $opt_hybrid_gpt = 1 },
   'mbr'              => sub { $opt_hybrid = 1; $opt_hybrid_mbr = 1 },
   'hybrid'           => \$opt_hybrid,
@@ -419,6 +423,7 @@ my $linuxrc_options;
 my $has_content;
 my $product_db;
 my $repomd_instsys_location;
+my $sign_passwd_option;
 
 my $progress_start = 0;
 my $progress_end = 100;
@@ -432,6 +437,18 @@ $mksquashfs_has_comp = check_mksquashfs_comp;
 if(defined $opt_size) {
   $image_size = eval_size $opt_size;
   die "$opt_size: invalid size\n" unless $image_size;
+}
+
+if ($opt_sign_pass_file) {
+  if ($opt_sign_key || $opt_sign_key_id) {
+    if (-e $opt_sign_pass_file) {
+      $sign_passwd_option = "--pinentry-mode loopback --passphrase-file $opt_sign_pass_file"
+    } else {
+      die "Passphrasefile $opt_sign_pass_file does not exist\n";
+    }
+  } else {
+    print "--sign-pass-file ignored because of missing --sign-key or --sign-key-id\n"
+  }
 }
 
 if($opt_create || $opt_list_repos) {
@@ -536,6 +553,10 @@ if($opt_create || $opt_list_repos) {
   update_kernel_initrd;
   update_boot_options;
 
+  if($opt_create_repo) {
+    run_createrepo $sources[0]{dir};
+  }
+
   prepare_addon;
 
   sign_content_or_checksums if update_content_or_checksums;
@@ -599,13 +620,12 @@ if($opt_create || $opt_list_repos) {
       system "tagmedia --export-tags $tmp_dir/tags $iso_file >/dev/null 2>&1";
       if(-s "$tmp_dir/tags") {
         print "signing $iso_file\n" if $opt_verbose >= 1;
-        system "gpg --homedir=$sign_key_dir --local-user '$sign_key_id' --batch --yes --armor --detach-sign $tmp_dir/tags";
+        system "gpg --homedir=$sign_key_dir --local-user '$sign_key_id' --batch --yes --armor --detach-sign $sign_passwd_option $tmp_dir/tags";
         system "tagmedia --import-signature $tmp_dir/tags.asc $iso_file";
       }
     }
   }
 }
-
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # usage(exit_code)
@@ -632,6 +652,7 @@ Create ISO image:
 
   -c, --create FILE             Create ISO image from SOURCES.
                                 SOURCES are either directories or existing ISO images.
+      --create_repo             (Re)Create and sign the repository.
       --joliet                  Use Joliet extensions (default).
       --no-joliet               Don't use Joliet extensions.
       --uefi                    Make ISO UEFI bootable (default).
@@ -649,7 +670,10 @@ Create ISO image:
                                 See Signing notes below.
       --sign-key-id KEY_ID      Use this key id instead of generating a transient key.
                                 Note: gpg might show an interactive dialog asking for a
-                                password to unlock the key.
+                                password to unlock the key unless you use the 'sign-pass-file'
+                                option.
+                                See Signing notes below.
+      --sign-pass-file          Use the password stored in this file to open the key.
                                 See Signing notes below.
       --gpt                     Add GPT when in isohybrid mode.
       --mbr                     Add MBR when in isohybrid mode (default).
@@ -810,10 +834,14 @@ Signing notes:
 
   If both '--sign-key' and '--sign-key-id' are specified, '--sign-key-id' wins.
 
+  You can specify a file which contains the passphrase to the key specified with
+  '--sign-key' or '--sign-key-id' to avoid an interactive dialog to enter
+  the passphrase.
+
   If there's neither a 'sign-key' nor a 'sign-key-id' option, a transient
   key is created. The public part is added to the initrd and the root
   directory of the image and the key is deleted.
-  
+
   The key file is named 'gpg-pubkey-xxxxxxxx-xxxxxxxx.asc'.
 
   mksusecd can also embed a signature of the checksum metadata into the image.
@@ -1205,7 +1233,7 @@ sub build_todo
     }
   }
 
-  # s390 also uses el-torito 
+  # s390 also uses el-torito
   for (sort keys %$boot) {
     if($_ eq 's390x') {
       $opt_no_mbr_code = 1 if !defined $opt_no_mbr_code;
@@ -1866,7 +1894,7 @@ sub run_createrepo
 
   print "signing '$name'\n" if $opt_verbose >= 1;
 
-  system "gpg --homedir=$sign_key_dir --local-user '$sign_key_id' --batch --yes --armor --detach-sign $name";
+  system "gpg --homedir=$sign_key_dir --local-user '$sign_key_id' --batch --yes --armor --detach-sign $sign_passwd_option $name";
 }
 
 
@@ -1901,7 +1929,7 @@ sub isols
         push @$files, { name => "$dir$5", type => $type, start => $3 + 0, size => $x[4] };
       }
     }
-  } 
+  }
 
   close $fd;
 
@@ -2056,7 +2084,7 @@ sub meta_fat
     next unless $_->{type} eq 'd';
     $fat_size++;
   }
-   
+
   $fat_size += ($fat_size >> 8) + 4;
 
   # we want $fat_size to count 512 byte blocks, not 2k blocks as in iso fs
@@ -2097,7 +2125,7 @@ sub meta_fat
     next unless $_->{type} eq 'd';
     system "mmd -i '$tmp_fat' -D o ::$_->{name}";
   }
-   
+
   # 2.: directory entries
   for (@$iso_files) {
     next unless $_->{type} eq ' ';
@@ -2123,16 +2151,16 @@ sub meta_fat
       system "mcopy -i '$tmp_fat' -D o $tmp ::padding$pad_cnt";
     }
     show_progress 100 * $pr_cnt / $pr_size;
-  }  
-     
+  }
+
   system "mdel -i '$tmp_fat' '::padding*'" if $pad;
 
   # 4.: read file offsets
   for (@$iso_files) {
-    $_->{fat} = 0;   
+    $_->{fat} = 0;
     $_->{fat} = $1 if `mshowfat -i '$tmp_fat' ::$_->{name}` =~ /<(\d+)/;
   }
-   
+
   # 5.: verify file offsets
   my $dif;
   my $first;
@@ -2142,7 +2170,7 @@ sub meta_fat
     $dif = $_->{start} - $_->{fat};
     last;
   }
-   
+
   # for (@$iso_files) {
   #   printf "%6d %6d  [%4d]  (%d)\t%s %8d %s\n", $_->{start}, $_->{fat}, $_->{start} - $_->{fat}, $_->{pad} ? $_->{pad} : 0, $_->{type}, $_->{size}, $_->{name};
   # }
@@ -3297,7 +3325,7 @@ Name-Comment: transient key
     die "$sign_key_dir: no such gpg directory\n" unless -d $sign_key_dir;
 
     my $tmp_dir = $tmp->dir();
-    system "gpg --homedir=$gpg_dir --export --armor --output $tmp_dir/key.pub '$opt_sign_key_id' >/dev/null 2>&1";
+    system "gpg --homedir=$gpg_dir --export --armor --output $tmp_dir/key.pub $sign_passwd_option '$opt_sign_key_id'  >/dev/null 2>&1";
 
     my $keyid;
     my $date;
@@ -3362,12 +3390,11 @@ Name-Comment: transient key
 
   if(($priv || ($is_gpg21 && $pub)) && $date) {
     $sign_key_dir = $gpg_dir;
-
-    system "gpg --homedir=$gpg_dir --import $key >/dev/null 2>&1";
+    system "gpg --homedir=$gpg_dir $sign_passwd_option --import $key  >/dev/null 2>&1";
 
     my $cname = sprintf "gpg-pubkey-%08x-%08x.asc", hex($keyid) & 0xffffffff, $date;
     $sign_key_pub = "$gpg_dir/$cname";
-    system "gpg --homedir=$gpg_dir --export --armor --output $sign_key_pub >/dev/null 2>&1";
+    system "gpg --homedir=$gpg_dir $sign_passwd_option --export --armor --output $sign_key_pub >/dev/null 2>&1";
 
     $sign_key_id = $keyid;
 
@@ -3446,7 +3473,7 @@ sub sign_content_or_checksums
 
   print "re-signing '/$name'\n" if $opt_verbose >= 1;
 
-  system "gpg --homedir=$sign_key_dir --local-user '$sign_key_id' --batch --yes --armor --detach-sign $c";
+  system "gpg --homedir=$sign_key_dir --local-user '$sign_key_id' --batch --yes --armor --detach-sign $sign_passwd_option $c";
 }
 
 
