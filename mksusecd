@@ -3394,7 +3394,6 @@ Name-Comment: transient key
 
     my $cname = sprintf "gpg-pubkey-%08x-%08x.asc", hex($keyid) & 0xffffffff, $date;
     $sign_key_pub = "$gpg_dir/$cname";
-    print "gpg --homedir=$gpg_dir $sign_passwd_option --export --armor --output $sign_key_pub >/dev/null 2>&1";
     system "gpg --homedir=$gpg_dir $sign_passwd_option --export --armor --output $sign_key_pub >/dev/null 2>&1";
 
     $sign_key_id = $keyid;
