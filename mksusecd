@@ -4534,15 +4534,20 @@ sub analyze_products
   open my $prod_fd, ">$prod_file" or die "media.1/products: $!\n";
 
   # ... and append any products we found above
+
+  # Exclude all products that are in subdirectories and re-add them as
+  # needed via mkisofs graft points. That's needed as they might be on
+  # different media originally.
+  #
   for (@{$product_db->{list}}) {
-    if(!$_->{include}) {
-      push @{$mkisofs->{exclude}}, $_->{base_dir} if $_->{product_dir};
-      next;
-    }
+    push @{$mkisofs->{exclude}}, $_->{base_dir} if $_->{product_dir};
+
+    next if !$_->{include};
+
     # FIXME: add $label to name?
     print $prod_fd "/$_->{repo_dir} $_->{name} $_->{ver}\n";
     for my $d (@{$_->{dirs}}) {
-      push @{$mkisofs->{grafts}}, "$_->{repo_dir}/$d=$_->{base_dir}/$d" if $_->{repo_dir} ne $_->{product_dir};
+      push @{$mkisofs->{grafts}}, "$_->{repo_dir}/$d=$_->{base_dir}/$d" if $_->{product_dir};
     }
 
     if($opt_enable_repos =~ /^(1|yes|auto|ask)$/i) {
