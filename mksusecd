@@ -1100,12 +1100,34 @@ sub build_filelist
 {
   my $src = $_[0];
 
-  for my $s (@$src) {
+  # Internally generated files are put into the $tmp_new base directory.
+  # $files holds a database of all files and their locations (their base
+  # directories).
+  #
+  # The aim is that files that come later in the $src list replace earlier
+  # versions. With $tmp_new taking even more precedence.
+  #
+  # At the start of this function $files has already been set up with the
+  # files in $tmp_new.
+  #
+  # So, go through $src in reverse, put new files into $files and exclude
+  # duplicates.
+  #
+  # This does only apply to files, not directories.
+  #
+  for my $s (reverse @$src) {
     File::Find::find({
       wanted => sub {
         if(m#^$s->{dir}/(.+)#) {
-          push @{$mkisofs->{exclude}}, "$files->{$1}/$1" if $files->{$1} && -f "$files->{$1}/$1";
-          $files->{$1} = $s->{dir};
+          my $file_name = $1;
+          if($files->{$file_name}) {
+            if(-f "$s->{dir}/$file_name") {
+              push @{$mkisofs->{exclude}}, "$s->{dir}/$file_name";
+            }
+          }
+          else {
+            $files->{$file_name} = $s->{dir};
+          }
         }
       },
       no_chdir => 1
