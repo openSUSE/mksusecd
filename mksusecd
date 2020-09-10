@@ -4546,9 +4546,9 @@ sub analyze_products
 
     # FIXME: add $label to name?
     print $prod_fd "/$_->{repo_dir} $_->{name} $_->{ver}\n";
-    for my $d (@{$_->{dirs}}) {
-      push @{$mkisofs->{grafts}}, "$_->{repo_dir}/$d=$_->{base_dir}/$d" if $_->{product_dir};
-    }
+
+    # include full product dir, not just repo-specific subdirs
+    push @{$mkisofs->{grafts}}, "$_->{product_dir}=$_->{base_dir}" if $_->{product_dir};
 
     if($opt_enable_repos =~ /^(1|yes|auto|ask)$/i) {
       my $ask_user = $opt_enable_repos =~ /^ask$/i;
