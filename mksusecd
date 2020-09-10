@@ -1100,12 +1100,34 @@ sub build_filelist
 {
   my $src = $_[0];
 
-  for my $s (@$src) {
+  # Internally generated files are put into the $tmp_new base directory.
+  # $files holds a database of all files and their locations (their base
+  # directories).
+  #
+  # The aim is that files that come later in the $src list replace earlier
+  # versions. With $tmp_new taking even more precedence.
+  #
+  # At the start of this function $files has already been set up with the
+  # files in $tmp_new.
+  #
+  # So, go through $src in reverse, put new files into $files and exclude
+  # duplicates.
+  #
+  # This does only apply to files, not directories.
+  #
+  for my $s (reverse @$src) {
     File::Find::find({
       wanted => sub {
         if(m#^$s->{dir}/(.+)#) {
-          push @{$mkisofs->{exclude}}, "$files->{$1}/$1" if $files->{$1} && -f "$files->{$1}/$1";
-          $files->{$1} = $s->{dir};
+          my $file_name = $1;
+          if($files->{$file_name}) {
+            if(-f "$s->{dir}/$file_name") {
+              push @{$mkisofs->{exclude}}, "$s->{dir}/$file_name";
+            }
+          }
+          else {
+            $files->{$file_name} = $s->{dir};
+          }
         }
       },
       no_chdir => 1
@@ -4462,26 +4484,20 @@ sub analyze_products
   my $src_idx = 0;
 
   for my $s (@$src) {
-    File::Find::find({
-      wanted => sub {
-        if(m#/media.1/products$#) {
-          # read any product file we find ...
-          if(open my $f, $_) {
-            my @fields;
-            while(my $l = <$f>) {
-              @fields = split /\s/, $l;
-              # ... and for each product definition, analyse it
-              my $ok = check_product($src_idx, $_, @fields) if @fields == 3;
-              # If we find a valid product, skip the source dir (except if it's the first).
-              # Instead, only the product (the repository) is added to the final medium.
-              $s->{skip} = 1 if $ok && $src_idx > 0;
-            }
-            close $f;
-          }
-        }
-      },
-      no_chdir => 1
-    }, $s->{dir});
+    # read top-level products file
+    $_ = "$s->{dir}/media.1/products";
+    if(open my $f, $_) {
+      my @fields;
+      while(my $l = <$f>) {
+        @fields = split /\s/, $l;
+        # ... and for each product definition, analyse it
+        my $ok = check_product($src_idx, $_, @fields) if @fields == 3;
+        # If we find a valid product, skip the source dir (except if it's the first).
+        # Instead, only the product (the repository) is added to the final medium.
+        $s->{skip} = 1 if $ok && $src_idx > 0;
+      }
+      close $f;
+    }
     $src_idx++;
   }
 
@@ -4518,16 +4534,21 @@ sub analyze_products
   open my $prod_fd, ">$prod_file" or die "media.1/products: $!\n";
 
   # ... and append any products we found above
+
+  # Exclude all products that are in subdirectories and re-add them as
+  # needed via mkisofs graft points. That's needed as they might be on
+  # different media originally.
+  #
   for (@{$product_db->{list}}) {
-    if(!$_->{include}) {
-      push @{$mkisofs->{exclude}}, $_->{base_dir} if $_->{product_dir};
-      next;
-    }
+    push @{$mkisofs->{exclude}}, $_->{base_dir} if $_->{product_dir};
+
+    next if !$_->{include};
+
     # FIXME: add $label to name?
     print $prod_fd "/$_->{repo_dir} $_->{name} $_->{ver}\n";
-    for my $d (@{$_->{dirs}}) {
-      push @{$mkisofs->{grafts}}, "$_->{repo_dir}/$d=$_->{base_dir}/$d" if $_->{repo_dir} ne $_->{product_dir};
-    }
+
+    # include full product dir, not just repo-specific subdirs
+    push @{$mkisofs->{grafts}}, "$_->{product_dir}=$_->{base_dir}" if $_->{product_dir};
 
     if($opt_enable_repos =~ /^(1|yes|auto|ask)$/i) {
       my $ask_user = $opt_enable_repos =~ /^ask$/i;
