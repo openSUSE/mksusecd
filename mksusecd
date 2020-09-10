@@ -4462,26 +4462,20 @@ sub analyze_products
   my $src_idx = 0;
 
   for my $s (@$src) {
-    File::Find::find({
-      wanted => sub {
-        if(m#/media.1/products$#) {
-          # read any product file we find ...
-          if(open my $f, $_) {
-            my @fields;
-            while(my $l = <$f>) {
-              @fields = split /\s/, $l;
-              # ... and for each product definition, analyse it
-              my $ok = check_product($src_idx, $_, @fields) if @fields == 3;
-              # If we find a valid product, skip the source dir (except if it's the first).
-              # Instead, only the product (the repository) is added to the final medium.
-              $s->{skip} = 1 if $ok && $src_idx > 0;
-            }
-            close $f;
-          }
-        }
-      },
-      no_chdir => 1
-    }, $s->{dir});
+    # read top-level products file
+    $_ = "$s->{dir}/media.1/products";
+    if(open my $f, $_) {
+      my @fields;
+      while(my $l = <$f>) {
+        @fields = split /\s/, $l;
+        # ... and for each product definition, analyse it
+        my $ok = check_product($src_idx, $_, @fields) if @fields == 3;
+        # If we find a valid product, skip the source dir (except if it's the first).
+        # Instead, only the product (the repository) is added to the final medium.
+        $s->{skip} = 1 if $ok && $src_idx > 0;
+      }
+      close $f;
+    }
     $src_idx++;
   }
 
