@@ -4315,7 +4315,7 @@ sub prepare_addon
 
   $products_xml = new_products_xml($products_xml, "addons/$addon_alias", $addon_name, $addon_alias, $opt_addon_prio);
 
-  if(open my $fh, ">", "$tmp_dir/add_on_products.xml") {
+  if(open my $fh, ">", new_file("add_on_products.xml")) {
     print $fh $products_xml;
     close $fh;
   }
@@ -4560,7 +4560,7 @@ sub analyze_products
     }
   }
 
-  if($products_xml_updated && open my $fh, ">", "$tmp_new/add_on_products.xml") {
+  if($products_xml_updated && open my $fh, ">", new_file("add_on_products.xml")) {
     print $fh $products_xml;
     close $fh;
   }
