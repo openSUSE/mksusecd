@@ -2352,6 +2352,7 @@ sub create_initrd
   my $compr = 'cat';
   $compr = "xz --check=crc32 -c" if $initrd_format eq "xz";
   $compr = "gzip -9c" if $initrd_format eq "gz";
+  $compr = "zstd -c -T0" if $initrd_format eq "zst";
 
   system "( cd $tmp_dir; find . | cpio --quiet -o -H newc --owner 0:0 | $compr ) >> $tmp_initrd";
 
@@ -2485,7 +2486,7 @@ sub get_initrd_format
 
   if(my $x = get_kernel_initrd) {
     my $c = get_archive_type fname($x->{initrd});
-    if($c =~ /\.(gz|xz)$/) {
+    if($c =~ /\.(gz|xz|zst)$/) {
       if($f) {
         die "differing initrd formats: $f & $1\n" if $1 ne $f;
       }
@@ -3558,7 +3559,7 @@ sub get_archive_type
     elsif($t =~ /\b(cpio|tar) archive/) {
       $type = "$1$type";
     }
-    elsif($t =~ /^(gzip|XZ) compressed data/) {
+    elsif($t =~ /^(gzip|XZ|Zstandard) compressed data/) {
       my $c = "\L$1";
       if($cmd) {
         $cmd .= " | $c -dc";
@@ -3567,7 +3568,7 @@ sub get_archive_type
         $cmd = "$c -dc '$file'";
       }
       $file = "-";
-      $type = "." . ($c eq 'gzip' ? 'gz' : 'xz') . "$type";
+      $type = "." . ($c eq 'gzip' ? 'gz' : ($c eq 'XZ' ? 'xz' : 'zst')) . "$type";
     }
     else {
       die "$orig: unsupported archive format\n";
@@ -3780,13 +3781,16 @@ sub unpack_archive
   }
 
   for (reverse split /\./, $type) {
-    if(/^(gz|xz|rpm)$/) {
+    if(/^(gz|xz|zst|rpm)$/) {
       my $c;
       if($1 eq 'gz') {
         $c = 'gzip -dc';
       }
       elsif($1 eq 'xz') {
         $c = 'xz -dc';
+      }
+      elsif($1 eq 'zst') {
+        $c = 'zstd -dc';
       }
       else {
         $c = 'rpm2cpio';
