@@ -656,9 +656,17 @@ if($opt_create || $opt_list_repos) {
   wipe_iso if $opt_no_iso;
 
   if(defined $opt_digest) {
-    my $chk = $opt_check ? " --check" : "";
-    print "calculating $opt_digest...";
-    system "tagmedia $chk --digest '$opt_digest' --pad 150 '$iso_file' >/dev/null";
+    my $chk = $opt_check ? "--check" : "";
+    my $digest = $opt_digest;
+    my $pad = "";
+    if($media_style eq 'suse') {
+      $pad = "--pad 150";
+    }
+    else {
+      $digest = "md5";
+    };
+    print "calculating $digest...";
+    system "tagmedia --style $media_style $chk $pad --digest '$digest' '$iso_file' >/dev/null";
     print "\n";
     if($opt_sign && $sign_key_dir && $opt_sign_image) {
       my $tmp_dir = $tmp->dir();
@@ -1244,6 +1252,17 @@ sub analyze_boot
         $boot->{ppc64}{bl}{yaboot} = { base => "suseboot", file => "suseboot/yaboot.ibm", arch => "ppc64" };
         $boot->{ppc64}{bl}{chrp} = { base => "ppc", arch => "ppc64" };
       }
+    }
+  }
+
+  if (-d fname("isolinux")) {
+    $_ = "x86_64";
+    $boot->{$_} = { base => "isolinux" };
+    $boot->{$_}{initrd} = "isolinux/initrd.img" if -f fname("isolinux/initrd.img");
+    $boot->{$_}{kernel} = "isolinux/vmlinuz" if -f fname("isolinux/vmlinuz");
+    $boot->{$_}{bl}{isolinux} = { base => "isolinux", file => "isolinux.bin", arch => $_ };
+    if(-f fname("images/efiboot.img")) {
+      $boot->{$_}{bl}{efi} = { base => "images/efiboot.img", arch => $_ };
     }
   }
 
@@ -3359,6 +3378,7 @@ sub add_to_content_file
 #
 sub update_content_or_checksums
 {
+  return 0 if $media_style eq 'rh';
   return $has_content ? update_content : update_checksums;
 }
 
@@ -4874,6 +4894,38 @@ sub wipe_iso
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# set_media_style(sources)
+#
+# - sources: array_ref containing a list of directories
+#
+# Look at sources and determine media style (suse vs. rh).
+#
+# Assume rh style if there's an '/isolinux' dir or a '.discinfo' file or
+# there are '<FOO>/Packages' subdirectories.
+#
+sub get_media_style
+{
+  my $src = $_[0];
+  my $style = 'suse';
+
+  for my $s (@$src) {
+    if(-d "$s->{dir}/isolinux" || -f "$s->{dir}/.discinfo") {
+      $style = 'rh';
+      last;
+    }
+    for my $r (glob "$s->{dir}/*/Packages") {
+      if(-d $r) {
+        $style = 'rh';
+        last;
+      }
+    }
+  }
+
+  return $style;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # analyze_products(sources)
 #
 # sources is an array_ref containing a list of directories to be scanned and
@@ -4899,7 +4951,7 @@ sub analyze_products
   for my $s (@$src) {
     # read top-level products file
     $_ = "$s->{dir}/media.1/products";
-    if(open my $f, $_) {
+    if($media_style eq 'suse' && open my $f, $_) {
       my @fields;
       while(my $l = <$f>) {
         @fields = split /\s/, $l;
@@ -4910,6 +4962,32 @@ sub analyze_products
         $s->{skip} = 1 if $ok && $src_idx > 0;
       }
       close $f;
+    }
+    else {
+      for my $r (glob "$s->{dir}/*/Packages") {
+        next if $r !~ m#/([^/]+)/Packages#;
+        my $p = $1;
+
+        my $ver = "";
+        if(open $f, "$s->{dir}/$p/repodata/repomd.xml") {
+          while(<$f>) {
+            $ver = $1, last if m#<revision>(\S+?)</revision>#;
+          }
+          close $f;
+        }
+
+        push @{$product_db->{list}}, {
+          base_dir => "$s->{dir}",
+          product_dir => $p,
+          name => $p,
+          ver => $ver,
+          dirs => [ "repodata", "Packages" ],
+          label => "",
+          src_idx => $src_idx,
+          repo_dir => $p,
+          include => 1
+        };
+      }
     }
     $src_idx++;
   }
@@ -4925,6 +5003,8 @@ sub analyze_products
   }
 
   exit 0 if $opt_list_repos;
+
+  return if $media_style eq 'rh';
 
   # don't merge repos if the user doesn't want to
   return if !$opt_merge_repos;
