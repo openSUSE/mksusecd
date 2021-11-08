@@ -233,6 +233,7 @@ my $opt_zipl;
 my $opt_check;
 my $opt_digest = 'sha256';
 my @opt_initrds;
+my @opt_instsys;
 my $opt_boot_options;
 my $opt_type;
 my $opt_vendor;
@@ -313,6 +314,7 @@ GetOptions(
   'mbr-chs'          => sub { $opt_no_mbr_chs = 0 },
   'no-mbr-chs'       => \$opt_no_mbr_chs,
   'initrd=s'         => \@opt_initrds,
+  'instsys=s'        => \@opt_instsys,
   'rebuild-initrd'   => \$opt_rebuild_initrd,
   'boot=s'           => \$opt_boot_options,
   'grub2'            => sub { $opt_loader = "grub" },
@@ -543,7 +545,7 @@ if($opt_create || $opt_list_repos) {
 
   if($opt_sign && (
       # we are going to change '/content' resp. '/CHECKSUMS' in one way or another
-      @opt_initrds || @opt_kernel_rpms || $opt_boot_options ||
+      @opt_initrds || @opt_instsys || @opt_kernel_rpms || $opt_boot_options ||
       $opt_new_boot_entry || $opt_include_repos || update_content_or_checksums
     )
   ) {
@@ -558,11 +560,22 @@ if($opt_create || $opt_list_repos) {
   update_kernel_initrd;
   update_boot_options;
 
+  if($media_style eq 'rh') {
+    add_instsys_rh;
+  }
+  else {
+    add_instsys_suse;
+  }
+
   if($opt_create_repo) {
     run_createrepo $sources[0]{dir};
   }
 
   prepare_addon;
+
+  if($media_style eq 'rh') {
+    update_treeinfo;
+  }
 
   sign_content_or_checksums if update_content_or_checksums;
   $todo = build_todo;
@@ -725,10 +738,12 @@ Create ISO image:
       --zipl                    Make zIPL bootable (default on s390x).
       --no-zipl                 Don't make zIPL bootable (default except on s390x).
       --initrd DIR|RPM|DUD      Add directory DIR or package RPM or driver update DUD
-                                to initrd.
+                                to initrd (option can be repeated).
       --rebuild-initrd          Rebuild the entire initrd instead of appending changes.
                                 This makes the initrd smaller but requires to run mksusecd
                                 with root permissions.
+      --instsys DIR|RPM|DUD     Add directory DIR or package RPM or driver update DUD
+                                to installation system (option can be repeated).
       --no-docs                 Don't include package documentation when updating the
                                 initrd (default).
       --keep-docs               Include package documentation when updating initrd.
@@ -1078,6 +1093,8 @@ sub show_progress
 #
 sub fname
 {
+  return undef if !defined $_[0];
+
   if(exists $files->{$_[0]}) {
     return "$files->{$_[0]}/$_[0]";
   }
@@ -2333,7 +2350,7 @@ sub create_initrd
       unpack_archive $type, $i, $tmp_dir;
     }
     else {
-      print STDERR "Warning: ignoring $i\n";
+      print STDERR "Warning: ignoring initrd part $i\n";
     }
   }
 
