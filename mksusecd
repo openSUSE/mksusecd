@@ -474,7 +474,13 @@ if($opt_create || $opt_list_repos) {
     s#/*$##;
     next if $_ eq "";
     if(-d) {
-      push @sources, { dir => $_, real_name => $_, type => 'dir' };
+      my $d = (<$_/usr/lib/skelcd/*>)[0];
+      if(-d $d ) {
+        push @sources, { dir => $d, real_name => $_, type => 'dir' };
+      }
+      else {
+        push @sources, { dir => $_, real_name => $_, type => 'dir' };
+      }
     }
     elsif(-f _) {
       my $t = `file -b -k -L $_ 2>/dev/null`;
@@ -484,6 +490,18 @@ if($opt_create || $opt_list_repos) {
         my $d = $tmp->mnt(sprintf("mnt_%04d", $iso_cnt));
         susystem "mount -oro,loop $_ $d";
         push @sources, { dir => $d, real_name => $_, type => 'iso' };
+      }
+      elsif($t =~ /RPM /) {
+        $iso_cnt++;
+        my $d_rpm = $tmp->mnt(sprintf("mnt_%04d", $iso_cnt));
+        system "rpm2cpio $_ | ( cd $d_rpm ; cpio --quiet -dmiu --no-absolute-filenames 2>/dev/null)";
+        my $d = (<$d_rpm/usr/lib/skelcd/*>)[0];
+        if(-d $d ) {
+          push @sources, { dir => $d, real_name => $_, type => 'dir' };
+        }
+        else {
+          push @sources, { dir => $d_rpm, real_name => $_, type => 'dir' };
+        }
       }
       else {
         die "$_: unsupported source type\n";
