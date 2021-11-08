@@ -257,7 +257,7 @@ my $opt_addon_prio = 60;
 my $opt_rebuild_initrd;
 my $opt_size;
 my $opt_net;
-my $opt_instsys;
+my $opt_instsys_url;
 my $opt_defaultrepo;
 my $opt_no_iso;
 my $opt_merge_repos = 1;
@@ -323,7 +323,7 @@ GetOptions(
   'nano'             => sub { $opt_type = 'nano' },
   'pico'             => sub { $opt_type = 'pico' },
   'net=s'            => \$opt_net,
-  'instsys=s'        => \$opt_instsys,
+  'instsys-url=s'    => \$opt_instsys_url,
   'defaultrepo=s'    => \$opt_defaultrepo,
   'instsys-in-repo!' => \$opt_instsys_in_repo,
   'volume=s'         => \$opt_volume,
@@ -512,7 +512,7 @@ if($opt_create || $opt_list_repos) {
   $has_content = 1 if fname "content";
   if(!$has_content) {
     print "assuming repo-md sources\n";
-    if(!$opt_instsys && !$opt_instsys_in_repo) {
+    if(!$opt_instsys_url && !$opt_instsys_in_repo) {
       my $x = get_kernel_initrd;
       die "oops: no initrd?\n" unless $x;
       if($x->{initrd} =~ m#(boot/[^/]+)/#) {
@@ -522,15 +522,15 @@ if($opt_create || $opt_list_repos) {
         #   here. This would cause linuxrc to miss the instsys as the URL
         #   below does never point inside an encrypted volume.
         #   Instead, run_crypto_disk() handles this when writing 90_crypto.
-        $opt_instsys = "disk:/$repomd_instsys_location" unless $opt_crypto;
+        $opt_instsys_url = "disk:/$repomd_instsys_location" unless $opt_crypto;
       }
     }
 
     exclude_files [ "README", "net" ];
   }
 
-  if($opt_instsys) {
-    add_linuxrc_option "InstSys", $opt_instsys;
+  if($opt_instsys_url) {
+    add_linuxrc_option "InstSys", $opt_instsys_url;
   }
 
   if($opt_net && !$opt_defaultrepo) {
@@ -783,13 +783,13 @@ Create ISO image:
       --pico                    Even less than --nano. Keep just the bootloader.
       --net URL                 Use URL as default network repository url.
                                 See Repository notes below.
-      --instsys URL             Load the installation system from the specified URL.
+      --instsys-url URL         Load the installation system from the specified URL.
                                 See Repository notes below.
-      --instsys-in-repo         Load installation system from repository (default). The option --instsys
-                                overrides this setting.
+      --instsys-in-repo         Load installation system from repository (default).
+                                The option --instsys-url overrides this setting.
                                 See Repository notes below.
       --no-instsys-in-repo      Do not load installation system from repository but search for it on
-                                local disks. The option --instsys overrides this setting.
+                                local disks. The option --instsys-url overrides this setting.
                                 See Repository notes below.
       --defaultrepo URL_LIST    List of comma (',') separated URLs. The installer will try each URL
                                 in turn for an installation repository.
@@ -898,7 +898,7 @@ Repository notes:
   from a local disk or dvd. It will be searched for on any mountable local
   device at startup.
 
-  You can override this using the --instsys option to load the
+  You can override this using the --instsys-url option to load the
   installation system from any location. Please look at the linuxrc
   documentation at https://en.opensuse.org/SDB:Linuxrc for details before
   using this option.
