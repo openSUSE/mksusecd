@@ -170,6 +170,8 @@ sub meta_iso;
 sub meta_fat;
 sub fat_data_start;
 sub create_initrd;
+sub add_instsys_rh;
+sub add_instsys_suse;
 sub get_kernel_initrd;
 sub update_kernel_initrd;
 sub get_initrd_format;
@@ -2393,6 +2395,120 @@ sub create_initrd
   # system "ls -lR $tmp_dir";
 
   return $tmp_initrd;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# add_instsys_suse()
+#
+# Combine the various instsys parts and append to existing image (SUSE layout).
+#
+# This will only _append_ the new parts to the original.
+#
+sub add_instsys_suse
+{
+  return if !@opt_instsys;
+
+  my $instsys;
+
+  my $x = get_kernel_initrd;
+  die "oops: no initrd?\n" unless $x;
+
+  my $instsys_location;
+
+  if($x->{initrd} =~ m#(boot/[^/]+)/#) {
+    $instsys_location = "$1/root";
+    $instsys = copy_file $instsys_location;
+
+    die "no inst-sys on media found (looking for $instsys_location)\n" if !$instsys;
+  }
+
+  my $tmp_dir = $tmp->dir();
+
+  for my $i (@opt_instsys) {
+    my $type = get_archive_type $i;
+
+    if($type) {
+      unpack_archive $type, $i, $tmp_dir;
+    }
+    else {
+      print STDERR "Warning: ignoring instsys part $i\n";
+    }
+  }
+
+  if($opt_no_docs) {
+    system "rm -rf $tmp_dir/usr/share/{doc,info,man}";
+    rmdir "$tmp_dir/usr/share";
+    rmdir "$tmp_dir/usr";
+  }
+
+  my $err = system "mksquashfs $tmp_dir $instsys -all-root -no-progress >/dev/null 2>&1";
+  die "mksquashfs failed to append to $instsys_location\n" if $err;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# add_instsys_rh()
+#
+# Combine the various instsys parts and append to existing image (RH layout).
+#
+# This will only _append_ the new parts to the original.
+#
+sub add_instsys_rh
+{
+  return if !@opt_instsys;
+
+  my $instsys_location = "images/install.img";
+  my $instsys_old = fname $instsys_location;
+
+  die "no inst-sys on media found (looking for \"$instsys_location\")\n" if !$instsys_old;
+
+  my $tmp_dir = $tmp->dir();
+
+  for my $i (@opt_instsys) {
+    my $type = get_archive_type $i;
+
+    if($type) {
+      unpack_archive $type, $i, $tmp_dir;
+    }
+    else {
+      print STDERR "Warning: ignoring instsys part $i\n";
+    }
+  }
+
+  if($opt_no_docs) {
+    system "rm -rf $tmp_dir/usr/share/{doc,info,man}";
+    rmdir "$tmp_dir/usr/share";
+    rmdir "$tmp_dir/usr";
+  }
+
+  # Determine whether this is just a squashfs image or an ext4 image
+  # (with name LiveOS/rootfs.img) inside a squashfs image.
+  my $has_liveos;
+  for (`unsquashfs -ls $instsys_old 2>/dev/null`) {
+    $has_liveos = 1, last if m#squashfs-root/LiveOS#;
+  }
+
+  my $instsys = copy_file $instsys_location;
+
+  if($has_liveos) {
+    my $tmp_live = $tmp->dir();
+    my $err = system "unsquashfs -no-progress -dest $tmp_live/root $instsys_old LiveOS/rootfs.img >/dev/null 2>&1";
+    die "extracting LiveOS/rootfs.img failed\n" if $err;
+
+    my $tmp_mnt = $tmp->dir();
+    die "\nLiveOS mount failed\n" if susystem "mount -oloop '$tmp_live/root/LiveOS/rootfs.img' $tmp_mnt";
+
+    susystem "sh -c 'tar -C $tmp_dir --owner=0 --group=0 -cf - . | tar -C $tmp_mnt -xpf -'";
+    susystem "umount $tmp_mnt";
+
+    my $err = system "mksquashfs $tmp_live/root $instsys -all-root -noappend -no-progress >/dev/null 2>&1";
+    die "mksquashfs failed to rebuild $instsys_location\n" if $err;
+  }
+  else {
+    my $err = system "mksquashfs $tmp_dir $instsys -all-root -no-progress >/dev/null 2>&1";
+    die "mksquashfs failed to append to $instsys_location\n" if $err;
+  }
 }
 
 
