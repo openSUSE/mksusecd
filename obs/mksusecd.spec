@@ -27,7 +27,7 @@ URL:            https://github.com/wfeldt/mksusecd
 Source:         %{name}-%{version}.tar.xz
 BuildRequires:  libuuid-devel
 BuildRequires:  xz
-Requires:       checkmedia
+Requires:       checkmedia >= 6.0
 %if %suse_version >= 1500
 Requires:       createrepo-implementation
 Requires:       mkisofs
