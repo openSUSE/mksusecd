@@ -170,6 +170,8 @@ sub meta_iso;
 sub meta_fat;
 sub fat_data_start;
 sub create_initrd;
+sub add_instsys_rh;
+sub add_instsys_suse;
 sub get_kernel_initrd;
 sub update_kernel_initrd;
 sub get_initrd_format;
@@ -186,10 +188,12 @@ sub prepare_micro;
 sub prepare_nano;
 sub prepare_pico;
 sub set_mkisofs_metadata;
+sub trim_volume_id;
 sub add_to_content_file;
 sub update_content_or_checksums;
 sub update_content;
 sub update_checksums;
+sub update_treeinfo;
 sub create_sign_key;
 sub add_sign_key;
 sub sign_content_or_checksums;
@@ -208,10 +212,13 @@ sub check_mksquashfs_comp;
 sub eval_size;
 sub add_linuxrc_option;
 sub wipe_iso;
+sub get_media_style;
 sub analyze_products;
 sub check_product;
 sub crypto_cleanup;
 sub run_crypto_disk;
+sub read_ini;
+sub write_ini;
 
 my %config;
 my $sudo;
@@ -233,6 +240,7 @@ my $opt_zipl;
 my $opt_check;
 my $opt_digest = 'sha256';
 my @opt_initrds;
+my @opt_instsys;
 my $opt_boot_options;
 my $opt_type;
 my $opt_vendor;
@@ -257,7 +265,7 @@ my $opt_addon_prio = 60;
 my $opt_rebuild_initrd;
 my $opt_size;
 my $opt_net;
-my $opt_instsys;
+my $opt_instsys_url;
 my $opt_defaultrepo;
 my $opt_no_iso;
 my $opt_merge_repos = 1;
@@ -313,6 +321,7 @@ GetOptions(
   'mbr-chs'          => sub { $opt_no_mbr_chs = 0 },
   'no-mbr-chs'       => \$opt_no_mbr_chs,
   'initrd=s'         => \@opt_initrds,
+  'instsys=s'        => \@opt_instsys,
   'rebuild-initrd'   => \$opt_rebuild_initrd,
   'boot=s'           => \$opt_boot_options,
   'grub2'            => sub { $opt_loader = "grub" },
@@ -323,7 +332,7 @@ GetOptions(
   'nano'             => sub { $opt_type = 'nano' },
   'pico'             => sub { $opt_type = 'pico' },
   'net=s'            => \$opt_net,
-  'instsys=s'        => \$opt_instsys,
+  'instsys-url=s'    => \$opt_instsys_url,
   'defaultrepo=s'    => \$opt_defaultrepo,
   'instsys-in-repo!' => \$opt_instsys_in_repo,
   'volume=s'         => \$opt_volume,
@@ -429,6 +438,7 @@ my $has_content;
 my $product_db;
 my $repomd_instsys_location;
 my $sign_passwd_option;
+my $media_style = 'suse';
 
 my $progress_start = 0;
 my $progress_end = 100;
@@ -472,7 +482,13 @@ if($opt_create || $opt_list_repos) {
     s#/*$##;
     next if $_ eq "";
     if(-d) {
-      push @sources, { dir => $_, real_name => $_, type => 'dir' };
+      my $d = (<$_/usr/lib/skelcd/*>)[0];
+      if(-d $d ) {
+        push @sources, { dir => $d, real_name => $_, type => 'dir' };
+      }
+      else {
+        push @sources, { dir => $_, real_name => $_, type => 'dir' };
+      }
     }
     elsif(-f _) {
       my $t = `file -b -k -L $_ 2>/dev/null`;
@@ -482,6 +498,18 @@ if($opt_create || $opt_list_repos) {
         my $d = $tmp->mnt(sprintf("mnt_%04d", $iso_cnt));
         susystem "mount -oro,loop $_ $d";
         push @sources, { dir => $d, real_name => $_, type => 'iso' };
+      }
+      elsif($t =~ /RPM /) {
+        $iso_cnt++;
+        my $d_rpm = $tmp->mnt(sprintf("mnt_%04d", $iso_cnt));
+        system "rpm2cpio $_ | ( cd $d_rpm ; cpio --quiet -dmiu --no-absolute-filenames 2>/dev/null)";
+        my $d = (<$d_rpm/usr/lib/skelcd/*>)[0];
+        if(-d $d ) {
+          push @sources, { dir => $d, real_name => $_, type => 'dir' };
+        }
+        else {
+          push @sources, { dir => $d_rpm, real_name => $_, type => 'dir' };
+        }
       }
       else {
         die "$_: unsupported source type\n";
@@ -503,6 +531,7 @@ if($opt_create || $opt_list_repos) {
     die $msg;
   }
 
+  $media_style = get_media_style \@sources;
   analyze_products \@sources;
   build_filelist \@sources;
   $boot = analyze_boot;
@@ -512,7 +541,7 @@ if($opt_create || $opt_list_repos) {
   $has_content = 1 if fname "content";
   if(!$has_content) {
     print "assuming repo-md sources\n";
-    if(!$opt_instsys && !$opt_instsys_in_repo) {
+    if(!$opt_instsys_url && !$opt_instsys_in_repo) {
       my $x = get_kernel_initrd;
       die "oops: no initrd?\n" unless $x;
       if($x->{initrd} =~ m#(boot/[^/]+)/#) {
@@ -522,15 +551,15 @@ if($opt_create || $opt_list_repos) {
         #   here. This would cause linuxrc to miss the instsys as the URL
         #   below does never point inside an encrypted volume.
         #   Instead, run_crypto_disk() handles this when writing 90_crypto.
-        $opt_instsys = "disk:/$repomd_instsys_location" unless $opt_crypto;
+        $opt_instsys_url = "disk:/$repomd_instsys_location" unless $opt_crypto;
       }
     }
 
     exclude_files [ "README", "net" ];
   }
 
-  if($opt_instsys) {
-    add_linuxrc_option "InstSys", $opt_instsys;
+  if($opt_instsys_url) {
+    add_linuxrc_option "InstSys", $opt_instsys_url;
   }
 
   if($opt_net && !$opt_defaultrepo) {
@@ -543,7 +572,7 @@ if($opt_create || $opt_list_repos) {
 
   if($opt_sign && (
       # we are going to change '/content' resp. '/CHECKSUMS' in one way or another
-      @opt_initrds || @opt_kernel_rpms || $opt_boot_options ||
+      @opt_initrds || @opt_instsys || @opt_kernel_rpms || $opt_boot_options ||
       $opt_new_boot_entry || $opt_include_repos || update_content_or_checksums
     )
   ) {
@@ -558,11 +587,22 @@ if($opt_create || $opt_list_repos) {
   update_kernel_initrd;
   update_boot_options;
 
+  if($media_style eq 'rh') {
+    add_instsys_rh;
+  }
+  else {
+    add_instsys_suse;
+  }
+
   if($opt_create_repo) {
     run_createrepo $sources[0]{dir};
   }
 
   prepare_addon;
+
+  if($media_style eq 'rh') {
+    update_treeinfo;
+  }
 
   sign_content_or_checksums if update_content_or_checksums;
   $todo = build_todo;
@@ -616,9 +656,17 @@ if($opt_create || $opt_list_repos) {
   wipe_iso if $opt_no_iso;
 
   if(defined $opt_digest) {
-    my $chk = $opt_check ? " --check" : "";
-    print "calculating $opt_digest...";
-    system "tagmedia $chk --digest '$opt_digest' --pad 150 '$iso_file' >/dev/null";
+    my $chk = $opt_check ? "--check" : "";
+    my $digest = $opt_digest;
+    my $pad = "";
+    if($media_style eq 'suse') {
+      $pad = "--pad 150";
+    }
+    else {
+      $digest = "md5";
+    };
+    print "calculating $digest...";
+    system "tagmedia --style $media_style $chk $pad --digest '$digest' '$iso_file' >/dev/null";
     print "\n";
     if($opt_sign && $sign_key_dir && $opt_sign_image) {
       my $tmp_dir = $tmp->dir();
@@ -725,10 +773,12 @@ Create ISO image:
       --zipl                    Make zIPL bootable (default on s390x).
       --no-zipl                 Don't make zIPL bootable (default except on s390x).
       --initrd DIR|RPM|DUD      Add directory DIR or package RPM or driver update DUD
-                                to initrd.
+                                to initrd (option can be repeated).
       --rebuild-initrd          Rebuild the entire initrd instead of appending changes.
                                 This makes the initrd smaller but requires to run mksusecd
                                 with root permissions.
+      --instsys DIR|RPM|DUD     Add directory DIR or package RPM or driver update DUD
+                                to installation system (option can be repeated).
       --no-docs                 Don't include package documentation when updating the
                                 initrd (default).
       --keep-docs               Include package documentation when updating initrd.
@@ -783,13 +833,13 @@ Create ISO image:
       --pico                    Even less than --nano. Keep just the bootloader.
       --net URL                 Use URL as default network repository url.
                                 See Repository notes below.
-      --instsys URL             Load the installation system from the specified URL.
+      --instsys-url URL         Load the installation system from the specified URL.
                                 See Repository notes below.
-      --instsys-in-repo         Load installation system from repository (default). The option --instsys
-                                overrides this setting.
+      --instsys-in-repo         Load installation system from repository (default).
+                                The option --instsys-url overrides this setting.
                                 See Repository notes below.
       --no-instsys-in-repo      Do not load installation system from repository but search for it on
-                                local disks. The option --instsys overrides this setting.
+                                local disks. The option --instsys-url overrides this setting.
                                 See Repository notes below.
       --defaultrepo URL_LIST    List of comma (',') separated URLs. The installer will try each URL
                                 in turn for an installation repository.
@@ -898,7 +948,7 @@ Repository notes:
   from a local disk or dvd. It will be searched for on any mountable local
   device at startup.
 
-  You can override this using the --instsys option to load the
+  You can override this using the --instsys-url option to load the
   installation system from any location. Please look at the linuxrc
   documentation at https://en.opensuse.org/SDB:Linuxrc for details before
   using this option.
@@ -1078,6 +1128,8 @@ sub show_progress
 #
 sub fname
 {
+  return undef if !defined $_[0];
+
   if(exists $files->{$_[0]}) {
     return "$files->{$_[0]}/$_[0]";
   }
@@ -1200,6 +1252,17 @@ sub analyze_boot
         $boot->{ppc64}{bl}{yaboot} = { base => "suseboot", file => "suseboot/yaboot.ibm", arch => "ppc64" };
         $boot->{ppc64}{bl}{chrp} = { base => "ppc", arch => "ppc64" };
       }
+    }
+  }
+
+  if (-d fname("isolinux")) {
+    $_ = "x86_64";
+    $boot->{$_} = { base => "isolinux" };
+    $boot->{$_}{initrd} = "isolinux/initrd.img" if -f fname("isolinux/initrd.img");
+    $boot->{$_}{kernel} = "isolinux/vmlinuz" if -f fname("isolinux/vmlinuz");
+    $boot->{$_}{bl}{isolinux} = { base => "isolinux", file => "isolinux.bin", arch => $_ };
+    if(-f fname("images/efiboot.img")) {
+      $boot->{$_}{bl}{efi} = { base => "images/efiboot.img", arch => $_ };
     }
   }
 
@@ -2333,7 +2396,7 @@ sub create_initrd
       unpack_archive $type, $i, $tmp_dir;
     }
     else {
-      print STDERR "Warning: ignoring $i\n";
+      print STDERR "Warning: ignoring initrd part $i\n";
     }
   }
 
@@ -2358,6 +2421,120 @@ sub create_initrd
   # system "ls -lR $tmp_dir";
 
   return $tmp_initrd;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# add_instsys_suse()
+#
+# Combine the various instsys parts and append to existing image (SUSE layout).
+#
+# This will only _append_ the new parts to the original.
+#
+sub add_instsys_suse
+{
+  return if !@opt_instsys;
+
+  my $instsys;
+
+  my $x = get_kernel_initrd;
+  die "oops: no initrd?\n" unless $x;
+
+  my $instsys_location;
+
+  if($x->{initrd} =~ m#(boot/[^/]+)/#) {
+    $instsys_location = "$1/root";
+    $instsys = copy_file $instsys_location;
+
+    die "no inst-sys on media found (looking for $instsys_location)\n" if !$instsys;
+  }
+
+  my $tmp_dir = $tmp->dir();
+
+  for my $i (@opt_instsys) {
+    my $type = get_archive_type $i;
+
+    if($type) {
+      unpack_archive $type, $i, $tmp_dir;
+    }
+    else {
+      print STDERR "Warning: ignoring instsys part $i\n";
+    }
+  }
+
+  if($opt_no_docs) {
+    system "rm -rf $tmp_dir/usr/share/{doc,info,man}";
+    rmdir "$tmp_dir/usr/share";
+    rmdir "$tmp_dir/usr";
+  }
+
+  my $err = system "mksquashfs $tmp_dir $instsys -all-root -no-progress >/dev/null 2>&1";
+  die "mksquashfs failed to append to $instsys_location\n" if $err;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# add_instsys_rh()
+#
+# Combine the various instsys parts and append to existing image (RH layout).
+#
+# This will only _append_ the new parts to the original.
+#
+sub add_instsys_rh
+{
+  return if !@opt_instsys;
+
+  my $instsys_location = "images/install.img";
+  my $instsys_old = fname $instsys_location;
+
+  die "no inst-sys on media found (looking for \"$instsys_location\")\n" if !$instsys_old;
+
+  my $tmp_dir = $tmp->dir();
+
+  for my $i (@opt_instsys) {
+    my $type = get_archive_type $i;
+
+    if($type) {
+      unpack_archive $type, $i, $tmp_dir;
+    }
+    else {
+      print STDERR "Warning: ignoring instsys part $i\n";
+    }
+  }
+
+  if($opt_no_docs) {
+    system "rm -rf $tmp_dir/usr/share/{doc,info,man}";
+    rmdir "$tmp_dir/usr/share";
+    rmdir "$tmp_dir/usr";
+  }
+
+  # Determine whether this is just a squashfs image or an ext4 image
+  # (with name LiveOS/rootfs.img) inside a squashfs image.
+  my $has_liveos;
+  for (`unsquashfs -ls $instsys_old 2>/dev/null`) {
+    $has_liveos = 1, last if m#squashfs-root/LiveOS#;
+  }
+
+  my $instsys = copy_file $instsys_location;
+
+  if($has_liveos) {
+    my $tmp_live = $tmp->dir();
+    my $err = system "unsquashfs -no-progress -dest $tmp_live/root $instsys_old LiveOS/rootfs.img >/dev/null 2>&1";
+    die "extracting LiveOS/rootfs.img failed\n" if $err;
+
+    my $tmp_mnt = $tmp->dir();
+    die "\nLiveOS mount failed\n" if susystem "mount -oloop '$tmp_live/root/LiveOS/rootfs.img' $tmp_mnt";
+
+    susystem "sh -c 'tar -C $tmp_dir --owner=0 --group=0 -cf - . | tar -C $tmp_mnt -xpf -'";
+    susystem "umount $tmp_mnt";
+
+    my $err = system "mksquashfs $tmp_live/root $instsys -all-root -noappend -no-progress >/dev/null 2>&1";
+    die "mksquashfs failed to rebuild $instsys_location\n" if $err;
+  }
+  else {
+    my $err = system "mksquashfs $tmp_dir $instsys -all-root -no-progress >/dev/null 2>&1";
+    die "mksquashfs failed to append to $instsys_location\n" if $err;
+  }
 }
 
 
@@ -3043,12 +3220,13 @@ sub prepare_pico
 sub set_mkisofs_metadata
 {
   my $media;
+  my $vol_id = $opt_volume;
 
   # first, try using old values, if we remaster an image
   if($sources[0]{type} eq 'iso') {
     if(open my $f, "isoinfo -d -i $sources[0]{real_name} 2>/dev/null |") {
       while(<$f>) {
-        $opt_volume = $1 if !defined $opt_volume && /^Volume id:\s*(.*?)\s*$/ && $1 ne "" && $1 ne "CDROM";
+        $vol_id = $1 if !defined $vol_id && /^Volume id:\s*(.*?)\s*$/ && $1 ne "" && $1 ne "CDROM";
         $opt_vendor = $1 if !defined $opt_vendor && /^Publisher id:\s*(.*?)\s*$/ && $1 ne "";
         $opt_application = $1 if !defined $opt_application && /^Application id:\s*(.*?)\s*$/ && $1 ne "";
         $opt_preparer = $1 if !defined $opt_preparer && /^Data preparer id:\s*(.*?)\s*$/ && $1 ne "";
@@ -3073,21 +3251,27 @@ sub set_mkisofs_metadata
         $opt_application = $x;
         $opt_application .= "-Media$m" if defined $m;
       }
-      if(!defined $opt_volume) {
-        $opt_volume = $x;
-        $opt_volume =~ s/\-?Build.*$//;
-        # try to cut volume id to fit into 32 bytes
-        while(length $opt_volume > 25 && $opt_volume =~ s/\-([^\-])*$//) {}
-        $opt_volume .= "-Media$m" if defined $m;
+      if(!defined $vol_id) {
+        $vol_id = $x;
+        $vol_id =~ s/\-?Build.*$//;
+        # 25 = 32 - length("-Media1")
+        $vol_id = trim_volume_id $vol_id, 25;
+        $vol_id .= "-Media$m" if defined $m;
       }
     }
 
     if(open my $f, "<", fname("$media/media")) {
       my $x = <$f>;
+      my $v = <$f>;
       close $f;
       chomp $x;
+      chomp $v;
       $x = "SUSE LINUX GmbH" if $x eq "SUSE" || $x eq "openSUSE";
       $opt_vendor = $x if $x ne "" && !defined $opt_vendor;
+      if(!defined $vol_id) {
+        $vol_id = $v;
+        $vol_id =~ s/\-?Build.*$//;
+      }
     }
 
     if(open my $f, "<", fname("$media/info.txt")) {
@@ -3103,9 +3287,58 @@ sub set_mkisofs_metadata
     }
   }
 
+  $vol_id = trim_volume_id $vol_id;
+
+  my $vol_id_from_config;
+
+  if(open my $f, "<", fname("isolinux/isolinux.cfg")) {
+    while(<$f>) {
+      if(/append .* inst.stage2=hd:LABEL=(\S+)/) {
+        $vol_id_from_config = trim_volume_id $1;
+        last;
+      }
+    }
+    close $f;
+  }
+
+  $vol_id ||= $vol_id_from_config;
+
+  if($vol_id_from_config && $vol_id ne $vol_id_from_config) {
+    print "Warning: volume id \"$vol_id\" does not match expected volume id from boot config \"$vol_id_from_config\".\n";
+    $vol_id = $opt_volume ? $vol_id : $vol_id_from_config;
+    print "Choosing \"$vol_id\".\n";
+  }
+
+  $opt_volume = $vol_id;
+
   # if nothing worked, put in some defaults
   $opt_vendor = "mksusecd $VERSION" if !defined $opt_vendor;
   $opt_preparer = "mksusecd $VERSION" if !defined $opt_preparer;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# trim_volume_id(vol_id, max_len:32)
+#
+# Try to trim volume id to maximum length.
+#
+# -  vol_id: volume id
+# - max_len: maximum length (default 32)
+#
+# Note that the returned volume id is not guaranteed to be shorter than the
+# maximum length. This function only *tries* to achieve it.
+#
+# Return volume id.
+#
+sub trim_volume_id
+{
+  my $vol_id = $_[0];
+  my $max_len = $_[1] || 32;
+
+  # strip off '-FOO' parts until length is below maximum
+  while(length $vol_id > $max_len && $vol_id =~ s/\-([^\-])*$//) { }
+
+  return $vol_id;
 }
 
 
@@ -3145,6 +3378,7 @@ sub add_to_content_file
 #
 sub update_content_or_checksums
 {
+  return 0 if $media_style eq 'rh';
   return $has_content ? update_content : update_checksums;
 }
 
@@ -3313,6 +3547,194 @@ sub update_checksums
 
         close $f;
       }
+    }
+  }
+
+  return $changed;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# update_treeinfo()
+#
+# Create a new .treeinfo file and return 1 if it is different from the
+# existing one.
+#
+sub update_treeinfo
+{
+  my $changed = 0;
+
+  my $treeinfo_file = fname ".treeinfo";
+
+  my $treeinfo = read_ini $treeinfo_file;
+
+  if(!defined $treeinfo) {
+    print "no .treeinfo\n";
+
+    return;
+  }
+
+  # add variants
+  for my $p_entry (@{$product_db->{list}}) {
+    my $p = $p_entry->{name};
+    if(!$treeinfo->{"variant-$p"}) {
+      $changed = 1;
+      $treeinfo->{"variant-$p"} = {
+        id => $p,
+        name => $p,
+        packages => "$p/Packages",
+        repository => $p,
+        type => "variant",
+        uid => $p,
+      };
+    }
+  }
+
+  my $checksum_files;
+  my $platforms;
+  for my $k (sort keys %$treeinfo) {
+    if($k =~ /^images-(.*)/) {
+      $platforms .= "," if $platforms;
+      $platforms .= $1;
+      for my $f (keys %{$treeinfo->{$k}}) {
+        if(fname $treeinfo->{$k}{$f}) {
+          $checksum_files->{$treeinfo->{$k}{$f}} = 1;
+        }
+        else {
+          $changed = 1;
+          delete $treeinfo->{$k}{$f};
+        }
+      }
+    }
+  }
+
+  if($treeinfo->{stage2}{mainimage}) {
+    $checksum_files->{$treeinfo->{stage2}{mainimage}} = 1;
+  }
+
+  my $variant;
+  my $variants;
+  for my $k (sort keys %$treeinfo) {
+    if($k =~ /^variant-(.*)/) {
+      if($variant) {
+        $variants .= ",$1";
+      }
+      else {
+        $variant = $variants = $1;
+      }
+    }
+  }
+
+  # FIXME - in skelcd-installer-xxx!!!
+  $treeinfo->{general}{name} = "$treeinfo->{general}{family} $treeinfo->{general}{version}";
+
+  # FIXME - in skelcd-installer-xxx!!!
+  if($treeinfo->{general}{timestamp}) {
+    $treeinfo->{general}{timestamp} =~ s/\..*//;
+  }
+
+  if(!$treeinfo->{general}{platforms}) {
+    $changed = 1;
+    $treeinfo->{general}{platforms} = $platforms;
+  }
+
+  if(!$treeinfo->{tree}) {
+    $changed = 1;
+    $treeinfo->{tree} = {
+      arch => $treeinfo->{general}{arch},
+      build_timestamp => $treeinfo->{general}{timestamp},
+      platforms => $platforms,
+    };
+  }
+
+  if(!$treeinfo->{release}) {
+    $changed = 1;
+    $treeinfo->{release} = {
+      name => $treeinfo->{general}{family},
+      ### FIXME - must come from skelcd-installer-xxx!!!
+      short => "Liberty",
+      version => $treeinfo->{general}{version},
+    };
+  }
+
+  if(!$treeinfo->{header}) {
+    $changed = 1;
+    $treeinfo->{header} = {
+      type => "productmd.treeinfo",
+      version => "1.2",
+    };
+  }
+
+  if(!$treeinfo->{media}) {
+    $changed = 1;
+    $treeinfo->{media} = {
+      discnum => "1",
+      totaldiscs => "1",
+    };
+  }
+
+  if($treeinfo->{general}{repository} ne $variant) {
+    $changed = 1;
+    $treeinfo->{general}{repository} = $variant;
+  }
+
+  if($treeinfo->{general}{packagedir} ne "$variant/Packages") {
+    $changed = 1;
+    $treeinfo->{general}{packagedir} = "$variant/Packages";
+  }
+
+  if($treeinfo->{general}{variant} ne $variant) {
+    $changed = 1;
+    $treeinfo->{general}{variant} = $variant;
+  }
+
+  if(!$treeinfo->{general}{variants}) {
+    $changed = 1;
+    $treeinfo->{general}{variants} = $variants;
+  }
+
+  if($treeinfo->{tree}{variants} ne $variants) {
+    $changed = 1;
+    $treeinfo->{tree}{variants} = $variants;
+  }
+
+  for my $checksum_file (sort keys %$checksum_files) {
+    my $digest = Digest::SHA->new(256);
+    my $f = fname $checksum_file;
+    if(-f $f) {
+      $digest->addfile($f);
+      my $sum = "sha256:" . $digest->hexdigest;
+      if($treeinfo->{checksums}{$checksum_file} ne $sum) {
+        $changed = 1;
+        $treeinfo->{checksums}{$checksum_file} = $sum;
+      }
+    }
+  }
+
+  # print Dumper $treeinfo;
+
+  if($changed) {
+    my $new_treeinfo = copy_or_new_file ".treeinfo";
+    write_ini $new_treeinfo, $treeinfo;
+  }
+
+  # generate media.repo file if one is missing
+  my $new_mediarepo = copy_or_new_file "media.repo";
+  if(! -s $new_mediarepo) {
+    $changed = 1;
+    my $name = "$treeinfo->{general}{name}";
+    # my $name = "$treeinfo->{general}{family} $treeinfo->{general}{version}";
+    (my $mr = <<"    = = = = = = = =") =~ s/^ +//mg;
+      [InstallMedia]
+      name=$name
+      mediaid=None
+      metadata_expire=-1
+      gpgcheck=0
+      cost=500
+    = = = = = = = =
+    if(open my $f, ">$new_mediarepo") {
+      print $f $mr;
+      close $f;
     }
   }
 
@@ -4472,6 +4894,38 @@ sub wipe_iso
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# set_media_style(sources)
+#
+# - sources: array_ref containing a list of directories
+#
+# Look at sources and determine media style (suse vs. rh).
+#
+# Assume rh style if there's an '/isolinux' dir or a '.discinfo' file or
+# there are '<FOO>/Packages' subdirectories.
+#
+sub get_media_style
+{
+  my $src = $_[0];
+  my $style = 'suse';
+
+  for my $s (@$src) {
+    if(-d "$s->{dir}/isolinux" || -f "$s->{dir}/.discinfo") {
+      $style = 'rh';
+      last;
+    }
+    for my $r (glob "$s->{dir}/*/Packages") {
+      if(-d $r) {
+        $style = 'rh';
+        last;
+      }
+    }
+  }
+
+  return $style;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # analyze_products(sources)
 #
 # sources is an array_ref containing a list of directories to be scanned and
@@ -4497,7 +4951,7 @@ sub analyze_products
   for my $s (@$src) {
     # read top-level products file
     $_ = "$s->{dir}/media.1/products";
-    if(open my $f, $_) {
+    if($media_style eq 'suse' && open my $f, $_) {
       my @fields;
       while(my $l = <$f>) {
         @fields = split /\s/, $l;
@@ -4508,6 +4962,32 @@ sub analyze_products
         $s->{skip} = 1 if $ok && $src_idx > 0;
       }
       close $f;
+    }
+    else {
+      for my $r (glob "$s->{dir}/*/Packages") {
+        next if $r !~ m#/([^/]+)/Packages#;
+        my $p = $1;
+
+        my $ver = "";
+        if(open $f, "$s->{dir}/$p/repodata/repomd.xml") {
+          while(<$f>) {
+            $ver = $1, last if m#<revision>(\S+?)</revision>#;
+          }
+          close $f;
+        }
+
+        push @{$product_db->{list}}, {
+          base_dir => "$s->{dir}",
+          product_dir => $p,
+          name => $p,
+          ver => $ver,
+          dirs => [ "repodata", "Packages" ],
+          label => "",
+          src_idx => $src_idx,
+          repo_dir => $p,
+          include => 1
+        };
+      }
     }
     $src_idx++;
   }
@@ -4523,6 +5003,8 @@ sub analyze_products
   }
 
   exit 0 if $opt_list_repos;
+
+  return if $media_style eq 'rh';
 
   # don't merge repos if the user doesn't want to
   return if !$opt_merge_repos;
@@ -5116,4 +5598,66 @@ sub run_crypto_disk
   rename $image_file, $iso_file;
 
   print "\n";
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# read_ini(file)
+#
+# - file: file name
+#
+# Read ini-style config file.
+#
+# Return content as hash reference.
+#
+sub read_ini
+{
+  my $file = $_[0];
+  my $ini;
+  my $section;
+
+  if(open my $f, $file) {
+    while(<$f>) {
+      chomp;
+      s/\s*;.*//;
+      next if /^\s*$/;
+      if(/^\s*\[([^]]+)\]/) {
+        $section = $1;
+        next;
+      }
+      next if !defined $section;
+      if(/^\s*([^=>]+?)\s*+=\s*+(.*?)\s*$/) {
+        $ini->{$section}{$1} = $2;
+      }
+    }
+    close $f;
+  }
+
+  return $ini;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# write_ini(file, ini_hash)
+#
+# -     file: file name
+# - ini_hash: hash reference with ini data (as returned by read_ini)
+#
+# Write ini-style config file.
+#
+sub write_ini
+{
+  my $file = $_[0];
+  my $ini = $_[1];
+
+  if(open my $f, ">$file") {
+    for my $s (sort keys %{$ini}) {
+      print $f "[$s]\n";
+      for my $k (sort keys %{$ini->{$s}}) {
+        print $f "$k = $ini->{$s}{$k}\n";
+      }
+      print $f "\n";
+    }
+    close $f;
+  }
 }
