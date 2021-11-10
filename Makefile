@@ -31,7 +31,7 @@ archive: changelog
 changelog: $(GITDEPS)
 	$(GIT2LOG) --changelog changelog
 
-install: isohybrid
+install: isohybrid doc
 	@cp mksusecd mksusecd.tmp
 	@perl -pi -e 's/0\.0/$(VERSION)/ if /VERSION = /' mksusecd.tmp
 	@perl -pi -e 's#"(.*)"#"$(LIBDIR)"# if /LIBEXECDIR = /' mksusecd.tmp
@@ -42,7 +42,15 @@ install: isohybrid
 	install -m 755 -D isohybrid $(DESTDIR)$(LIBDIR)/mksusecd/isohybrid
 	@rm -f mksusecd.tmp isozipl.tmp
 
-clean:
-	@rm -f *.o isohybrid
-	@rm -rf *~ package
+doc:
+	@if [ -x /usr/bin/asciidoctor ] ; then \
+	  asciidoctor -b manpage -a version=$(VERSION) mksusecd_man.adoc ;\
+	else \
+	  a2x -f manpage -a version=$(VERSION) mksusecd_man.adoc ;\
+	fi
+# a2x -f docbook -a version=$(VERSION) mksusecd_man.adoc
+# dblatex mksusecd_man.xml
 
+clean:
+	@rm -f *.o isohybrid *~ */*~ mksusecd{.1,_man.xml,_man.pdf}
+	@rm -rf package
