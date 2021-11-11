@@ -1,0 +1,566 @@
+= mksusecd(1)
+:doctype: manpage
+:manmanual: User Commands
+:mansource: mksusecd {version}
+
+== Name
+
+mksusecd - create and modify bootable installation media.
+
+
+== Synopsis
+
+*mksusecd* [_OPTIONS_]... _SOURCES_...
+
+
+== Description
+
+mksusecd can modify or create bootable installation media. They can be
+either ISO images or disk images (to be used on USB sticks, for example).
+
+mksusecd supports media in both openSUSE/SLES and Fedora/RHEL layout.
+
+The main purpose is to adjust existing installation media. For example
+
+- change boot options
+- add boot menu entries
+- update the installer
+- update software used by the installer (including the kernel)
+- integrate driver updates
+- integrate add-on repositories
+- create a small network boot medium
+
+=== General Options
+
+*--verbose*::
+Show more detailed messages. Can be repeated to log even more.
+
+*--version*::
+Show mksusecd version.
+
+*--save-temp*::
+Keep temporary files.
+
+*--help*::
+Show this help text.
+
+=== Show available repositories
+
+*--list-repos*::
+List all available repositories in _SOURCES_.
+
+=== Create new image
+
+*-c, --create*=_FILE_::
+Create ISO or disk image _FILE_ from _SOURCES_. +
+_SOURCES_ can be directories, existing ISO image files, or RPMs. They are all combined to produce a single ISO. +
+See *Sources* below for more details.
+
+=== Media type related options
+
+*--micro*::
+Create image with just enough files to run the installer.
+But you can't actually install as all packages have been removed. +
+*Note*: this is only useful for testing.
+
+*--nano*::
+Create image with just enough files for a network based installation.
+
+*--pico*::
+Even less than --nano, keep just the bootloader (for testing).
+
+=== Media integrity related options
+
+*--check*::
+Tag ISO to be verified before starting the installation.
+
+*--no-check*::
+Don't tag ISO (default).
+
+*--digest*=_DIGEST_::
+Embed _DIGEST_ to verify ISO integrity, available digests: md5, sha1, sha224, sha256, sha384, sha512 (default: sha256).
+
+*--no-digest*::
+Don't embed any digest to verify ISO integrity.
+
+*--sign-image*::
+Embed signature for entire image. +
+See *Signing notes* below.
+
+*--no-sign-image*::
+Don't embed signature for entire image. (default)
+
+*--sign*::
+Re-sign '/CHECKSUMS' if it has changed.
+The public part of the sign key is added to the initrd. (default) +
+See *Signing notes* below.
+
+*--no-sign*::
+Don't re-sign '/CHECKSUMS'.
+
+*--sign-key*=_KEY_FILE_::
+Use this key file instead of generating a transient key. +
+See *Signing notes* below.
+
+*--sign-key-id*=_KEY_ID_::
+Use this key id instead of generating a transient key. +
+*Note*: gpg might show an interactive dialog asking for a password to unlock
+the key unless you use the *--sign-pass-file* option. +
+See *Signing notes* below.
+
+*--sign-pass-file*::
+Use the password stored in this file to open the key. +
+See *Signing notes* below.
+
+=== Initrd/instsys update related options
+
+*--initrd*=_DIR_|_RPM_|_DUD_::
+Add content of _DIR_, _RPM_, or _DUD_ to initrd (can be repeated).
+
+*--rebuild-initrd*::
+Rebuild the entire initrd instead of appending changes. +
+This makes the initrd smaller but requires to run mksusecd with root permissions.
+
+*--instsys*=_DIR_|_RPM_::
+Add content of _DIR_ or _RPM_ to installation system (can be repeated).
+
+*--no-docs*::
+Don't include package documentation files (default).
+
+*--keep-docs*::
+Include package documentation files.
+
+=== Kernel/module update related options
+
+*--kernel*=_KERNEL_RPMS_::
+Replace kernel and modules used for booting. _KERNEL_RPMS_ is
+a list of RPMs that contain the new kernel, modules, and
+firmware files. +
+*Note*: this option takes a variable number of arguments. So
+it may be necessary to terminate the arg list with an explicit '--'.
+
+*--modules*=_MODULE_LIST_::
+A list of modules to be included additionally to the initrd.
+Use this in combination with *--kernel*.
+You can prefix module names with '-' to have them removed instead. +
+_MODULE_LIST_ may be space or comma separated. +
+*Note*: this option takes a variable number of arguments. So
+it may be necessary to terminate the arg list with an explicit '--'.
+
+=== Add-on related options
+
+*--addon*=_RPM_LIST_::
+A list of RPMs that should be made available as an add-on to the main product. +
+*Note*: this option takes a variable number of arguments. So
+it may be necessary to terminate the arg list with an explicit '--'. +
+See *Add-on notes* below.
+
+*--addon-name*=_NAME_::
+Use _NAME_ as the add-on name. +
+If unset, the auto-generated name 'Add-On NUM' is used, with NUM
+set to the smallest number that avoids name conflicts.
+
+*--addon-alias*=_ALIAS_::
+Set repo alias to _ALIAS_. +
+If unset, an alias based on the repo name is generated.
+
+*--addon-prio*=_NUM_::
+Set add-on repository priority to _NUM_ (default: 60). +
+Lower _NUM_ means higher priority.
+
+=== ISO file system related options
+
+*--joliet*::
+Use Joliet extensions (default).
+
+*--no-joliet*::
+Don't use Joliet extensions.
+
+*--volume*=_VOLUME_ID_::
+Set ISO volume id to _VOLUME_ID_.
+
+*--vendor*=_VENDOR_ID_::
+Set ISO publisher id to _VENDOR_ID_.
+
+*--preparer*=_PREPARER_ID_::
+Set ISO data preparer id to _PREPARER_ID_.
+
+*--application*=_APPLICATION_ID_::
+Set ISO application id to _APPLICAION_ID_.
+
+=== General image layout related options
+
+*--uefi*::
+Make ISO UEFI bootable (default).
+
+*--no-uefi*::
+Don't make ISO UEFI bootable.
+
+*--zipl*::
+Make image zIPL bootable (default on s390x).
+
+*--no-zipl*::
+Don't make image zIPL bootable (default if not on s390x).
+
+*--gpt*::
+Add GPT when in isohybrid mode.
+
+*--mbr*::
+Add MBR when in isohybrid mode (default). +
+*Note*: when both *--mbr* and *--gpt* are specified both MBR and GPT are
+written - which looks nice but is against the UEFI spec.
+
+*--prot-mbr*::
+When writing a GPT, write a protective MBR (default).
+
+*--no-prot-mbr*::
+When writing a GPT, don't write a protective MBR.
+
+*--mbr-code*::
+Include x86 MBR boot code (default).
+
+*--no-mbr-code*::
+Don't include x86 MBR boot code.
+
+*--mbr-chs*::
+Fill in sensible CHS values in MBR partition table (default).
+
+*--no-mbr-chs*::
+Use 0xffffff instead of CHS values in MBR partition table.
+
+*--no-iso*::
+Don't make image accessible as ISO9660 file system.
+
+*--hybrid*::
+Create an image which is both an ISO and a disk (default).
+
+*--no-hybrid*::
+Create a regular ISO image without extra gimmicks.
+
+*--hybrid-fs*=_FS_::
+Use file system _FS_ for the disk partition created in hybrid mode. +
+_FS_ can be either "" (empty string) producing a partition
+starting at offset 0 and extending across the entire ISO
+image (partitioning tools don't really like this) or
+'iso' or 'fat' in which case you get a regular partition
+with an ISO960 or FAT file system (default: 'iso').
+
+*--fat*::
+Create an image that's suitable to be put on a USB disk. +
+The image holds a single FAT32 partition and it can NOT be
+used to write a DVD. You can adjust the file system size
+with the *--size* option. +
+Technically an alias for *--hybrid-fs=fat --no-efi --no-iso*.
+
+*--size*=_SIZE_SPEC_::
+When using a FAT file system or the *--crypto* option you can
+set the intended size of the disk image. +
+_SIZE_SPEC_ can be a number, optionally followed by a unit ('b',
+'k', 'm', 'g', 't') indicating blocks, kiB, MiB, GiB, or TiB, respectively. +
+_SIZE_SPEC_ can also be a device name like '/dev/sda', in
+which casee the size of the device is used.
+
+=== Media repository related options
+
+*--merge-repos*::
+When mksusecd detects repositories in _SOURCES_ it will try to make
+them all available and create a common media.1/products file (default). +
+See *Product module notes* below.
+
+*--no-merge-repos*::
+Skip the special treatment of repositories and just merge all SOURCES.
+
+*--include-repos*=_LIST_::
+Comma-separated list of repository names to include in the final image.
+
+*--enable-repos*=_WHEN_::
+If _WHEN_ is set to 'auto' or 'yes' the included repositories are
+automatically added. If set to 'ask' the user may interactively deselect
+repositories. The default is not to add any repository. Instead, the user
+is expected to add the medium as 'add-on' during the installation.
+
+*--create-repo*::
+Re-create and sign the repository (default: don't).
+
+=== Repository location related options
+
+*--net*=_URL_::
+Use _URL_ as default network repository. +
+See *Repository notes* below.
+
+*--instsys-url*=_URL_::
+Load the installation system from the specified _URL_. +
+See *Repository notes* below.
+
+*--instsys-in-repo*::
+Load installation system from repository (default). +
+The option *--instsys-url* overrides this setting. +
+See *Repository notes* below.
+
+*--no-instsys-in-repo*::
+Do not load installation system from repository but search for it on local disks. +
+The option *--instsys-url* overrides this setting. +
+See *Repository notes* below.
+
+*--defaultrepo*=_URL_LIST_::
+List of comma (',') separated URLs. The installer will try each URL
+in turn to check for an installation repository.
+
+=== Boot menu related options
+
+*--boot*=_OPTIONS_::
+Add _OPTIONS_ to default boot options.
+
+*--add-entry*=_BOOT_ENTRY_::
+Instead of modifying the default boot files, create a new
+boot entry. This also means that in case initrd or kernel
+have to be changed, the originals are not overwritten but
+new files added. +
+_BOOT_ENTRY_ is the name used for this new entry.
+
+=== Image encryption related options
+
+*--crypto*::
+If set, an encrypted disk image is created. +
+See *Crypto notes* below.
+
+*--password*=_PASSWORD_::
+Use _PASSWORD_ for encrypting the disk image.
+
+*--title*=_TITLE_::
+The password query screen uses _TITLE_ as title (default: openSUSE).
+
+*--top-dir*=_DIR_::
+The installation files are placed into subdir _DIR_. +
+This helps keeping the directory structure nice and clean
+in case you are using the image also for other things. The boot
+config is adjusted accordingly.
+
+*--filesystem*=_FS_::
+Use file system _FS_ for the encrypted image (default: ext4). +
+Don't be too creative here - the file system must be supported by grub2.
+
+=== Sources
+
+Sources can be
+
+- existing installation media
+- skelcd-installer-<PRODUCT> packages (RPMs)
+- additional or modified files that should be added/merged into the image
+
+either as image/RPM file or unpacked into a directory.
+
+The order of sources is important. Files from later sources will replace
+the same files in previous sources.
+
+If you pass a skelcd-installer-<PRODUCT> RPM (or a directory with the same
+layout) - mksusecd will handle these specially and use the relevant parts.
+
+=== Hybrid mode notes
+
+Hybrid mode means the image can be used both as an ISO for a DVD or
+directly as a disk image. In other words, there is a partition table
+written on the ISO image, either GPT or MBR.
+
+If you need UEFI support you will get two paritions: one for the UEFI
+image, one for the entire DVD. If not, you get just one partition covering
+all files.
+
+There are two variants this script supports:
+
+1. Partition 1 is the data partition starting at offset 0 and covering
+the entire ISO, partition 2 is the UEFI system partition pointing
+somwhere inside the first partition. This produces an obviously
+inconsistent partition table and partitioning tools really don't like it.
+
+2. Partition 1 is a data partition *not* starting at offset 0 but still
+holding all data files. When you mount it, you see either an ISO9660 or
+a FAT filesystem. If you need UEFI support this partition becomes
+partition 2 and partition 1 points to the UEFI image. Partition 1 and 2
+don't overlap. In this variant a consistent partition table is written.
+
+=== Signing notes
+
+On all media there is a file '/CHECKSUMS' (or '/content' with the old SUSE
+layout) holding sha256 sums of all files relevant during installation. The
+file is signed and is used to ensure the integrity of the installation
+environment.
+
+If you modify any file mentioned there (e.g. replacing it or implicitly
+as a result of the *--initrd* or *--boot* options) '/CHECKSUMS' is updated and
+must be re-signed. Otherwise the installer will complain when it starts
+up. For this, mksusecd will re-sign the file and add the public part of
+the signing key to the initrd.
+
+You can specify the key to use with either the *--sign-key* or *--sign-key-id*
+option. *--sign-key* must point to a private key file, *--sign-key-id* is a
+key id recognized by gpg.
+
+If both *--sign-key* and *--sign-key-id* are specified, *--sign-key-id* wins.
+
+You can specify a file which contains the passphrase to the key specified with
+*--sign-key* or *--sign-key-id* to avoid an interactive dialog to enter
+the passphrase.
+
+If there's neither a *--sign-key* nor a *--sign-key-id* option, a transient
+key is created. The public part is added to the initrd and the root
+directory of the image and the key is deleted.
+
+The key file is named 'gpg-pubkey-xxxxxxxx-xxxxxxxx.asc'.
+
+mksusecd can also embed a signature of the checksum metadata into the image.
+This can be used by the checkmedia tool to verify the integrity of the
+image.
+
+The details of this embedding are described in the checkmedia documentation at +
+https://raw.githubusercontent.com/openSUSE/checkmedia/master/README.adoc
+
+Note that this is not the default and you have to explicitly request it with *--sign-image*.
+
+=== Add-on notes
+
+The add-on created here is just a repository, not a full add-on product.
+If you need the latter, you will have to create that on your own and add
+it to the iso.
+
+Although it auto-generates a name for the repository, it's not a very
+creative one and it's probably a good idea to choose one explicitly
+using the *--addon-name* option.
+
+The default installation repositories have priority 99. Any smaller
+number for the add-on repository will prefer the add-on packages even
+though the package version number is smaller than in the standard
+repository.
+
+The default priority of 60 is chosen to be between the priority of the
+default installation repositories (99) and the repositories created by
+driver updates (50).
+
+=== Repository notes
+
+The installer supports two types of repositories:
+
+1. The 'classical' (old) variant which has a '/content' file with product meta data and file checksums at the
+repo location and package meta data in a sub-directory 'suse/setup/descr'.
+
+2. A repo-md repository which uses '/.treeinfo' for product meta data, '/CHECKSUMS' for file checksums,
+and has package meta data in a 'repodata' sub-directory.
+
+A repository usually also contains the installation system. If so, the
+image files are placed in a 'boot/<ARCH>' sub-directory and the installer
+can simply be loaded from the repository.
+
+But if it is just a plain repository without the installation system the
+installer has to be loaded from somewhere else.
+
+Use the *--no-instsys-in-repo* option to tell mksusecd that it can be loaded
+from a local disk or dvd. It will be searched for on any mountable local
+device at startup.
+
+You can override this using the *--instsys-url* option to load the
+installation system from any location. Please look at the linuxrc
+documentation at +
+https://en.opensuse.org/SDB:Linuxrc +
+for details before using this option.
+
+The installer normally uses an internal list of repository locations that are
+tried in turn. You can change it using the *--defaultrepo* option. For example,
+*--defaultrepo=cd:/,http://foo/bar* means to check the local dvd drive first and
+then try via network at http://foo/bar.
+
+The *--net* option is just a short hand for *--defaultrepo=cd:/,hd:/,<NET_URL>*.
+
+=== Product module notes
+
+In SLE 15 the product is split into several repositories called 'modules'
+(don't confuse this with kernel modules). These modules are distributed
+over several media or in separate directories on a network installation
+server.
+
+mksusecd lets you combine the installation medium together with the
+modules you need into a single medium.
+
+Check the available modules with *--list-repos* and then pick the modules
+you need with *--include-repos*.
+
+=== Crypto notes
+
+The *--crypto* option allows you to create an encrypted installation disk.
+Note that this image is explicitly *not* bootable as cd/dvd (no hybrid
+image). It is both legacy BIOS and UEFI bootable, though.
+
+Everything except the plain grub2 binaries is encrypted on a LUKS
+partition. Including the installer specific boot config. So if you for
+example put some password into the default boot options via *--boot* this
+is also stored in the encrypted part.
+
+At the moment only x86_64 is supported. And you have to run mksusecd on a
+machine that has grub2-i386-pc installed (to get the legacy BIOS setup).
+
+Unlike the usual setup, grub2 is used for both legacy BIOS and UEFI
+booting. So the boot screen really looks identical in both cases.
+
+The default image size is chosen to leave only minimal free space. To
+adjust the image size to your needs, use the *--size* option.
+
+*Important*
+
+For this to work, the 'cryptsetup' tools must be available in the
+installer's initrd. This is not the case for older media (prior to
+recent Tumbleweed and SLE/Leap 15).
+
+If you work with these old media you must also add the following two
+packages to the initrd explicitly:
+
+- cryptsetup
+- libpwquality1
+
+You can find the required versions on the install medium in either the
+/suse/x86_64 or /x86_64 directory. Copy them to some temporary location
+and add +
+*--initrd cryptsetup.rpm --initrd libpwquality1.rpm* +
+to the mksusecd command line.
+
+=== Configuration file
+
+mksusecd reads `$HOME/.mksusecdrc` at startup.
+
+*sudo*=_COMMAND_::
+To access existing ISO image files you will need root privileges.
+(It will be mounted.) This entry lets you specify a command granting
+you root privileges.
+
+*sign-key*=_FILE_::
+File name of the private key file with the signing key. The
+same as the *--sign-key* option. +
+See *Signing notes* above.
+
+*sign-key-id*=_KEY_ID_::
+Key id of the signing key. The same as the *--sign-key-id* option. +
+See *Signing notes* above.
+
+== Examples
+
+[source]
+----
+# create foo.iso from /foo_dir
+mksusecd --create foo.iso /foo_dir
+
+# create foo.iso from /foo_dir, no hybrid mode
+mksusecd --create foo.iso --no-hybrid /foo_dir
+
+# create foo.iso from old.iso and add files to the initrd
+mksusecd --create foo.iso --initrd /dir_with_new_initrd_stuff --initrd foo.rpm old.iso
+
+# create foo.iso from old.iso and add some boot option
+mksusecd --create foo.iso --boot 'debug=1' old.iso
+----
+
+Find more usage examples here: https://github.com/openSUSE/mksusecd/blob/master/HOWTO.md.
+
+
+== See Also
+
+- more documentation: `/usr/share/doc/packages/mksusecd` +
+- mksusecd web site: https://github.com/openSUSE/mksusecd +
+- openSUSE Build Service: https://build.opensuse.org
