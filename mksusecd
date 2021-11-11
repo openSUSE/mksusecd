@@ -4313,7 +4313,16 @@ sub add_modules_to_initrd
     mkdir "$tmp_dir/lib/modules/$kernel->{version}", 0755;
     mkdir "$tmp_dir/lib/modules/$kernel->{version}/initrd", 0755;
 
-    for (qw (loop squashfs lz4_decompress xxhash zstd_decompress)) {
+    my @base_modules = qw (loop squashfs lz4_decompress xxhash zstd_decompress);
+
+    if(-f "$orig_initrd/.base_modules") {
+      @base_modules = split ' ', `cat $orig_initrd/.base_modules`;
+    }
+
+    print "initrd base modules:\n", format_array \@base_modules, 2;
+    print "\n";
+
+    for (@base_modules) {
       for my $ext (@kext_list) {
         if(-f "$kernel->{new_dir}/lib/modules/$kernel->{version}/initrd/$_$ext") {
           rename "$kernel->{new_dir}/lib/modules/$kernel->{version}/initrd/$_$ext", "$tmp_dir/lib/modules/$kernel->{version}/initrd/$_$ext";
