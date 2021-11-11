@@ -3755,7 +3755,7 @@ sub get_archive_type
         $cmd = "$c -dc '$file'";
       }
       $file = "-";
-      $type = "." . ($c eq 'gzip' ? 'gz' : ($c eq 'XZ' ? 'xz' : 'zst')) . "$type";
+      $type = "." . ($c eq 'gzip' ? 'gz' : ($c eq 'xz' ? 'xz' : 'zst')) . "$type";
     }
     else {
       die "$orig: unsupported archive format\n";
