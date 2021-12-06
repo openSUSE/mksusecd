@@ -482,9 +482,16 @@ if($opt_create || $opt_list_repos) {
     s#/*$##;
     next if $_ eq "";
     if(-d) {
-      my $d = (<$_/usr/lib/skelcd/*>)[0];
-      if(-d $d ) {
-        push @sources, { dir => $d, real_name => $_, type => 'dir' };
+      my $d_skel = (<$_/usr/lib/skelcd/*>)[0];
+      my $d_tftp = (<$_/usr/share/tftpboot-installation/*>)[0];
+      if(-d $d_skel ) {
+        push @sources, { dir => $d_skel, real_name => $_, type => 'dir' };
+      }
+      elsif(-d $d_tftp ) {
+        # copy only necessary files
+        my $tmp_dir = $tmp->dir();
+        system "cp -r $d_tftp/{EFI,boot} $tmp_dir";
+        push @sources, { dir => $d_tftp, real_name => $_, type => 'dir' };
       }
       else {
         push @sources, { dir => $_, real_name => $_, type => 'dir' };
@@ -503,9 +510,16 @@ if($opt_create || $opt_list_repos) {
         $iso_cnt++;
         my $d_rpm = $tmp->mnt(sprintf("mnt_%04d", $iso_cnt));
         system "rpm2cpio $_ | ( cd $d_rpm ; cpio --quiet -dmiu --no-absolute-filenames 2>/dev/null)";
-        my $d = (<$d_rpm/usr/lib/skelcd/*>)[0];
-        if(-d $d ) {
-          push @sources, { dir => $d, real_name => $_, type => 'dir' };
+        my $d_skel = (<$d_rpm/usr/lib/skelcd/*>)[0];
+        my $d_tftp = (<$d_rpm/usr/share/tftpboot-installation/*>)[0];
+        if(-d $d_skel ) {
+          push @sources, { dir => $d_skel, real_name => $_, type => 'dir' };
+        }
+        elsif(-d $d_tftp ) {
+          # remove unnecessary files
+          unlink "$d_tftp/README";
+          system "rm -r $d_tftp/net";
+          push @sources, { dir => $d_tftp, real_name => $_, type => 'dir' };
         }
         else {
           push @sources, { dir => $d_rpm, real_name => $_, type => 'dir' };

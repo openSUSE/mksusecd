@@ -346,6 +346,7 @@ Sources can be
 
 - existing installation media
 - skelcd-installer-<PRODUCT> packages (RPMs)
+- tftpboot-installation-<PRODUCT> packages (RPMs)
 - additional or modified files that should be added/merged into the image
 
 either as image/RPM file or unpacked into a directory.
@@ -353,8 +354,9 @@ either as image/RPM file or unpacked into a directory.
 The order of sources is important. Files from later sources will replace
 the same files in previous sources.
 
-If you pass a skelcd-installer-<PRODUCT> RPM (or a directory with the same
-layout) - mksusecd will handle these specially and use the relevant parts.
+If you pass a skelcd-installer-<PRODUCT> or tftpboot-installation-<PRODUCT>
+RPM (or a directory with the same layout) - mksusecd will handle these
+specially and extract the relevant parts.
 
 === Hybrid mode notes
 
