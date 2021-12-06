@@ -19,6 +19,7 @@ mksusecd can modify or create bootable installation media. They can be
 either ISO images or disk images (to be used on USB sticks, for example).
 
 mksusecd supports media in both openSUSE/SLES and Fedora/RHEL layout.
+See Fedora/RHEL notes for details.
 
 The main purpose is to adjust existing installation media. For example
 
@@ -485,6 +486,29 @@ modules you need into a single medium.
 Check the available modules with *--list-repos* and then pick the modules
 you need with *--include-repos*.
 
+=== Fedora/RHEL notes
+
+Not all options apply to media with Fedora/RHEL layout. The major options that work, are:
+
+- *--boot* to add boot options
+- *--initrd* to modify the initrd (stage1)
+- *--instsys* to modify the live installation system (stage2)
+
+mksusecd will by default create media with a SUSE-like hybrid mode (MBR
+partition table with non-overlapping partitions). You can change that to
+create the Fedora/RHEL hybrid mode (hybrid GPT+MBR, partition starting at offset 0)
+by adding these options: +
+*--gpt --mbr --hybrid-fs ""*.
+
+Notes
+
+- You can use *--sign-image* to create signed images. The image
+signature can be verified with checkmedia. checkisomd5 can only verify the
+embedded MD5 sums.
+
+- You can use other digests instead of MD5 using *--digest DIGEST* but
+checkisomd5 cannot verify these images.
+
 === Crypto notes
 
 The *--crypto* option allows you to create an encrypted installation disk.
@@ -543,7 +567,6 @@ See *Signing notes* above.
 
 == Examples
 
-[source]
 ----
 # create foo.iso from /foo_dir
 mksusecd --create foo.iso /foo_dir
