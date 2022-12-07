@@ -4128,33 +4128,55 @@ sub unpack_kernel_rpms
 {
   $kernel->{dir} = $tmp->dir();
 
+  # add compat links for usrmerge
+  symlink "usr/lib", "$kernel->{dir}/lib";
+  mkdir "$kernel->{dir}/usr", 0755;
+  mkdir "$kernel->{dir}/usr/lib", 0755;
+
   for (@opt_kernel_rpms) {
     my $type = get_archive_type $_;
     die "$_: don't know how to unpack this\n" if !$type;
     unpack_archive $type, $_, $kernel->{dir};
   }
 
-  $kernel->{version} = (glob "$kernel->{dir}/boot/System.map-*")[0];
+  my $kernel_location;
+  my $kernel_name_suffix;
 
-  if($kernel->{version} =~ m#/boot/System.map-([^/]+)#) {
-    $kernel->{version} = $1;
+  if(-d "$kernel->{dir}/boot" ) {
+    my $version = (glob "$kernel->{dir}/boot/System.map-*")[0];
+    if($version =~ m#/boot/System.map-([^/]+)#) {
+      $kernel->{version} = $1;
+      $kernel_location = "boot";
+      $kernel_name_suffix = "-$kernel->{version}";
+    }
   }
   else {
+    my $version = (glob "$kernel->{dir}/lib/modules/*/System.map")[-1];
+    if($version =~ m#/lib/modules/([^/]+)/#) {
+      $kernel->{version} = $1;
+      $kernel_location = "lib/modules/$1";
+      $kernel_name_suffix = "";
+    }
+  }
+
+  if(! $kernel->{version}) {
     die "Couldn't determine kernel version. No kernel package?\n";
   }
 
   # kernel image names, per architecture
   #
-  #  aarch64:	Image, Image-*; vmlinux-*
-  #  i586:	vmlinuz, vmlinuz-*; vmlinux-*
-  #  ppc64le:	vmlinux, vmlinux-*
-  #  s390x:	image, image-*; vmlinux-*
-  #  x86_64:	vmlinuz, vmlinuz-*; vmlinux-*
-  #
-  $kernel->{image} = (glob "$kernel->{dir}/boot/vmlinuz-*")[0];
-  $kernel->{image} = (glob "$kernel->{dir}/boot/Image-*")[0] if !$kernel->{image};
-  $kernel->{image} = (glob "$kernel->{dir}/boot/image-*")[0] if !$kernel->{image};
-  $kernel->{image} = (glob "$kernel->{dir}/boot/vmlinux-*")[0] if !$kernel->{image};
+  #   aarch64:	Image, Image-*; vmlinux-*
+  #   i586:	vmlinuz, vmlinuz-*; vmlinux-*
+  #   ppc64le:	vmlinux, vmlinux-*
+  #   s390x:	image, image-*; vmlinux-*
+  #   x86_64:	vmlinuz, vmlinuz-*; vmlinux-*
+
+  for my $name ( qw ( vmlinuz Image image vmlinux ) ) {
+    if( -f "$kernel->{dir}/$kernel_location/$name$kernel_name_suffix" ) {
+      $kernel->{image} = "$kernel->{dir}/$kernel_location/$name$kernel_name_suffix";
+      last;
+    }
+  }
 
   die "no module dir?\n" if $kernel->{version} eq "";
   die "no kernel?\n" if !$kernel->{image};
@@ -4167,6 +4189,15 @@ sub unpack_kernel_rpms
   }
 
   system "depmod -a -b $kernel->{dir} $kernel->{version}";
+
+  if(! -s "$kernel->{dir}/lib/modules/$kernel->{version}/modules.dep") {
+    # squashfs is randomly picked, assuming it will always exist
+    my $fmt = (glob "$kernel->{dir}/lib/modules/$kernel->{version}/kernel/fs/squashfs/squashfs.*")[0];
+    $fmt =~ s#.*/squashfs##;
+    $fmt .= " " if $fmt;
+
+    die "failed to generate modules.dep - maybe kmod package too old to handle ${fmt}module format?\n";
+  }
 
   # print Dumper($kernel);
 }
@@ -4241,7 +4272,7 @@ sub build_module_list
   # copy modules.order & modules.builtin
 
   if(-f "$kernel->{dir}/lib/modules/$kernel->{version}/modules.builtin") {
-    system "cp $kernel->{dir}/lib/modules/$kernel->{version}/modules.builtin $kernel->{new_dir}/lib/modules/$kernel->{version}/";
+    system "cp -f $kernel->{dir}/lib/modules/$kernel->{version}/modules.builtin{,.modinfo} $kernel->{new_dir}/lib/modules/$kernel->{version}/";
   }
 
   if(open my $f, "$kernel->{dir}/lib/modules/$kernel->{version}/modules.order") {
