@@ -4128,16 +4128,34 @@ sub unpack_kernel_rpms
 {
   $kernel->{dir} = $tmp->dir();
 
-  # add compat links for usrmerge
-  symlink "usr/lib", "$kernel->{dir}/lib";
-  mkdir "$kernel->{dir}/usr", 0755;
-  mkdir "$kernel->{dir}/usr/lib", 0755;
-
   for (@opt_kernel_rpms) {
     my $type = get_archive_type $_;
     die "$_: don't know how to unpack this\n" if !$type;
     unpack_archive $type, $_, $kernel->{dir};
   }
+
+  # kernel package layout expected in initrd
+  if(-d "$orig_initrd/usr/lib/modules") {
+    $kernel->{target_usrmerge} = 1;
+    $kernel->{target_lib_dir} = "usr/lib";
+  }
+  else {
+    $kernel->{target_usrmerge} = 0;
+    $kernel->{target_lib_dir} = "lib";
+  }
+
+  # kernel package layout in new kernel rpms
+  if(-d "$kernel->{dir}/usr/lib/modules") {
+    $kernel->{usrmerge} = 1;
+    $kernel->{lib_dir} = "usr/lib";
+  }
+  else {
+    $kernel->{usrmerge} = 0;
+    $kernel->{lib_dir} = "lib";
+  }
+
+  my $lib_dir = $kernel->{lib_dir};
+  my $target_lib_dir = $kernel->{target_lib_dir};
 
   my $kernel_location;
   my $kernel_name_suffix;
@@ -4151,10 +4169,10 @@ sub unpack_kernel_rpms
     }
   }
   else {
-    my $version = (glob "$kernel->{dir}/lib/modules/*/System.map")[-1];
-    if($version =~ m#/lib/modules/([^/]+)/#) {
+    my $version = (glob "$kernel->{dir}/$lib_dir/modules/*/System.map")[-1];
+    if($version =~ m#/$lib_dir/modules/([^/]+)/#) {
       $kernel->{version} = $1;
-      $kernel_location = "lib/modules/$1";
+      $kernel_location = "$lib_dir/modules/$1";
       $kernel_name_suffix = "";
     }
   }
@@ -4181,22 +4199,32 @@ sub unpack_kernel_rpms
   die "no module dir?\n" if $kernel->{version} eq "";
   die "no kernel?\n" if !$kernel->{image};
 
-  for (glob "$kernel->{dir}/lib/modules/*") {
+  for (glob "$kernel->{dir}/$lib_dir/modules/*") {
     s#.*/##;
     next if $_ eq $kernel->{version};
     print "warning: kmp version mismatch, adjusting: $_ --> $kernel->{version}\n";
-    system "tar -C '$kernel->{dir}/lib/modules/$_' -cf - . | tar -C '$kernel->{dir}/lib/modules/$kernel->{version}' -xf -";
+    system "tar -C '$kernel->{dir}/$lib_dir/modules/$_' -cf - . | tar -C '$kernel->{dir}/$lib_dir/modules/$kernel->{version}' -xf -";
   }
 
+  # compat symlink needed for depmod
+  symlink("$lib_dir", "$kernel->{dir}/lib") if $kernel->{usrmerge};
   system "depmod -a -b $kernel->{dir} $kernel->{version}";
+  unlink "$kernel->{dir}/lib" if $kernel->{usrmerge};
 
-  if(! -s "$kernel->{dir}/lib/modules/$kernel->{version}/modules.dep") {
+  if(! -s "$kernel->{dir}/$lib_dir/modules/$kernel->{version}/modules.dep") {
     # squashfs is randomly picked, assuming it will always exist
-    my $fmt = (glob "$kernel->{dir}/lib/modules/$kernel->{version}/kernel/fs/squashfs/squashfs.*")[0];
+    my $fmt = (glob "$kernel->{dir}/$lib_dir/modules/$kernel->{version}/kernel/fs/squashfs/squashfs.*")[0];
     $fmt =~ s#.*/squashfs##;
     $fmt .= " " if $fmt;
 
     die "failed to generate modules.dep - maybe kmod package too old to handle ${fmt}module format?\n";
+  }
+
+  if($opt_verbose >= 1) {
+    my $u = $kernel->{target_usrmerge} ? " (usrmerge)" : "";
+    print "original kernel: $kernel->{orig_version}$u\n";
+    $u = $kernel->{usrmerge} ? " (usrmerge)" : "";
+    print "new kernel: $kernel->{version}$u\n";
   }
 
   # print Dumper($kernel);
@@ -4227,7 +4255,10 @@ sub build_module_list
     }
   }
 
-  die "no modules.dep\n" if !open my $f, "$kernel->{dir}/lib/modules/$kernel->{version}/modules.dep";
+  my $lib_dir = $kernel->{lib_dir};
+  my $target_lib_dir = $kernel->{target_lib_dir};
+
+  die "no modules.dep\n" if !open my $f, "$kernel->{dir}/$lib_dir/modules/$kernel->{version}/modules.dep";
 
   # get module paths
   for (<$f>) {
@@ -4254,14 +4285,11 @@ sub build_module_list
 
   $kernel->{new_dir} = $tmp->dir();
 
-  mkdir "$kernel->{new_dir}/lib", 0755;
-  mkdir "$kernel->{new_dir}/lib/modules", 0755;
-  mkdir "$kernel->{new_dir}/lib/modules/$kernel->{version}", 0755;
-  mkdir "$kernel->{new_dir}/lib/modules/$kernel->{version}/initrd", 0755;
+  File::Path::make_path "$kernel->{new_dir}/$target_lib_dir/modules/$kernel->{version}/initrd";
 
   for (sort keys %{$kernel->{initrd_modules}}) {
     if($kernel->{modules}{$_} && !$mods_remove{$_}) {
-      system "cp $kernel->{dir}/lib/modules/$kernel->{version}/$kernel->{modules}{$_} $kernel->{new_dir}/lib/modules/$kernel->{version}/initrd";
+      system "cp $kernel->{dir}/$lib_dir/modules/$kernel->{version}/$kernel->{modules}{$_} $kernel->{new_dir}/$target_lib_dir/modules/$kernel->{version}/initrd";
       push @{$kernel->{added}}, $_ if $kernel->{initrd_modules}{$_} > 1;
     }
     else {
@@ -4271,29 +4299,32 @@ sub build_module_list
 
   # copy modules.order & modules.builtin
 
-  if(-f "$kernel->{dir}/lib/modules/$kernel->{version}/modules.builtin") {
-    system "cp -f $kernel->{dir}/lib/modules/$kernel->{version}/modules.builtin{,.modinfo} $kernel->{new_dir}/lib/modules/$kernel->{version}/";
+  if(-f "$kernel->{dir}/$lib_dir/modules/$kernel->{version}/modules.builtin") {
+    system "cp -f $kernel->{dir}/$lib_dir/modules/$kernel->{version}/modules.builtin{,.modinfo} $kernel->{new_dir}/$target_lib_dir/modules/$kernel->{version}/";
   }
 
-  if(open my $f, "$kernel->{dir}/lib/modules/$kernel->{version}/modules.order") {
-    if(open my $w, ">$kernel->{new_dir}/lib/modules/$kernel->{version}/modules.order") {
+  if(open my $f, "$kernel->{dir}/$lib_dir/modules/$kernel->{version}/modules.order") {
+    if(open my $w, ">$kernel->{new_dir}/$target_lib_dir/modules/$kernel->{version}/modules.order") {
       while(<$f>) {
         chomp;
         s#.*/#initrd/#;
-        print $w "$_\n" if -f "$kernel->{new_dir}/lib/modules/$kernel->{version}/$_";
+        print $w "$_\n" if -f "$kernel->{new_dir}/$lib_dir/modules/$kernel->{version}/$_";
       }
       close $w;
     }
     close $f;
   }
 
+  # compat symlink needed for depmod
+  symlink("$target_lib_dir", "$kernel->{new_dir}/lib") if $kernel->{target_usrmerge};
   system "depmod -a -b $kernel->{new_dir} $kernel->{version}";
+  unlink "$kernel->{new_dir}/lib" if $kernel->{target_usrmerge};
 
   # now get firmware files
 
   my %fw;
 
-  for my $m (glob("$kernel->{new_dir}/lib/modules/$kernel->{version}/initrd/*${kext_glob}")) {
+  for my $m (glob("$kernel->{new_dir}/$target_lib_dir/modules/$kernel->{version}/initrd/*${kext_glob}")) {
     chomp $m;
 
     next unless -f $m;
@@ -4310,11 +4341,11 @@ sub build_module_list
   for my $m (sort keys %fw) {
     for (@{$fw{$m}}) {
       my $f;
-      $f = "$_" if -f "$kernel->{dir}/lib/firmware/$_";
-      $f = "$kernel->{version}/$_" if -f "$kernel->{dir}/lib/firmware/$kernel->{version}/$_";
+      $f = "$_" if -f "$kernel->{dir}/$lib_dir/firmware/$_";
+      $f = "$kernel->{version}/$_" if -f "$kernel->{dir}/$lib_dir/firmware/$kernel->{version}/$_";
 
       if($f) {
-        system "install -m 644 -D $kernel->{dir}/lib/firmware/$f $kernel->{new_dir}/lib/firmware/$f";
+        system "install -m 644 -D $kernel->{dir}/$lib_dir/firmware/$f $kernel->{new_dir}/$target_lib_dir/firmware/$f";
       }
     }
   }
@@ -4330,7 +4361,7 @@ sub build_module_list
     # print "got it\n";
     # FIXME: adjust config
 
-    open my $f, ">$kernel->{new_dir}/lib/modules/$kernel->{version}/initrd/module.config";
+    open my $f, ">$kernel->{new_dir}/$target_lib_dir/modules/$kernel->{version}/initrd/module.config";
     print $f @{$kernel->{module_config}};
     close $f;
   }
@@ -4346,6 +4377,9 @@ sub add_modules_to_initrd
 {
   my $tmp_dir;
 
+  my $lib_dir = $kernel->{lib_dir};
+  my $target_lib_dir = $kernel->{target_lib_dir};
+
   if($initrd_has_parts) {
     $tmp_dir = $tmp->dir();
 
@@ -4356,10 +4390,7 @@ sub add_modules_to_initrd
     # going to rebuild the initrd anyway
     $p = "00_lib" if $opt_rebuild_initrd;
 
-    mkdir "$tmp_dir/lib", 0755;
-    mkdir "$tmp_dir/lib/modules", 0755;
-    mkdir "$tmp_dir/lib/modules/$kernel->{version}", 0755;
-    mkdir "$tmp_dir/lib/modules/$kernel->{version}/initrd", 0755;
+    File::Path::make_path "$tmp_dir/$target_lib_dir/modules/$kernel->{version}/initrd";
 
     my @base_modules = qw (loop squashfs lz4_decompress xxhash zstd_decompress);
 
@@ -4372,8 +4403,8 @@ sub add_modules_to_initrd
 
     for (@base_modules) {
       for my $ext (@kext_list) {
-        if(-f "$kernel->{new_dir}/lib/modules/$kernel->{version}/initrd/$_$ext") {
-          rename "$kernel->{new_dir}/lib/modules/$kernel->{version}/initrd/$_$ext", "$tmp_dir/lib/modules/$kernel->{version}/initrd/$_$ext";
+        if(-f "$kernel->{new_dir}/$target_lib_dir/modules/$kernel->{version}/initrd/$_$ext") {
+          rename "$kernel->{new_dir}/$target_lib_dir/modules/$kernel->{version}/initrd/$_$ext", "$tmp_dir/$target_lib_dir/modules/$kernel->{version}/initrd/$_$ext";
         }
       }
     }
@@ -4389,9 +4420,9 @@ sub add_modules_to_initrd
 
   # add module symlink
 
-  symlink "lib/modules/$kernel->{version}/initrd", "$tmp_dir/modules";
+  symlink "$target_lib_dir/modules/$kernel->{version}/initrd", "$tmp_dir/modules";
 
-  my $cmd = "Exec:\t\tln -snf lib/modules/`uname -r`/initrd /modules\n";
+  my $cmd = "Exec:\t\tln -snf $lib_dir/modules/`uname -r`/initrd /modules\n";
 
   if(open my $f, "$orig_initrd/linuxrc.config") {
     my $cmd_found;
