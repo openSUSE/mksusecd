@@ -17,6 +17,7 @@ mksusecd - create and modify bootable installation media.
 
 mksusecd can modify or create bootable installation media. They can be
 either ISO images or disk images (to be used on USB sticks, for example).
+Note that Live media are not supported.
 
 mksusecd supports media in both openSUSE/SLES and Fedora/RHEL layout.
 See Fedora/RHEL notes for details.
