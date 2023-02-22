@@ -178,6 +178,7 @@ sub get_initrd_format;
 sub unpack_orig_initrd;
 sub extract_installkeys;
 sub create_cd_ikr;
+sub merge_options;
 sub isolinux_add_option;
 sub grub2_add_option;
 sub yaboot_add_option;
@@ -213,6 +214,7 @@ sub eval_size;
 sub add_linuxrc_option;
 sub wipe_iso;
 sub get_media_style;
+sub get_media_variant;
 sub analyze_products;
 sub check_product;
 sub crypto_cleanup;
@@ -439,6 +441,7 @@ my $product_db;
 my $repomd_instsys_location;
 my $sign_passwd_option;
 my $media_style = 'suse';
+my $media_variant = 'install';
 
 my $progress_start = 0;
 my $progress_end = 100;
@@ -546,6 +549,7 @@ if($opt_create || $opt_list_repos) {
   }
 
   $media_style = get_media_style \@sources;
+  $media_variant = get_media_variant \@sources;
   analyze_products \@sources;
   build_filelist \@sources;
   $boot = analyze_boot;
@@ -995,10 +999,10 @@ sub analyze_boot
       $boot->{$_}{kernel} = "boot/$_/vmrdr.ikr" if -f fname("boot/$_/vmrdr.ikr");
       $boot->{$_}{kernel} = "boot/$_/linux" if -f fname("boot/$_/linux");
 
-      if(-f fname("boot/$_/loader/isolinux.bin")) {
+      if(-f fname("boot/$_/loader/isolinux.bin") && -f fname("boot/$_/loader/isolinux.cfg")) {
         $boot->{$_}{bl}{isolinux} = { base => "boot/$_/loader", file => "isolinux.bin", arch => $_ };
       }
-      if(-f fname("boot/$_/isolinux/isolinux.bin")) {
+      if(-f fname("boot/$_/isolinux/isolinux.bin") && -f fname("boot/$_/isolinux/isolinux.cfg")) {
         $boot->{$_}{bl}{isolinux} = { base => "boot/$_/isolinux", file => "isolinux.bin", arch => $_ };
       }
       if(-f fname("boot/$_/cd.ikr")) {
@@ -1012,6 +1016,9 @@ sub analyze_boot
       }
       if(-f fname("boot/$_/grub2/cd.img")) {
         $boot->{$_}{bl}{grub2} = { base => "boot/$_/grub2", file => "cd.img", arch => $_ };
+      }
+      if(-f fname("boot/$_/loader/eltorito.img")) {
+        $boot->{$_}{bl}{grub2} = { base => "boot/$_/loader", file => "eltorito.img", config => "boot/grub2/grub.cfg", arch => $_ };
       }
       if(-f fname("boot/$_/grub2-ieee1275/core.elf")) {
         $boot->{$_}{bl}{grub2} = { base => "boot/$_/grub2-ieee1275", file => "core.elf", arch => $_ };
@@ -1034,7 +1041,7 @@ sub analyze_boot
     }
   }
 
-  if (-d fname("isolinux")) {
+  if (-d fname("isolinux") && -f fname("isolinux/isolinux.bin") &&  -f fname("isolinux/isolinux.cfg")) {
     $_ = "x86_64";
     $boot->{$_} = { base => "isolinux" };
     $boot->{$_}{initrd} = "isolinux/initrd.img" if -f fname("isolinux/initrd.img");
@@ -2196,6 +2203,8 @@ sub create_initrd
   $compr = "gzip --quiet -9c" if $initrd_format eq "gz";
   $compr = "zstd --quiet -c -T0" if $initrd_format eq "zst";
 
+  chmod 0755, $tmp_dir;
+
   system "( cd $tmp_dir; find . | cpio --quiet -o -H newc --owner 0:0 | $compr ) >> $tmp_initrd";
 
   # system "ls -lR $tmp_dir";
@@ -2594,6 +2603,64 @@ sub create_cd_ikr
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# merge_options(options, new_options)
+#
+# Update boot options with new_options and return updated option string.
+#
+sub merge_options
+{
+  my $opts = $_[0];
+  my $new_opts = $_[1];
+
+  # avoid tricky stuff...
+  if($opts =~ /"/ || $new_opts =~ /"/) {
+    $opts .= " $new_opts";
+  }
+  else {
+    my @opts;
+    my %new_opts;
+    my @new_opts_order;
+    for my $n (split " ", $new_opts) {
+      if($n =~ /(.*?)=(.*)/) {
+        push @new_opts_order, $1;
+        $new_opts{$1} = $2;
+      }
+      else {
+        push @new_opts_order, $n;
+        $new_opts{$n} = undef;
+      }
+    }
+
+    for my $opt (split " ", $opts) {
+      my $k = $opt;
+      $k =~ s/=.*//;
+      if(exists $new_opts{$k}) {
+        $opt = $k;
+        $opt .= "=$new_opts{$k}" if defined $new_opts{$k};
+        delete $new_opts{$k};
+      }
+      push @opts, $opt;
+    }
+
+    for my $opt (@new_opts_order) {
+      my $k = $opt;
+      if(exists $new_opts{$opt}) {
+        $opt .= "=$new_opts{$opt}" if defined $new_opts{$opt};
+        delete $new_opts{$k};
+        push @opts, $opt;
+      }
+    }
+
+    $opts = join ' ', @opts;
+  }
+
+  print "boot options update:\n  \"$_[0]\"\n+ \"$_[1]\"\n= \"$opts\"\n" if $opt_verbose >= 2;
+
+  return $opts;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # isolinux_add_option()
 #
 # Add new boot option to isolinux.cfg.
@@ -2681,6 +2748,8 @@ sub grub2_add_option
     my @f = <$f>;
     close $f;
 
+    print "updating grub2 config file: $n\n" if $opt_verbose >= 2;
+
     # if we should add a new entry, base it loosely on the 'Installation' entry
     if($opt_new_boot_entry) {
       my $ent;
@@ -2707,7 +2776,7 @@ sub grub2_add_option
     }
     else {
       if($b) {
-        @f = map { chomp; $_ .= " $b" if /^\s*linux(efi)?\s/; "$_\n" } @f;
+        @f = map { chomp; $_ = "$1 " . merge_options($3, $b) if /^(\s*\$?linux(efi)?)\s(.*)/; "$_\n" } @f;
       }
     }
 
@@ -2806,7 +2875,7 @@ sub update_boot_options
       isolinux_add_option $n, $opt_boot_options, $m;
     }
     if($boot->{$b}{bl}{grub2}) {
-      my $n = copy_file "$boot->{$b}{bl}{grub2}{base}/grub.cfg";
+      my $n = copy_file $boot->{$b}{bl}{grub2}{config} || copy_file "$boot->{$b}{bl}{grub2}{base}/grub.cfg";
       grub2_add_option $n, $opt_boot_options;
     }
     if($boot->{$b}{bl}{yaboot}) {
@@ -3158,7 +3227,7 @@ sub add_to_content_file
 #
 sub update_content_or_checksums
 {
-  return 0 if $media_style eq 'rh';
+  return 0 if $media_style eq 'rh' || $media_variant eq 'live';
   return $has_content ? update_content : update_checksums;
 }
 
@@ -4751,7 +4820,7 @@ sub wipe_iso
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-# set_media_style(sources)
+# get_media_style(sources)
 #
 # - sources: array_ref containing a list of directories
 #
@@ -4779,6 +4848,31 @@ sub get_media_style
   }
 
   return $style;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# get_media_variant(sources)
+#
+# - sources: array_ref containing a list of directories
+#
+# Look at sources and determine media variant (install vs. live).
+#
+# Assume a Live medium if there's an '/LiveOS' dir.
+#
+sub get_media_variant
+{
+  my $src = $_[0];
+  my $variant = 'install';
+
+  for my $s (@$src) {
+    if(-d "$s->{dir}/LiveOS") {
+      $variant = 'live';
+      last;
+    }
+  }
+
+  return $variant;
 }
 
 
@@ -4861,7 +4955,7 @@ sub analyze_products
 
   exit 0 if $opt_list_repos;
 
-  return if $media_style eq 'rh';
+  return if $media_style eq 'rh' || $media_variant eq 'live';
 
   # don't merge repos if the user doesn't want to
   return if !$opt_merge_repos;
