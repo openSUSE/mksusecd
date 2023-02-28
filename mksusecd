@@ -221,6 +221,7 @@ sub crypto_cleanup;
 sub run_crypto_disk;
 sub read_ini;
 sub write_ini;
+sub create_efi_image;
 
 my %config;
 my $sudo;
@@ -1019,6 +1020,7 @@ sub analyze_boot
       }
       if(-f fname("boot/$_/loader/eltorito.img")) {
         $boot->{$_}{bl}{grub2} = { base => "boot/$_/loader", file => "eltorito.img", config => "boot/grub2/grub.cfg", arch => $_ };
+        $boot->{$_}{bl}{efi} = { base => "boot/$_/loader/efiboot.img", arch => $_ };
       }
       if(-f fname("boot/$_/grub2-ieee1275/core.elf")) {
         $boot->{$_}{bl}{grub2} = { base => "boot/$_/grub2-ieee1275", file => "core.elf", arch => $_ };
@@ -1288,6 +1290,10 @@ sub prepare_mkisofs
     elsif($opt_efi && $t eq 'efi') {
       $has_efi = 1;
       my $f = fname($_->{$t}{base});
+      if(!$f) {
+        create_efi_image $_->{$t}{base};
+        $f = fname($_->{$t}{base});
+      }
       my $s = -s $f;
       $s = (($s + 2047) >> 11) << 2;
       $s = 1 if $s == 0 || $s > 0xffff;
@@ -3139,6 +3145,16 @@ sub set_mkisofs_metadata
   $vol_id = trim_volume_id $vol_id;
 
   my $vol_id_from_config;
+
+  if(open my $f, "<", fname("boot/grub2/grub.cfg")) {
+    while(<$f>) {
+      if(/\sroot=live:CDLABEL=(\S+)/) {
+        $vol_id_from_config = trim_volume_id $1;
+        last;
+      }
+    }
+    close $f;
+  }
 
   if(open my $f, "<", fname("isolinux/isolinux.cfg")) {
     while(<$f>) {
@@ -5611,4 +5627,33 @@ sub write_ini
     }
     close $f;
   }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# create_efi_image(file)
+#
+# - file: image file name
+#
+# Create FAT image of sufficient size and copy 'EFI' directory into it.
+#
+sub create_efi_image
+{
+  my $file = new_file($_[0]);
+
+  my $efi_dir = fname "EFI";
+
+  return if ! $efi_dir;
+
+  # efi image size in 512 byte blocks; giving one extra MiB free space
+  my $efi_size = ((split "", `du --apparent-size -x -B 1M -s $efi_dir`)[0] + 1) << 11;
+
+  # create FAT fs
+  open my $fh, ">", $file;
+  close $fh;
+  truncate $file, $efi_size << 9;
+  system "mformat -i '$file' -s 32 -h 64 -c 1 -d 1 -v 'EFIIMAGE' ::";
+
+  # copy files
+  system "mcopy -i '$file' -s -D o $efi_dir ::";
 }
