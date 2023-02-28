@@ -430,6 +430,8 @@ my $initrd_installkeys;
 my $initrd_format;
 my $rebuild_initrd;
 my $hybrid_part_type;
+my $hybrid_mbr_code;	# mbr code to use for iso hybrid mode
+my $hybrid_grub;	# grub instead of isolinux is used for iso hybrid boot
 my $kernel;
 my $warned;
 my $read_write;
@@ -1021,6 +1023,10 @@ sub analyze_boot
       if(-f fname("boot/$_/loader/eltorito.img")) {
         $boot->{$_}{bl}{grub2} = { base => "boot/$_/loader", file => "eltorito.img", config => "boot/grub2/grub.cfg", arch => $_ };
         $boot->{$_}{bl}{efi} = { base => "boot/$_/loader/efiboot.img", arch => $_ };
+        if(-f fname("boot/$_/loader/boot_hybrid.img")) {
+          $hybrid_mbr_code = fname("boot/$_/loader/boot_hybrid.img");
+          $hybrid_grub = 1;
+        }
       }
       if(-f fname("boot/$_/grub2-ieee1275/core.elf")) {
         $boot->{$_}{bl}{grub2} = { base => "boot/$_/grub2-ieee1275", file => "core.elf", arch => $_ };
@@ -1661,6 +1667,8 @@ sub run_isohybrid
   $opt .= sprintf(" --type 0x%x", $part_type) if $part_type;
   $opt .= " --offset $mkisofs->{partition_start}" if $mkisofs->{partition_start};
   $opt .= " --size $image_size" if $image_size;
+  $opt .= " --mbr-file $hybrid_mbr_code" if $hybrid_mbr_code;
+  $opt .= " --grub" if $hybrid_grub;
 
   my $cmd = "$LIBEXECDIR/mksusecd/isohybrid $opt '$iso_file'";
 
@@ -2728,7 +2736,7 @@ sub isolinux_add_option
     }
     else {
       if($b) {
-        @f = map { chomp; $_ .= " $b" if /^\s*append\s.*initrd=/; "$_\n" } @f;
+        @f = map { chomp; $_ = "$1 " . merge_options($2, $b) if /^(\s*append\s.*initrd=\S+)\s(.*)/; "$_\n" } @f;
       }
     }
 
@@ -5652,7 +5660,7 @@ sub create_efi_image
   open my $fh, ">", $file;
   close $fh;
   truncate $file, $efi_size << 9;
-  system "mformat -i '$file' -s 32 -h 64 -c 1 -d 1 -v 'EFIIMAGE' ::";
+  system "mformat -i '$file' -s 32 -h 64 -c 1 -d 1 -v 'EFIBOOT' ::";
 
   # copy files
   system "mcopy -i '$file' -s -D o $efi_dir ::";

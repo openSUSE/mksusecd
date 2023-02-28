@@ -46,7 +46,7 @@ extern int opterr, optind;
 uuid_t disk_uuid, part_uuid, iso_uuid;
 
 uint8_t mode = 0;
-enum { VERBOSE = 1 , EFI = 2 , MAC = 4 , MODE_GPT = 8 , MODE_MBR = 0x10 , LEGACY = 0x20 };
+enum { VERBOSE = 1 , EFI = 2 , MAC = 4 , MODE_GPT = 8 , MODE_MBR = 0x10 , LEGACY = 0x20, GRUB = 0x40 };
 
 /* partition numbers (1 based) */
 int part_data = 0;
@@ -77,6 +77,7 @@ struct {
   unsigned no_code:1;		/* no mbr boot code */
   unsigned no_chs:1;		/* fill in 0xffffff instead of real chs values */
   off_t size;			/* total size MBR partition table should cover */
+  char *mbr_file;		/* read mbr from file (432 bytes) */
 } opt;
 
 
@@ -256,6 +257,8 @@ printh(void)
     printf(FMT, "   --size", "Specify disk size to assume when writing MBR (in 512 byte units)");
     printf(FMT, "   --legacy", "Expect an El Torito boot record (default)");
     printf(FMT, "   --no-legacy", "Do not expect an El Torito boot record");
+    printf(FMT, "   --mbr-file FILE", "Use MBR from FILE");
+    printf(FMT, "   --grub", "GRUB mode");
 
     printf("\n");
     printf(FMT, "   --forcehd0", "Assume we are loaded as disk ID 0");
@@ -286,6 +289,7 @@ check_option(int argc, char *argv[])
         { "size", required_argument, NULL, 1006 },
         { "type", required_argument, NULL, 't' },
         { "id", required_argument, NULL, 'i' },
+        { "mbr-file", required_argument, NULL, 1009 },
         { "gpt", no_argument, NULL, 1001 },
         { "mbr", no_argument, NULL, 1002 },
         { "no-mbr", no_argument, NULL, 1003 },
@@ -293,6 +297,8 @@ check_option(int argc, char *argv[])
         { "no-chs", no_argument, NULL, 1005 },
         { "legacy", no_argument, NULL, 1007 },
         { "no-legacy", no_argument, NULL, 1008 },
+        { "mbr-file", required_argument, NULL, 1009 },
+        { "grub", no_argument, NULL, 1010 },
 
         { "forcehd0", no_argument, NULL, 'f' },
         { "ctrlhd0", no_argument, NULL, 'c' },
@@ -405,6 +411,14 @@ check_option(int argc, char *argv[])
 
         case 1008:
             mode &= ~LEGACY;
+            break;
+
+        case 1009:
+            opt.mbr_file = optarg;
+            break;
+
+        case 1010:
+            mode |= GRUB;
             break;
 
         case 'V':
@@ -657,7 +671,23 @@ initialise_mbr(uint8_t *mbr)
 
     extern unsigned char isohdpfx[][MBRSIZE];
 
-    if (catoffset && !opt.no_code) memcpy(mbr, &isohdpfx[hd0 + 3 * partok], MBRSIZE);
+    if (catoffset && !opt.no_code) {
+      if(opt.mbr_file) {
+        int fd = open(opt.mbr_file, O_RDONLY);
+        if(fd == -1) {
+          perror(opt.mbr_file);
+          exit(1);
+        }
+        if(read(fd, mbr, MBRSIZE) != MBRSIZE) {
+          fprintf(stderr, "%s: failed to read MBR\n", opt.mbr_file);
+          exit(1);
+        }
+        close(fd);
+      }
+      else {
+        memcpy(mbr, &isohdpfx[hd0 + 3 * partok], MBRSIZE);
+      }
+    }
 
     if (mode & MAC) {
         memcpy(mbr, afp_header, sizeof(afp_header));
@@ -665,7 +695,7 @@ initialise_mbr(uint8_t *mbr)
 
     mbr += MBRSIZE;                                 /* offset 432 */
 
-    tmp = lendian_int(de_lba * 4);
+    tmp = lendian_int(((mode & GRUB) ? de_lba + 1 : de_lba) * 4);
     if(!opt.no_code) memcpy(mbr, &tmp, sizeof(tmp));
     mbr += sizeof(tmp);                             /* offset 436 */
 
@@ -1114,12 +1144,21 @@ main(int argc, char *argv[])
     if (fread(buf, sizeof(char), 4, fp) != 4)
         err(1, "%s", argv[0]);
 
-    if(mode & LEGACY)
+    if (mode & LEGACY)
     {
-        if (memcmp(buf, "\xFB\xC0\x78\x70", 4))
+        if (mode & GRUB) {
+            uint32_t tmp;
+            if (fseek(fp, (de_lba * 2048 + 0x9f4), SEEK_SET))
+                err(1, "%s: seek error - 4", argv[0]);
+            tmp = lendian_int(de_lba * 4 + 5);
+            if (fwrite(&tmp, sizeof(char), 4, fp) != 4)
+                err(1, "%s", argv[0]);
+        }
+        else if (memcmp(buf, "\xFB\xC0\x78\x70", 4)) {
             warnx("%s: boot loader does not have an isolinux.bin hybrid " \
                      "signature. Note that isolinux-debug.bin does not support " \
                      "hybrid booting", argv[0]);
+        }
     }
 
   no_cat:
