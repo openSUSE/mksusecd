@@ -5,7 +5,7 @@
 
 == Name
 
-mksusecd - create and modify bootable installation media.
+mksusecd - create and modify bootable media.
 
 
 == Synopsis
@@ -15,14 +15,13 @@ mksusecd - create and modify bootable installation media.
 
 == Description
 
-mksusecd can modify or create bootable installation media. They can be
+mksusecd can modify or create bootable installation or Live media. They can be
 either ISO images or disk images (to be used on USB sticks, for example).
-Note that Live media are not supported.
 
 mksusecd supports media in both openSUSE/SLES and Fedora/RHEL layout.
 See Fedora/RHEL notes for details.
 
-The main purpose is to adjust existing installation media. For example
+The main purpose is to adjust existing media. For example
 
 - change boot options
 - add boot menu entries

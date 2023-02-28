@@ -710,7 +710,7 @@ sub usage
 {
   print <<"= = = = = = = =";
 Usage: mksusecd [OPTIONS] [SOURCES]
-Create bootable installation media.
+Create and modify bootable media.
 
 General options:
 
