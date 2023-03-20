@@ -664,6 +664,7 @@ int
 initialise_mbr(uint8_t *mbr)
 {
     int i = 0;
+    uint64_t tmp64 = 0;
     uint32_t tmp = 0, chs;
     uint8_t *rbm = mbr;
 
@@ -695,13 +696,9 @@ initialise_mbr(uint8_t *mbr)
 
     mbr += MBRSIZE;                                 /* offset 432 */
 
-    tmp = lendian_int(((mode & GRUB) ? de_lba + 1 : de_lba) * 4);
-    if(!opt.no_code) memcpy(mbr, &tmp, sizeof(tmp));
-    mbr += sizeof(tmp);                             /* offset 436 */
-
-    tmp = 0;
-    memcpy(mbr, &tmp, sizeof(tmp));
-    mbr += sizeof(tmp);                             /* offset 440 */
+    tmp64 = lendian_64(((mode & GRUB) ? (uint64_t) de_lba + 1 : (uint64_t) de_lba) * 4);
+    if(!opt.no_code) memcpy(mbr, &tmp64, sizeof(tmp64));
+    mbr += sizeof(tmp64);                           /* offset 440 */
 
     tmp = lendian_int(id);
     memcpy(mbr, &tmp, sizeof(tmp));
@@ -1147,12 +1144,25 @@ main(int argc, char *argv[])
     if (mode & LEGACY)
     {
         if (mode & GRUB) {
-            uint32_t tmp;
-            if (fseek(fp, (de_lba * 2048 + 0x9f4), SEEK_SET))
-                err(1, "%s: seek error - 4", argv[0]);
-            tmp = lendian_int(de_lba * 4 + 5);
-            if (fwrite(&tmp, sizeof(char), 4, fp) != 4)
-                err(1, "%s", argv[0]);
+            uint64_t tmp, old;
+            uint32_t crc;
+
+            if (fseek(fp, ((uint64_t) de_lba * 2048 + 0x9f4), SEEK_SET)) err(1, "%s: seek error - 4", argv[0]);
+            if (fread(&old, 1, 8, fp) != 8) err(1, "%s", argv[0]);
+
+            tmp = lendian_64((uint64_t) de_lba * 4 + 5);
+
+            if (fseek(fp, ((uint64_t) de_lba * 2048 + 0x9f4), SEEK_SET)) err(1, "%s: seek error - 4", argv[0]);
+            if (fwrite(&tmp, 1, 8, fp) != 8) err(1, "%s", argv[0]);
+
+            if (fseek(fp, ((uint64_t) de_lba * 2048 + 20), SEEK_SET)) err(1, "%s: seek error - 4", argv[0]);
+            if (fread(&crc, 1, 4, fp) != 4) err(1, "%s", argv[0]);
+
+            crc += tmp - old;
+            crc += (tmp >> 32) - (old >> 32);
+
+            if (fseek(fp, ((uint64_t) de_lba * 2048 + 20), SEEK_SET)) err(1, "%s: seek error - 4", argv[0]);
+            if (fwrite(&crc, 1, 4, fp) != 4) err(1, "%s", argv[0]);
         }
         else if (memcmp(buf, "\xFB\xC0\x78\x70", 4)) {
             warnx("%s: boot loader does not have an isolinux.bin hybrid " \
