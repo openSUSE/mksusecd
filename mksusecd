@@ -2571,7 +2571,7 @@ sub create_cd_ikr
   if(open my $s, fname($ins)) {
     while(<$s>) {
       next if /^\s*\*/;
-      push @layout, { file => fname("$src/$1"), ofs => oct($2) } if /^\s*(\S+)\s+(\S+)/;
+      push @layout, { name => "$src/$1", file => fname("$src/$1"), ofs => oct($2) } if /^\s*(\S+)\s+(\S+)/;
     }
     close $s;
   }
@@ -2600,7 +2600,7 @@ sub create_cd_ikr
         # print "$fname: $_->{ofs} ", length($buf), "\n";
       }
       else {
-        die "$_->{file}: $!\n";
+        die "$_->{name}: $!\n";
       }
     }
 
