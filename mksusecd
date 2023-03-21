@@ -488,6 +488,9 @@ if($opt_create || $opt_list_repos) {
     s#/*$##;
     next if $_ eq "";
     if(-d) {
+      if(`find $_ -xdev \\! -readable`) {
+        die "Some files in $_ are not readable; you need root privileges.\n";
+      }
       my $d_skel = (<$_/usr/lib/skelcd/*>)[0];
       my $d_tftp = (<$_/usr/share/tftpboot-installation/*>)[0];
       if(-d $d_skel ) {
@@ -511,6 +514,9 @@ if($opt_create || $opt_list_repos) {
         my $d = $tmp->mnt(sprintf("mnt_%04d", $iso_cnt));
         susystem "mount -oro,loop $_ $d";
         push @sources, { dir => $d, real_name => $_, type => 'iso' };
+        if(`find $d -xdev \\! -readable`) {
+          die "Some files in $_ are not readable; you need root privileges.\n";
+        }
       }
       elsif($t =~ /RPM /) {
         $iso_cnt++;
@@ -1224,7 +1230,7 @@ sub copy_file
 
   if(-d $f) {
     $n = "$tmp_new/$_[0]";
-    system "mdir -p '$n'";
+    system "mkdir -p '$n'";
   }
   elsif(-f $f) {
     if($_[0] =~ m#(.+)/([^/]+)#) {
@@ -1418,6 +1424,8 @@ sub run_mkisofs
     # printf STDERR "ret = $?\n";
     $ok = 0 if $?;
   }
+
+  $ok = 0 if $log =~ /mkisofs: Permission denied/;
 
   print $log if $opt_verbose >= 3 || !$ok;
 
@@ -3841,6 +3849,10 @@ sub get_archive_type
     return undef;
   }
 
+  if(! -r $file) {
+    die "$orig: not readable; you need root privileges.\n";
+  }
+
   do {
     my $t = file_magic $file, $cmd;
 
@@ -4075,6 +4087,9 @@ sub unpack_archive
   if($type eq 'dir') {
     $cmd = "tar -C '$file' -cf - .";
     $type = 'tar';
+  }
+  elsif(! -r $file) {
+    die "$file: not readable; you need root privileges.\n";
   }
 
   for (reverse split /\./, $type) {
