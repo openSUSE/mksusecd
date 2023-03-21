@@ -178,6 +178,7 @@ sub get_initrd_format;
 sub unpack_orig_initrd;
 sub extract_installkeys;
 sub create_cd_ikr;
+sub merge_options;
 sub isolinux_add_option;
 sub grub2_add_option;
 sub yaboot_add_option;
@@ -213,12 +214,14 @@ sub eval_size;
 sub add_linuxrc_option;
 sub wipe_iso;
 sub get_media_style;
+sub get_media_variant;
 sub analyze_products;
 sub check_product;
 sub crypto_cleanup;
 sub run_crypto_disk;
 sub read_ini;
 sub write_ini;
+sub create_efi_image;
 
 my %config;
 my $sudo;
@@ -427,6 +430,8 @@ my $initrd_installkeys;
 my $initrd_format;
 my $rebuild_initrd;
 my $hybrid_part_type;
+my $hybrid_mbr_code;	# mbr code to use for iso hybrid mode
+my $hybrid_grub;	# grub instead of isolinux is used for iso hybrid boot
 my $kernel;
 my $warned;
 my $read_write;
@@ -439,6 +444,7 @@ my $product_db;
 my $repomd_instsys_location;
 my $sign_passwd_option;
 my $media_style = 'suse';
+my $media_variant = 'install';
 
 my $progress_start = 0;
 my $progress_end = 100;
@@ -482,6 +488,9 @@ if($opt_create || $opt_list_repos) {
     s#/*$##;
     next if $_ eq "";
     if(-d) {
+      if(`find $_ -xdev \\! -readable`) {
+        die "Some files in $_ are not readable; you need root privileges.\n";
+      }
       my $d_skel = (<$_/usr/lib/skelcd/*>)[0];
       my $d_tftp = (<$_/usr/share/tftpboot-installation/*>)[0];
       if(-d $d_skel ) {
@@ -505,6 +514,9 @@ if($opt_create || $opt_list_repos) {
         my $d = $tmp->mnt(sprintf("mnt_%04d", $iso_cnt));
         susystem "mount -oro,loop $_ $d";
         push @sources, { dir => $d, real_name => $_, type => 'iso' };
+        if(`find $d -xdev \\! -readable`) {
+          die "Some files in $_ are not readable; you need root privileges.\n";
+        }
       }
       elsif($t =~ /RPM /) {
         $iso_cnt++;
@@ -546,6 +558,7 @@ if($opt_create || $opt_list_repos) {
   }
 
   $media_style = get_media_style \@sources;
+  $media_variant = get_media_variant \@sources;
   analyze_products \@sources;
   build_filelist \@sources;
   $boot = analyze_boot;
@@ -703,7 +716,7 @@ sub usage
 {
   print <<"= = = = = = = =";
 Usage: mksusecd [OPTIONS] [SOURCES]
-Create bootable installation media.
+Create and modify bootable media.
 
 General options:
 
@@ -995,10 +1008,10 @@ sub analyze_boot
       $boot->{$_}{kernel} = "boot/$_/vmrdr.ikr" if -f fname("boot/$_/vmrdr.ikr");
       $boot->{$_}{kernel} = "boot/$_/linux" if -f fname("boot/$_/linux");
 
-      if(-f fname("boot/$_/loader/isolinux.bin")) {
+      if(-f fname("boot/$_/loader/isolinux.bin") && -f fname("boot/$_/loader/isolinux.cfg")) {
         $boot->{$_}{bl}{isolinux} = { base => "boot/$_/loader", file => "isolinux.bin", arch => $_ };
       }
-      if(-f fname("boot/$_/isolinux/isolinux.bin")) {
+      if(-f fname("boot/$_/isolinux/isolinux.bin") && -f fname("boot/$_/isolinux/isolinux.cfg")) {
         $boot->{$_}{bl}{isolinux} = { base => "boot/$_/isolinux", file => "isolinux.bin", arch => $_ };
       }
       if(-f fname("boot/$_/cd.ikr")) {
@@ -1012,6 +1025,14 @@ sub analyze_boot
       }
       if(-f fname("boot/$_/grub2/cd.img")) {
         $boot->{$_}{bl}{grub2} = { base => "boot/$_/grub2", file => "cd.img", arch => $_ };
+      }
+      if(-f fname("boot/$_/loader/eltorito.img")) {
+        $boot->{$_}{bl}{grub2} = { base => "boot/$_/loader", file => "eltorito.img", config => "boot/grub2/grub.cfg", arch => $_ };
+        $boot->{$_}{bl}{efi} = { base => "boot/$_/loader/efiboot.img", arch => $_ };
+        if(-f fname("boot/$_/loader/boot_hybrid.img")) {
+          $hybrid_mbr_code = fname("boot/$_/loader/boot_hybrid.img");
+          $hybrid_grub = 1;
+        }
       }
       if(-f fname("boot/$_/grub2-ieee1275/core.elf")) {
         $boot->{$_}{bl}{grub2} = { base => "boot/$_/grub2-ieee1275", file => "core.elf", arch => $_ };
@@ -1034,7 +1055,7 @@ sub analyze_boot
     }
   }
 
-  if (-d fname("isolinux")) {
+  if (-d fname("isolinux") && -f fname("isolinux/isolinux.bin") &&  -f fname("isolinux/isolinux.cfg")) {
     $_ = "x86_64";
     $boot->{$_} = { base => "isolinux" };
     $boot->{$_}{initrd} = "isolinux/initrd.img" if -f fname("isolinux/initrd.img");
@@ -1209,7 +1230,7 @@ sub copy_file
 
   if(-d $f) {
     $n = "$tmp_new/$_[0]";
-    system "mdir -p '$n'";
+    system "mkdir -p '$n'";
   }
   elsif(-f $f) {
     if($_[0] =~ m#(.+)/([^/]+)#) {
@@ -1281,6 +1302,10 @@ sub prepare_mkisofs
     elsif($opt_efi && $t eq 'efi') {
       $has_efi = 1;
       my $f = fname($_->{$t}{base});
+      if(!$f) {
+        create_efi_image $_->{$t}{base};
+        $f = fname($_->{$t}{base});
+      }
       my $s = -s $f;
       $s = (($s + 2047) >> 11) << 2;
       $s = 1 if $s == 0 || $s > 0xffff;
@@ -1399,6 +1424,8 @@ sub run_mkisofs
     # printf STDERR "ret = $?\n";
     $ok = 0 if $?;
   }
+
+  $ok = 0 if $log =~ /mkisofs: Permission denied/;
 
   print $log if $opt_verbose >= 3 || !$ok;
 
@@ -1648,6 +1675,8 @@ sub run_isohybrid
   $opt .= sprintf(" --type 0x%x", $part_type) if $part_type;
   $opt .= " --offset $mkisofs->{partition_start}" if $mkisofs->{partition_start};
   $opt .= " --size $image_size" if $image_size;
+  $opt .= " --mbr-file $hybrid_mbr_code" if $hybrid_mbr_code;
+  $opt .= " --grub" if $hybrid_grub;
 
   my $cmd = "$LIBEXECDIR/mksusecd/isohybrid $opt '$iso_file'";
 
@@ -2196,6 +2225,8 @@ sub create_initrd
   $compr = "gzip --quiet -9c" if $initrd_format eq "gz";
   $compr = "zstd --quiet -c -T0" if $initrd_format eq "zst";
 
+  chmod 0755, $tmp_dir;
+
   system "( cd $tmp_dir; find . | cpio --quiet -o -H newc --owner 0:0 | $compr ) >> $tmp_initrd";
 
   # system "ls -lR $tmp_dir";
@@ -2548,7 +2579,7 @@ sub create_cd_ikr
   if(open my $s, fname($ins)) {
     while(<$s>) {
       next if /^\s*\*/;
-      push @layout, { file => fname("$src/$1"), ofs => oct($2) } if /^\s*(\S+)\s+(\S+)/;
+      push @layout, { name => "$src/$1", file => fname("$src/$1"), ofs => oct($2) } if /^\s*(\S+)\s+(\S+)/;
     }
     close $s;
   }
@@ -2577,7 +2608,7 @@ sub create_cd_ikr
         # print "$fname: $_->{ofs} ", length($buf), "\n";
       }
       else {
-        die "$_->{file}: $!\n";
+        die "$_->{name}: $!\n";
       }
     }
 
@@ -2590,6 +2621,64 @@ sub create_cd_ikr
 
     close $d;
   }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# merge_options(options, new_options)
+#
+# Update boot options with new_options and return updated option string.
+#
+sub merge_options
+{
+  my $opts = $_[0];
+  my $new_opts = $_[1];
+
+  # avoid tricky stuff...
+  if($opts =~ /"/ || $new_opts =~ /"/) {
+    $opts .= " $new_opts";
+  }
+  else {
+    my @opts;
+    my %new_opts;
+    my @new_opts_order;
+    for my $n (split " ", $new_opts) {
+      if($n =~ /(.*?)=(.*)/) {
+        push @new_opts_order, $1;
+        $new_opts{$1} = $2;
+      }
+      else {
+        push @new_opts_order, $n;
+        $new_opts{$n} = undef;
+      }
+    }
+
+    for my $opt (split " ", $opts) {
+      my $k = $opt;
+      $k =~ s/=.*//;
+      if(exists $new_opts{$k}) {
+        $opt = $k;
+        $opt .= "=$new_opts{$k}" if defined $new_opts{$k};
+        delete $new_opts{$k};
+      }
+      push @opts, $opt;
+    }
+
+    for my $opt (@new_opts_order) {
+      my $k = $opt;
+      if(exists $new_opts{$opt}) {
+        $opt .= "=$new_opts{$opt}" if defined $new_opts{$opt};
+        delete $new_opts{$k};
+        push @opts, $opt;
+      }
+    }
+
+    $opts = join ' ', @opts;
+  }
+
+  print "boot options update:\n  \"$_[0]\"\n+ \"$_[1]\"\n= \"$opts\"\n" if $opt_verbose >= 2;
+
+  return $opts;
 }
 
 
@@ -2655,7 +2744,7 @@ sub isolinux_add_option
     }
     else {
       if($b) {
-        @f = map { chomp; $_ .= " $b" if /^\s*append\s.*initrd=/; "$_\n" } @f;
+        @f = map { chomp; $_ = "$1 " . merge_options($2, $b) if /^(\s*append\s.*initrd=\S+)\s(.*)/; "$_\n" } @f;
       }
     }
 
@@ -2680,6 +2769,8 @@ sub grub2_add_option
   if(open my $f, $n) {
     my @f = <$f>;
     close $f;
+
+    print "updating grub2 config file: $n\n" if $opt_verbose >= 2;
 
     # if we should add a new entry, base it loosely on the 'Installation' entry
     if($opt_new_boot_entry) {
@@ -2707,7 +2798,7 @@ sub grub2_add_option
     }
     else {
       if($b) {
-        @f = map { chomp; $_ .= " $b" if /^\s*linux(efi)?\s/; "$_\n" } @f;
+        @f = map { chomp; $_ = "$1 " . merge_options($3, $b) if /^(\s*\$?linux(efi)?)\s(.*)/; "$_\n" } @f;
       }
     }
 
@@ -2806,7 +2897,7 @@ sub update_boot_options
       isolinux_add_option $n, $opt_boot_options, $m;
     }
     if($boot->{$b}{bl}{grub2}) {
-      my $n = copy_file "$boot->{$b}{bl}{grub2}{base}/grub.cfg";
+      my $n = copy_file $boot->{$b}{bl}{grub2}{config} || copy_file "$boot->{$b}{bl}{grub2}{base}/grub.cfg";
       grub2_add_option $n, $opt_boot_options;
     }
     if($boot->{$b}{bl}{yaboot}) {
@@ -3071,6 +3162,16 @@ sub set_mkisofs_metadata
 
   my $vol_id_from_config;
 
+  if(open my $f, "<", fname("boot/grub2/grub.cfg")) {
+    while(<$f>) {
+      if(/\sroot=live:CDLABEL=(\S+)/) {
+        $vol_id_from_config = trim_volume_id $1;
+        last;
+      }
+    }
+    close $f;
+  }
+
   if(open my $f, "<", fname("isolinux/isolinux.cfg")) {
     while(<$f>) {
       if(/append .* inst.stage2=hd:LABEL=(\S+)/) {
@@ -3158,7 +3259,7 @@ sub add_to_content_file
 #
 sub update_content_or_checksums
 {
-  return 0 if $media_style eq 'rh';
+  return 0 if $media_style eq 'rh' || $media_variant eq 'live';
   return $has_content ? update_content : update_checksums;
 }
 
@@ -3748,6 +3849,10 @@ sub get_archive_type
     return undef;
   }
 
+  if(! -r $file) {
+    die "$orig: not readable; you need root privileges.\n";
+  }
+
   do {
     my $t = file_magic $file, $cmd;
 
@@ -3982,6 +4087,9 @@ sub unpack_archive
   if($type eq 'dir') {
     $cmd = "tar -C '$file' -cf - .";
     $type = 'tar';
+  }
+  elsif(! -r $file) {
+    die "$file: not readable; you need root privileges.\n";
   }
 
   for (reverse split /\./, $type) {
@@ -4751,7 +4859,7 @@ sub wipe_iso
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-# set_media_style(sources)
+# get_media_style(sources)
 #
 # - sources: array_ref containing a list of directories
 #
@@ -4779,6 +4887,31 @@ sub get_media_style
   }
 
   return $style;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# get_media_variant(sources)
+#
+# - sources: array_ref containing a list of directories
+#
+# Look at sources and determine media variant (install vs. live).
+#
+# Assume a Live medium if there's an '/LiveOS' dir.
+#
+sub get_media_variant
+{
+  my $src = $_[0];
+  my $variant = 'install';
+
+  for my $s (@$src) {
+    if(-d "$s->{dir}/LiveOS") {
+      $variant = 'live';
+      last;
+    }
+  }
+
+  return $variant;
 }
 
 
@@ -4861,7 +4994,7 @@ sub analyze_products
 
   exit 0 if $opt_list_repos;
 
-  return if $media_style eq 'rh';
+  return if $media_style eq 'rh' || $media_variant eq 'live';
 
   # don't merge repos if the user doesn't want to
   return if !$opt_merge_repos;
@@ -5517,4 +5650,33 @@ sub write_ini
     }
     close $f;
   }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# create_efi_image(file)
+#
+# - file: image file name
+#
+# Create FAT image of sufficient size and copy 'EFI' directory into it.
+#
+sub create_efi_image
+{
+  my $file = new_file($_[0]);
+
+  my $efi_dir = fname "EFI";
+
+  return if ! $efi_dir;
+
+  # efi image size in 512 byte blocks; giving one extra MiB free space
+  my $efi_size = ((split "", `du --apparent-size -x -B 1M -s $efi_dir`)[0] + 1) << 11;
+
+  # create FAT fs
+  open my $fh, ">", $file;
+  close $fh;
+  truncate $file, $efi_size << 9;
+  system "mformat -i '$file' -s 32 -h 64 -c 1 -d 1 -v 'EFIBOOT' ::";
+
+  # copy files
+  system "mcopy -i '$file' -s -D o $efi_dir ::";
 }
