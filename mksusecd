@@ -250,6 +250,7 @@ my $opt_vendor;
 my $opt_preparer;
 my $opt_application;
 my $opt_volume;
+my $opt_volume1;
 my $opt_no_docs = 1;
 my $opt_loader;
 my $opt_sign = 1;
@@ -339,6 +340,7 @@ GetOptions(
   'defaultrepo=s'    => \$opt_defaultrepo,
   'instsys-in-repo!' => \$opt_instsys_in_repo,
   'volume=s'         => \$opt_volume,
+  'volume1=s'        => \$opt_volume1,
   'vendor=s'         => \$opt_vendor,
   'preparer=s'       => \$opt_preparer,
   'application=s'    => \$opt_application,
@@ -781,6 +783,8 @@ ISO file system related options:
       --vendor VENDOR_ID        Set ISO publisher id to VENDOR_ID.
       --preparer PREPARER_ID    Set ISO data preparer id to PREPARER_ID.
       --application APP_ID      Set ISO application id to APP_ID.
+      --volume1 VOLUME_ID       Specify ISO volume id of the entire image - in case it should differ
+                                from the ISO volume id used for the partition.
 
 General image layout related options:
 
@@ -1644,6 +1648,10 @@ sub rerun_mkisofs
   }
 
   $progress_end = 100;
+
+  if($opt_volume1) {
+    $mkisofs->{options} .= " -V '" . substr($opt_volume1, 0, 32) . "'";
+  }
 
   run_mkisofs;
 }
