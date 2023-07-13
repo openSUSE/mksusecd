@@ -189,6 +189,11 @@ Set ISO data preparer id to _PREPARER_ID_.
 *--application*=_APPLICATION_ID_::
 Set ISO application id to _APPLICAION_ID_.
 
+*--volume1*=_VOLUME_ID_::
+Specify ISO volume id of the entire image - in case it should differ
+from the ISO volume id used for the partition. +
+See *Hybrid mode notes* below.
+
 === General image layout related options
 
 *--uefi*::
@@ -381,6 +386,11 @@ holding all data files. When you mount it, you see either an ISO9660 or
 a FAT filesystem. If you need UEFI support this partition becomes
 partition 2 and partition 1 points to the UEFI image. Partition 1 and 2
 don't overlap. In this variant a consistent partition table is written.
+
+Normally the file system of the entire image and the file system of the main partition
+have identical data and meta data. If you need to have separate labels (volume ids) for
+both file system variants you can use the **--volume1** option to set a different label
+to be used for the entire image.
 
 === Signing notes
 
