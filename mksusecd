@@ -521,6 +521,12 @@ if($opt_create || $opt_list_repos) {
         if(`find $d -xdev \\! -readable`) {
           die "Some files in $_ are not readable; you need root privileges.\n";
         }
+        if($iso_cnt == 1 && $t =~ /GPT partition table/) {
+          if(!defined $opt_hybrid_gpt && !defined $opt_hybrid_mbr) {
+            $opt_hybrid = 1;
+            $opt_hybrid_gpt = 1;
+          }
+        }
       }
       elsif($t =~ /RPM /) {
         $iso_cnt++;
