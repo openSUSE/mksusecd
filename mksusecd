@@ -172,6 +172,8 @@ sub fat_data_start;
 sub create_initrd;
 sub add_instsys_rh;
 sub add_instsys_suse;
+sub add_instsys_live;
+sub prepare_new_instsys_files;
 sub get_kernel_initrd;
 sub update_kernel_initrd;
 sub get_initrd_format;
@@ -1064,10 +1066,28 @@ sub analyze_boot
     $boot->{$_} = { base => "isolinux" };
     $boot->{$_}{initrd} = "isolinux/initrd.img" if -f fname("isolinux/initrd.img");
     $boot->{$_}{kernel} = "isolinux/vmlinuz" if -f fname("isolinux/vmlinuz");
+
+    # copy of original initrd; keep in sync on final image
+    $boot->{$_}{initrd_alt} = "images/pxeboot/initrd.img" if -f fname("images/pxeboot/initrd.img");
+    $boot->{$_}{kernel_alt} = "images/pxeboot/vmlinuz" if -f fname("images/pxeboot/vmlinuz");
+
     $boot->{$_}{bl}{isolinux} = { base => "isolinux", file => "isolinux.bin", arch => $_ };
     if(-f fname("images/efiboot.img")) {
       $boot->{$_}{bl}{efi} = { base => "images/efiboot.img", arch => $_ };
     }
+  }
+
+  if(-f fname("images/pxeboot/initrd.img") && -d fname("boot/grub2/i386-pc") && -f fname("images/eltorito.img")) {
+    $_ = "x86_64";
+    $boot->{$_} = { base => "images" };
+    $boot->{$_}{bl}{grub2} = { base => "images", file => "eltorito.img", config => "boot/grub2/grub.cfg", arch => $_ };
+    if(-f fname("boot/grub2/i386-pc/boot_hybrid.img")) {
+      $hybrid_mbr_code = fname("boot/grub2/i386-pc/boot_hybrid.img");
+      $hybrid_grub = 1;
+    }
+    $boot->{$_}{bl}{efi} = { base => "images/efiboot.img", arch => $_ };
+    $boot->{$_}{initrd} = "images/pxeboot/initrd.img" if -f fname("images/pxeboot/initrd.img");
+    $boot->{$_}{kernel} = "images/pxeboot/vmlinuz" if -f fname("images/pxeboot/vmlinuz");
   }
 
   # sanitize; kiwi creates stray directories
@@ -1078,6 +1098,8 @@ sub analyze_boot
   if(-d fname("EFI/BOOT")) {
     $boot->{efi} = { base => "EFI/BOOT" };
   }
+
+  print Dumper $boot if $opt_verbose >= 2;
 
   return $boot;
 }
@@ -2265,29 +2287,24 @@ sub add_instsys_suse
     $instsys_location = "$1/root";
     $instsys = copy_file $instsys_location;
 
-    die "no inst-sys on media found (looking for $instsys_location)\n" if !$instsys;
-  }
+    if(!$instsys) {
+      my $live_image = "LiveOS/squashfs.img";
+      my $live_fname = fname $live_image;
 
-  my $tmp_dir = $tmp->dir();
+      if($live_fname) {
+        add_instsys_live $live_image;
+        return;
+      }
 
-  for my $i (@opt_instsys) {
-    my $type = get_archive_type $i;
-
-    if($type) {
-      unpack_archive $type, $i, $tmp_dir;
-    }
-    else {
-      print STDERR "Warning: ignoring instsys part $i\n";
+      die "no inst-sys on media found (looking for $instsys_location)\n";
     }
   }
 
-  if($opt_no_docs) {
-    system "rm -rf $tmp_dir/usr/share/{doc,info,man}";
-    rmdir "$tmp_dir/usr/share";
-    rmdir "$tmp_dir/usr";
-  }
+  # FIXME: wrong!
 
-  my $err = system "mksquashfs $tmp_dir $instsys -all-root -no-progress >/dev/null 2>&1";
+  my $new_files = prepare_new_instsys_files;
+
+  my $err = system "mksquashfs $new_files $instsys -all-root -no-progress >/dev/null 2>&1";
   die "mksquashfs failed to append to $instsys_location\n" if $err;
 }
 
@@ -2308,6 +2325,80 @@ sub add_instsys_rh
 
   die "no inst-sys on media found (looking for \"$instsys_location\")\n" if !$instsys_old;
 
+  # Determine whether this is just a squashfs image or an ext4 image
+  # (with name LiveOS/rootfs.img) inside a squashfs image.
+  my $has_liveos;
+  for (`unsquashfs -ls $instsys_old 2>/dev/null`) {
+    $has_liveos = 1, last if m#squashfs-root/LiveOS#;
+  }
+
+  if($has_liveos) {
+    add_instsys_live $instsys_location;
+  }
+  else {
+    my $instsys = copy_file $instsys_location;
+
+    my $new_files = prepare_new_instsys_files;
+
+    # FIXME: wrong!
+
+    my $err = system "mksquashfs $new_files $instsys -all-root -no-progress >/dev/null 2>&1";
+    die "mksquashfs failed to append to $instsys_location\n" if $err;
+  }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# add_instsys_live(image_name)
+#
+# Handle Live image case (both RH and SUSE).
+#
+# image_name: file name (on media); squashfs image containing an (usually ext4) image "LiveOS/rootfs.img"
+#
+# Note: the size of the included file system image (LiveOS/rootfs.img) is not adjusted.
+#
+sub add_instsys_live
+{
+  my $image_location = $_[0];
+
+  my $image_fname = fname $image_location;
+
+  print "Identified Live image: $image_location\n";
+
+  check_root "Sorry, can't update Live root file system; you need root privileges.";
+
+  my $new_files = prepare_new_instsys_files;
+
+  # extract image, add new stuff, and repack image
+  my $image_new = copy_file $image_location;
+
+  my $tmp_live = $tmp->dir();
+  my $err = system "unsquashfs -xattrs-include '^user.' -no-progress -dest $tmp_live/root $image_fname LiveOS/rootfs.img >/dev/null";
+  die "extracting LiveOS/rootfs.img failed\n" if $err;
+
+  chmod 0755, "$tmp_live/root";
+  chmod 0644, "$tmp_live/root/LiveOS/rootfs.img";
+
+  my $tmp_mnt = $tmp->dir();
+  die "\nLiveOS mount failed\n" if susystem "mount -oloop '$tmp_live/root/LiveOS/rootfs.img' $tmp_mnt";
+
+  susystem "sh -c 'tar -C $new_files --owner=0 --group=0 -cf - . | tar -C $tmp_mnt -xpf -'";
+  susystem "umount $tmp_mnt";
+
+  my $err = system "mksquashfs $tmp_live/root $image_new -all-root -noappend -no-progress >/dev/null 2>&1";
+  die "mksquashfs failed to rebuild $image_location\n" if $err;
+
+  chmod 0644, $image_new;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# prepare_new_instsys_files()
+#
+# Unpack all to-be-added instsys parts into a single directory and return this directory.
+#
+sub prepare_new_instsys_files
+{
   my $tmp_dir = $tmp->dir();
 
   for my $i (@opt_instsys) {
@@ -2327,33 +2418,7 @@ sub add_instsys_rh
     rmdir "$tmp_dir/usr";
   }
 
-  # Determine whether this is just a squashfs image or an ext4 image
-  # (with name LiveOS/rootfs.img) inside a squashfs image.
-  my $has_liveos;
-  for (`unsquashfs -ls $instsys_old 2>/dev/null`) {
-    $has_liveos = 1, last if m#squashfs-root/LiveOS#;
-  }
-
-  my $instsys = copy_file $instsys_location;
-
-  if($has_liveos) {
-    my $tmp_live = $tmp->dir();
-    my $err = system "unsquashfs -no-progress -dest $tmp_live/root $instsys_old LiveOS/rootfs.img >/dev/null 2>&1";
-    die "extracting LiveOS/rootfs.img failed\n" if $err;
-
-    my $tmp_mnt = $tmp->dir();
-    die "\nLiveOS mount failed\n" if susystem "mount -oloop '$tmp_live/root/LiveOS/rootfs.img' $tmp_mnt";
-
-    susystem "sh -c 'tar -C $tmp_dir --owner=0 --group=0 -cf - . | tar -C $tmp_mnt -xpf -'";
-    susystem "umount $tmp_mnt";
-
-    my $err = system "mksquashfs $tmp_live/root $instsys -all-root -noappend -no-progress >/dev/null 2>&1";
-    die "mksquashfs failed to rebuild $instsys_location\n" if $err;
-  }
-  else {
-    my $err = system "mksquashfs $tmp_dir $instsys -all-root -no-progress >/dev/null 2>&1";
-    die "mksquashfs failed to append to $instsys_location\n" if $err;
-  }
+  return $tmp_dir;
 }
 
 
@@ -2370,7 +2435,11 @@ sub get_kernel_initrd
   for my $b (sort keys %$boot) {
     next if $opt_arch && $opt_arch ne $_;
     if($boot->{$b}{initrd} && $boot->{$b}{kernel}) {
-      $x = { initrd => $boot->{$b}{initrd}, kernel => $boot->{$b}{kernel}} if !$x;
+      if(!$x) {
+        $x = { initrd => $boot->{$b}{initrd}, kernel => $boot->{$b}{kernel}};
+        $x->{initrd_alt} = $boot->{$b}{initrd_alt} if $boot->{$b}{initrd_alt};
+        $x->{kernel_alt} = $boot->{$b}{kernel_alt} if $boot->{$b}{kernel_alt};
+      }
       $cnt++;
     }
   }
@@ -2439,6 +2508,17 @@ sub update_kernel_initrd
     delete $x->{initrd_ext};
   }
 
+  if($x->{initrd_alt}) {
+    my $i_copy = copy_file $x->{initrd_alt};
+    my $i_orig = copy_file $x->{initrd};
+    if(-f $i_copy && -f $i_orig) {
+      unlink $i_copy;
+      if(!link $i_orig, $i_copy) {
+        die "link: $i_orig -> $i_copy: $!\n";
+      }
+    }
+  }
+
   if($add_kernel) {
     copy_file $x->{kernel};
 
@@ -2458,6 +2538,17 @@ sub update_kernel_initrd
   }
   else {
     delete $x->{kernel_ext};
+  }
+
+  if($x->{kernel_alt}) {
+    my $k_copy = copy_file $x->{kernel_alt};
+    my $k_orig = copy_file $x->{kernel};
+    if(-f $k_copy && -f $k_orig) {
+      unlink $k_copy;
+      if(!link $k_orig, $k_copy) {
+        die "link: $k_orig -> $k_copy: $!\n";
+      }
+    }
   }
 
   $kernel->{current} = $x;
@@ -5677,7 +5768,7 @@ sub create_efi_image
   return if ! $efi_dir;
 
   # efi image size in 512 byte blocks; giving one extra MiB free space
-  my $efi_size = ((split "", `du --apparent-size -x -B 1M -s $efi_dir`)[0] + 1) << 11;
+  my $efi_size = ((split " ", `du --apparent-size -x -B 1M -s $efi_dir`)[0] + 1) << 11;
 
   # create FAT fs
   open my $fh, ">", $file;
