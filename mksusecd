@@ -135,7 +135,8 @@ our $VERSION = "0.0";
 our $LIBEXECDIR = "/usr/lib";
 
 my @boot_archs = qw ( x86_64 i386 s390x s390 ia64 aarch64 ppc ppc64 ppc64le );
-my $magic_id = "7984fc91-a43f-4e45-bf27-6d3aa08b24cf";
+my $magic_id = "6803f54d-f1f0-4d84-8917-96f9c3c669ab";
+my $magic_sig_id = "7984fc91-a43f-4e45-bf27-6d3aa08b24cf";
 
 # valid kernel module extensions
 my $kext_regexp = '\.ko(?:\.xz|\.gz|\.zst)?';
@@ -285,7 +286,10 @@ my $opt_crypto_title;
 my $opt_crypto_top_dir;
 my $opt_instsys_in_repo = 1;
 my $opt_create_repo;
+my $opt_signature_file;
 
+
+Getopt::Long::Configure("gnu_compat");
 
 GetOptions(
   'create|c=s'       => sub { $opt_create = 1; $opt_dst = $_[1] },
@@ -307,6 +311,7 @@ GetOptions(
   'sign-key=s'       => \$opt_sign_key,
   'sign-key-id=s'    => \$opt_sign_key_id,
   'sign-pass-file=s' => \$opt_sign_pass_file,
+  'signature-file=s' => \$opt_signature_file,
   'gpt'              => sub { $opt_hybrid = 1; $opt_hybrid_gpt = 1 },
   'mbr'              => sub { $opt_hybrid = 1; $opt_hybrid_mbr = 1 },
   'hybrid'           => \$opt_hybrid,
@@ -449,6 +454,7 @@ my $repomd_instsys_location;
 my $sign_passwd_option;
 my $media_style = 'suse';
 my $media_variant = 'install';
+my $detected_signature_file;
 
 my $progress_start = 0;
 my $progress_end = 100;
@@ -464,7 +470,7 @@ if(defined $opt_size) {
   die "$opt_size: invalid size\n" unless $image_size;
 }
 
-if ($opt_sign_pass_file) {
+if($opt_sign_pass_file) {
   if ($opt_sign_key || $opt_sign_key_id) {
     if (-e $opt_sign_pass_file) {
       $sign_passwd_option = "--pinentry-mode loopback --passphrase-file $opt_sign_pass_file"
@@ -573,6 +579,20 @@ if($opt_create || $opt_list_repos) {
   build_filelist \@sources;
   $boot = analyze_boot;
   get_initrd_format;
+
+  # note: analyze_products may set $detected_signature_file
+  if(!defined $opt_signature_file) {
+    $opt_signature_file = $detected_signature_file;
+    $opt_signature_file = ".signature" if !defined $opt_signature_file;
+  }
+  $opt_signature_file = "glumps" if $opt_signature_file eq "";
+  my $x = copy_or_new_file $opt_signature_file;
+
+  # delete competing signature file, if any
+  if(defined $detected_signature_file && $detected_signature_file ne $opt_signature_file) {
+    my $sf = fname $detected_signature_file;
+    push @{$mkisofs->{exclude}}, $sf if $sf;
+  }
 
   # assume repomd layout if 'content' file is missing
   $has_content = 1 if fname "content";
@@ -757,6 +777,7 @@ Media integrity related options:
       --no-digest               Don't embed any digest to verify ISO integrity.
       --sign-image              Embed signature for entire image.
       --no-sign-image           Don't embed signature for entire image. (default)
+      --signature-file FILE     Store embedded signature in FILE. (default: /.signature)
       --sign                    Re-sign '/CHECKSUMS' if it has changed (default).
       --no-sign                 Don't re-sign '/CHECKSUMS'.
       --sign-key KEY_FILE       Use this key file instead of generating a transient key.
@@ -1361,16 +1382,26 @@ sub prepare_mkisofs
     }
   }
 
-  if($two_runs) {
-    if(open my $fh, ">$tmp_new/glump") {
-      print $fh "$magic_id\n";
-      close $fh;
-    }
+  my $sf = copy_or_new_file "glump";
 
-    push @{$mkisofs->{sort}}, "$tmp_new/glump 1000000";
-
-    $mkisofs->{options} .= " -hide glump -hide-joliet glump";
+  if(open my $fh, ">", $sf) {
+    print $fh $magic_id;
+    close $fh;
   }
+
+  push @{$mkisofs->{sort}}, "$sf 1000000";
+
+  my $sf = fname $opt_signature_file;
+
+  if(open my $fh, ">", $sf) {
+    print $fh $magic_sig_id, "\x00" x (0x800 - length $magic_sig_id);
+    close $fh;
+  }
+
+  push @{$mkisofs->{sort}}, "$sf 999999";
+
+  # hide name if it is "glump" or 'glumps'
+  $mkisofs->{options} .= " -hide glump -hide-joliet glump -hide glumps -hide-joliet glumps";
 
   if($mkisofs->{sort}) {
     $mkisofs->{options} .= " -sort '$tmp_sort'";
@@ -1959,11 +1990,14 @@ sub meta_iso
   my $buf;
 
   die "$iso_file: $!\n" unless open $iso_fh, "<", $iso_file;
-  open my $fh, ">", "$tmp_new/glump" or die "$tmp_new/glump: $?\n";
+
+  my $sf = fname "glump";
+
+  open my $fh, ">", "$sf" or die "$sf: $?\n";
 
   for (my $i = 0; $i < $blocks; $i++) {
     die "$iso_file: read error\n" unless sysread($iso_fh, $buf, 2048) == 2048;
-    die "$tmp_new/glump: write error\n" unless syswrite($fh, $buf, 2048) == 2048;
+    die "$sf: write error\n" unless syswrite($fh, $buf, 2048) == 2048;
   }
 
   close $fh;
@@ -2154,7 +2188,9 @@ sub meta_fat
 
   # now copy the fat
 
-  open my $fh, ">", "$tmp_new/glump";
+  my $sf = fname "glump";
+
+  open my $fh, ">", $sf;
 
   seek $fh, $align << 9, 0;
 
@@ -3038,7 +3074,7 @@ sub update_boot_options
 #
 sub prepare_normal
 {
-  # cleaning up KIWI isos a bit
+  # cleaning up bad isos a bit
   for ( "glump" ) {
     my $f = fname($_);
     push @{$mkisofs->{exclude}}, $f if $f;
@@ -5044,6 +5080,22 @@ sub analyze_products
   my $src_idx = 0;
 
   for my $s (@$src) {
+    # check for signature file
+    for my $f (glob "$s->{dir}/.* $s->{dir}/*") {
+      if(-f $f) {
+        if(open my $fd, $f) {
+          my $buf;
+          sysread $fd, $buf, length $magic_sig_id;
+          close $fd;
+          if($buf eq $magic_sig_id) {
+            $f = substr $f, length "$s->{dir}/";
+            print "existing signature file detected: $f\n" if $opt_verbose >= 1;
+            $detected_signature_file = $f if !defined $detected_signature_file;
+          }
+        }
+      }
+    }
+
     # read top-level products file
     $_ = "$s->{dir}/media.1/products";
     if($media_style eq 'suse' && open my $f, $_) {

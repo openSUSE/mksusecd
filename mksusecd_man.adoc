@@ -86,10 +86,15 @@ Don't embed any digest to verify ISO integrity.
 
 *--sign-image*::
 Embed signature for entire image. +
-See *Signing notes* below.
+See *Image signing notes* below.
 
 *--no-sign-image*::
-Don't embed signature for entire image. (default)
+Don't embed signature for entire image. (default) +
+See *Image signing notes* below.
+
+*--signature-file*=FILE::
+Store embedded signature in FILE (default: /.signature). +
+See *Image signing notes* below.
 
 *--sign*::
 Re-sign '/CHECKSUMS' if it has changed.
@@ -421,14 +426,24 @@ directory of the image and the key is deleted.
 
 The key file is named 'gpg-pubkey-xxxxxxxx-xxxxxxxx.asc'.
 
+=== Image signing notes
+
 mksusecd can also embed a signature of the checksum metadata into the image.
-This can be used by the checkmedia tool to verify the integrity of the
+This can be used by the *checkmedia* tool to verify the integrity of the
 image.
+
+The signature is stored in a special file that can be set with the *--signature-file*
+option. The default is '/.signature'. If you set the file name to '' (empty string)
+the file is still created but not visible (the default on many SUSE installation media).
+
+You can use *tagmedia* to display the embedded meta data.
 
 The details of this embedding are described in the checkmedia documentation at +
 https://raw.githubusercontent.com/openSUSE/checkmedia/master/README.adoc
 
-Note that this is not the default and you have to explicitly request it with *--sign-image*.
+Note that this special signature file is always prepared. But actually signing
+the image is not the default and you have to explicitly request it with *--sign-image*.
+You can also add a signature later using *tagmedia*.
 
 === Add-on notes
 
