@@ -602,14 +602,23 @@ mksusecd --create foo.iso /foo_dir
 # create foo.iso from /foo_dir, no hybrid mode
 mksusecd --create foo.iso --no-hybrid /foo_dir
 
-# create foo.iso from old.iso and add files to the initrd
-mksusecd --create foo.iso --initrd /dir_with_new_initrd_stuff --initrd foo.rpm old.iso
-
 # create foo.iso from old.iso and add some boot option
 mksusecd --create foo.iso --boot 'debug=1' old.iso
+
+# create foo.iso from old.iso and add content of directory foo_bar to the initrd
+mksusecd --create foo.iso --initrd foo_bar old.iso
+
+# create foo.iso from old.iso and add package bar to the initrd
+mksusecd --create foo.iso --initrd bar.rpm old.iso
+
+# create foo.iso from old.iso and add package bar to rescue system
+mksusecd --create foo.iso --rescue bar.rpm old.iso
+
+# create foo.iso from live.iso and add package bar to Live system
+mksusecd --create foo.iso --instsys bar.rpm live.iso
 ----
 
-Find more usage examples here: https://github.com/openSUSE/mksusecd/blob/master/HOWTO.md.
+Find more usage examples here: https://github.com/openSUSE/mksusecd/blob/master/HOWTO.md
 
 
 == See Also
