@@ -1198,11 +1198,6 @@ main(int argc, char *argv[])
         printf("imgsize: %zu, padding: %d\n", (size_t)iso_filesize, padding);
 
     c = (isostat.st_size + padding) / cylsize;
-    if (c > 1024)
-    {
-        warnx("Warning: more than 1024 cylinders: %d", c);
-        warnx("Not all BIOSes will be able to boot this device");
-    }
 
     /* 512 byte header, 128 entries of 128 bytes */
     orig_gpt_size = gpt_size = 512 + (128 * 128);

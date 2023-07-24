@@ -86,10 +86,15 @@ Don't embed any digest to verify ISO integrity.
 
 *--sign-image*::
 Embed signature for entire image. +
-See *Signing notes* below.
+See *Image signing notes* below.
 
 *--no-sign-image*::
-Don't embed signature for entire image. (default)
+Don't embed signature for entire image. (default) +
+See *Image signing notes* below.
+
+*--signature-file*=FILE::
+Store embedded signature in FILE (default: /.signature). +
+See *Image signing notes* below.
 
 *--sign*::
 Re-sign '/CHECKSUMS' if it has changed.
@@ -123,7 +128,10 @@ Rebuild the entire initrd instead of appending changes. +
 This makes the initrd smaller but requires to run mksusecd with root permissions.
 
 *--instsys*=_DIR_|_RPM_::
-Add content of _DIR_ or _RPM_ to installation system (can be repeated).
+Add content of _DIR_ or _RPM_ to installation system or root file system for Live media (can be repeated).
+
+*--rescue*=_DIR_|_RPM_::
+Add content of _DIR_ or _RPM_ to rescue system (can be repeated).
 
 *--no-docs*::
 Don't include package documentation files (default).
@@ -421,14 +429,24 @@ directory of the image and the key is deleted.
 
 The key file is named 'gpg-pubkey-xxxxxxxx-xxxxxxxx.asc'.
 
+=== Image signing notes
+
 mksusecd can also embed a signature of the checksum metadata into the image.
-This can be used by the checkmedia tool to verify the integrity of the
+This can be used by the *checkmedia* tool to verify the integrity of the
 image.
+
+The signature is stored in a special file that can be set with the *--signature-file*
+option. The default is '/.signature'. If you set the file name to '' (empty string)
+the file is still created but not visible (the default on many SUSE installation media).
+
+You can use *tagmedia* to display the embedded meta data.
 
 The details of this embedding are described in the checkmedia documentation at +
 https://raw.githubusercontent.com/openSUSE/checkmedia/master/README.adoc
 
-Note that this is not the default and you have to explicitly request it with *--sign-image*.
+Note that this special signature file is always prepared. But actually signing
+the image is not the default and you have to explicitly request it with *--sign-image*.
+You can also add a signature later using *tagmedia*.
 
 === Add-on notes
 
@@ -498,11 +516,11 @@ you need with *--include-repos*.
 
 === Fedora/RHEL notes
 
-Not all options apply to media with Fedora/RHEL layout. The major options that work, are:
+Not all options apply to media with Fedora/RHEL layout. Major options that work, are:
 
 - *--boot* to add boot options
 - *--initrd* to modify the initrd (stage1)
-- *--instsys* to modify the live installation system (stage2)
+- *--instsys* to modify the Live installation system (stage2)
 
 mksusecd will by default create media with a SUSE-like hybrid mode (MBR
 partition table with non-overlapping partitions). You can change that to
@@ -584,14 +602,23 @@ mksusecd --create foo.iso /foo_dir
 # create foo.iso from /foo_dir, no hybrid mode
 mksusecd --create foo.iso --no-hybrid /foo_dir
 
-# create foo.iso from old.iso and add files to the initrd
-mksusecd --create foo.iso --initrd /dir_with_new_initrd_stuff --initrd foo.rpm old.iso
-
 # create foo.iso from old.iso and add some boot option
 mksusecd --create foo.iso --boot 'debug=1' old.iso
+
+# create foo.iso from old.iso and add content of directory foo_bar to the initrd
+mksusecd --create foo.iso --initrd foo_bar old.iso
+
+# create foo.iso from old.iso and add package bar to the initrd
+mksusecd --create foo.iso --initrd bar.rpm old.iso
+
+# create foo.iso from old.iso and add package bar to rescue system
+mksusecd --create foo.iso --rescue bar.rpm old.iso
+
+# create foo.iso from live.iso and add package bar to Live system
+mksusecd --create foo.iso --instsys bar.rpm live.iso
 ----
 
-Find more usage examples here: https://github.com/openSUSE/mksusecd/blob/master/HOWTO.md.
+Find more usage examples here: https://github.com/openSUSE/mksusecd/blob/master/HOWTO.md
 
 
 == See Also

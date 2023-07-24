@@ -135,7 +135,8 @@ our $VERSION = "0.0";
 our $LIBEXECDIR = "/usr/lib";
 
 my @boot_archs = qw ( x86_64 i386 s390x s390 ia64 aarch64 ppc ppc64 ppc64le );
-my $magic_id = "7984fc91-a43f-4e45-bf27-6d3aa08b24cf";
+my $magic_id = "6803f54d-f1f0-4d84-8917-96f9c3c669ab";
+my $magic_sig_id = "7984fc91-a43f-4e45-bf27-6d3aa08b24cf";
 
 # valid kernel module extensions
 my $kext_regexp = '\.ko(?:\.xz|\.gz|\.zst)?';
@@ -172,6 +173,9 @@ sub fat_data_start;
 sub create_initrd;
 sub add_instsys_rh;
 sub add_instsys_suse;
+sub add_instsys_classic;
+sub add_instsys_live;
+sub prepare_new_instsys_files;
 sub get_kernel_initrd;
 sub update_kernel_initrd;
 sub get_initrd_format;
@@ -244,6 +248,7 @@ my $opt_check;
 my $opt_digest = 'sha256';
 my @opt_initrds;
 my @opt_instsys;
+my @opt_rescue;
 my $opt_boot_options;
 my $opt_type;
 my $opt_vendor;
@@ -283,7 +288,10 @@ my $opt_crypto_title;
 my $opt_crypto_top_dir;
 my $opt_instsys_in_repo = 1;
 my $opt_create_repo;
+my $opt_signature_file;
 
+
+Getopt::Long::Configure("gnu_compat");
 
 GetOptions(
   'create|c=s'       => sub { $opt_create = 1; $opt_dst = $_[1] },
@@ -305,6 +313,7 @@ GetOptions(
   'sign-key=s'       => \$opt_sign_key,
   'sign-key-id=s'    => \$opt_sign_key_id,
   'sign-pass-file=s' => \$opt_sign_pass_file,
+  'signature-file=s' => \$opt_signature_file,
   'gpt'              => sub { $opt_hybrid = 1; $opt_hybrid_gpt = 1 },
   'mbr'              => sub { $opt_hybrid = 1; $opt_hybrid_mbr = 1 },
   'hybrid'           => \$opt_hybrid,
@@ -326,6 +335,7 @@ GetOptions(
   'no-mbr-chs'       => \$opt_no_mbr_chs,
   'initrd=s'         => \@opt_initrds,
   'instsys=s'        => \@opt_instsys,
+  'rescue=s'         => \@opt_rescue,
   'rebuild-initrd'   => \$opt_rebuild_initrd,
   'boot=s'           => \$opt_boot_options,
   'grub2'            => sub { $opt_loader = "grub" },
@@ -447,6 +457,7 @@ my $repomd_instsys_location;
 my $sign_passwd_option;
 my $media_style = 'suse';
 my $media_variant = 'install';
+my $detected_signature_file;
 
 my $progress_start = 0;
 my $progress_end = 100;
@@ -462,7 +473,7 @@ if(defined $opt_size) {
   die "$opt_size: invalid size\n" unless $image_size;
 }
 
-if ($opt_sign_pass_file) {
+if($opt_sign_pass_file) {
   if ($opt_sign_key || $opt_sign_key_id) {
     if (-e $opt_sign_pass_file) {
       $sign_passwd_option = "--pinentry-mode loopback --passphrase-file $opt_sign_pass_file"
@@ -491,7 +502,7 @@ if($opt_create || $opt_list_repos) {
     next if $_ eq "";
     if(-d) {
       if(`find $_ -xdev \\! -readable`) {
-        die "Some files in $_ are not readable; you need root privileges.\n";
+        die "Some files in $_ are not user-readable; you need root privileges.\n";
       }
       my $d_skel = (<$_/usr/lib/skelcd/*>)[0];
       my $d_tftp = (<$_/usr/share/tftpboot-installation/*>)[0];
@@ -517,7 +528,13 @@ if($opt_create || $opt_list_repos) {
         susystem "mount -oro,loop $_ $d";
         push @sources, { dir => $d, real_name => $_, type => 'iso' };
         if(`find $d -xdev \\! -readable`) {
-          die "Some files in $_ are not readable; you need root privileges.\n";
+          die "Some files in $_ are not user-readable; you need root privileges.\n";
+        }
+        if($iso_cnt == 1 && $t =~ /GPT partition table/) {
+          if(!defined $opt_hybrid_gpt && !defined $opt_hybrid_mbr) {
+            $opt_hybrid = 1;
+            $opt_hybrid_gpt = 1;
+          }
         }
       }
       elsif($t =~ /RPM /) {
@@ -566,6 +583,20 @@ if($opt_create || $opt_list_repos) {
   $boot = analyze_boot;
   get_initrd_format;
 
+  # note: analyze_products may set $detected_signature_file
+  if(!defined $opt_signature_file) {
+    $opt_signature_file = $detected_signature_file;
+    $opt_signature_file = ".signature" if !defined $opt_signature_file;
+  }
+  $opt_signature_file = "glumps" if $opt_signature_file eq "";
+  my $x = copy_or_new_file $opt_signature_file;
+
+  # delete competing signature file, if any
+  if(defined $detected_signature_file && $detected_signature_file ne $opt_signature_file) {
+    my $sf = fname $detected_signature_file;
+    push @{$mkisofs->{exclude}}, $sf if $sf;
+  }
+
   # assume repomd layout if 'content' file is missing
   $has_content = 1 if fname "content";
   if(!$has_content) {
@@ -601,7 +632,7 @@ if($opt_create || $opt_list_repos) {
 
   if($opt_sign && (
       # we are going to change '/content' resp. '/CHECKSUMS' in one way or another
-      @opt_initrds || @opt_instsys || @opt_kernel_rpms || $opt_boot_options ||
+      @opt_initrds || @opt_instsys || @opt_rescue || @opt_kernel_rpms || $opt_boot_options ||
       $opt_new_boot_entry || $opt_include_repos || update_content_or_checksums
     )
   ) {
@@ -749,6 +780,7 @@ Media integrity related options:
       --no-digest               Don't embed any digest to verify ISO integrity.
       --sign-image              Embed signature for entire image.
       --no-sign-image           Don't embed signature for entire image. (default)
+      --signature-file FILE     Store embedded signature in FILE. (default: /.signature)
       --sign                    Re-sign '/CHECKSUMS' if it has changed (default).
       --no-sign                 Don't re-sign '/CHECKSUMS'.
       --sign-key KEY_FILE       Use this key file instead of generating a transient key.
@@ -759,7 +791,9 @@ Initrd/instsys update related options:
 
       --initrd DIR|RPM|DUD      Add content of DIR, RPM, or DUD to initrd (can be repeated).
       --rebuild-initrd          Rebuild the entire initrd instead of appending changes.
-      --instsys DIR|RPM         Add content of DIR or RPM to installation system (can be repeated).
+      --instsys DIR|RPM         Add content of DIR or RPM to installation system or root file
+                                system for Live media (can be repeated).
+      --rescue DIR|RPM          Add content of DIR or RPM to rescue system (can be repeated).
       --no-docs                 Don't include package doc files (default).
       --keep-docs               Include package doc files.
 
@@ -1064,10 +1098,28 @@ sub analyze_boot
     $boot->{$_} = { base => "isolinux" };
     $boot->{$_}{initrd} = "isolinux/initrd.img" if -f fname("isolinux/initrd.img");
     $boot->{$_}{kernel} = "isolinux/vmlinuz" if -f fname("isolinux/vmlinuz");
+
+    # copy of original initrd; keep in sync on final image
+    $boot->{$_}{initrd_alt} = "images/pxeboot/initrd.img" if -f fname("images/pxeboot/initrd.img");
+    $boot->{$_}{kernel_alt} = "images/pxeboot/vmlinuz" if -f fname("images/pxeboot/vmlinuz");
+
     $boot->{$_}{bl}{isolinux} = { base => "isolinux", file => "isolinux.bin", arch => $_ };
     if(-f fname("images/efiboot.img")) {
       $boot->{$_}{bl}{efi} = { base => "images/efiboot.img", arch => $_ };
     }
+  }
+
+  if(-f fname("images/pxeboot/initrd.img") && -d fname("boot/grub2/i386-pc") && -f fname("images/eltorito.img")) {
+    $_ = "x86_64";
+    $boot->{$_} = { base => "images" };
+    $boot->{$_}{bl}{grub2} = { base => "images", file => "eltorito.img", config => "boot/grub2/grub.cfg", arch => $_ };
+    if(-f fname("boot/grub2/i386-pc/boot_hybrid.img")) {
+      $hybrid_mbr_code = fname("boot/grub2/i386-pc/boot_hybrid.img");
+      $hybrid_grub = 1;
+    }
+    $boot->{$_}{bl}{efi} = { base => "images/efiboot.img", arch => $_ };
+    $boot->{$_}{initrd} = "images/pxeboot/initrd.img" if -f fname("images/pxeboot/initrd.img");
+    $boot->{$_}{kernel} = "images/pxeboot/vmlinuz" if -f fname("images/pxeboot/vmlinuz");
   }
 
   # sanitize; kiwi creates stray directories
@@ -1078,6 +1130,8 @@ sub analyze_boot
   if(-d fname("EFI/BOOT")) {
     $boot->{efi} = { base => "EFI/BOOT" };
   }
+
+  print Dumper $boot if $opt_verbose >= 2;
 
   return $boot;
 }
@@ -1333,16 +1387,26 @@ sub prepare_mkisofs
     }
   }
 
-  if($two_runs) {
-    if(open my $fh, ">$tmp_new/glump") {
-      print $fh "$magic_id\n";
-      close $fh;
-    }
+  my $sf = copy_or_new_file "glump";
 
-    push @{$mkisofs->{sort}}, "$tmp_new/glump 1000000";
-
-    $mkisofs->{options} .= " -hide glump -hide-joliet glump";
+  if(open my $fh, ">", $sf) {
+    print $fh $magic_id;
+    close $fh;
   }
+
+  push @{$mkisofs->{sort}}, "$sf 1000000";
+
+  my $sf = fname $opt_signature_file;
+
+  if(open my $fh, ">", $sf) {
+    print $fh $magic_sig_id, "\x00" x (0x800 - length $magic_sig_id);
+    close $fh;
+  }
+
+  push @{$mkisofs->{sort}}, "$sf 999999";
+
+  # hide name if it is "glump" or 'glumps'
+  $mkisofs->{options} .= " -hide glump -hide-joliet glump -hide glumps -hide-joliet glumps";
 
   if($mkisofs->{sort}) {
     $mkisofs->{options} .= " -sort '$tmp_sort'";
@@ -1931,11 +1995,14 @@ sub meta_iso
   my $buf;
 
   die "$iso_file: $!\n" unless open $iso_fh, "<", $iso_file;
-  open my $fh, ">", "$tmp_new/glump" or die "$tmp_new/glump: $?\n";
+
+  my $sf = fname "glump";
+
+  open my $fh, ">", "$sf" or die "$sf: $?\n";
 
   for (my $i = 0; $i < $blocks; $i++) {
     die "$iso_file: read error\n" unless sysread($iso_fh, $buf, 2048) == 2048;
-    die "$tmp_new/glump: write error\n" unless syswrite($fh, $buf, 2048) == 2048;
+    die "$sf: write error\n" unless syswrite($fh, $buf, 2048) == 2048;
   }
 
   close $fh;
@@ -2126,7 +2193,9 @@ sub meta_fat
 
   # now copy the fat
 
-  open my $fh, ">", "$tmp_new/glump";
+  my $sf = fname "glump";
+
+  open my $fh, ">", $sf;
 
   seek $fh, $align << 9, 0;
 
@@ -2252,43 +2321,52 @@ sub create_initrd
 #
 sub add_instsys_suse
 {
-  return if !@opt_instsys;
-
-  my $instsys;
+  return if !@opt_instsys && !@opt_rescue;
 
   my $x = get_kernel_initrd;
   die "oops: no initrd?\n" unless $x;
 
   my $instsys_location;
+  my $instsys_fname;
+  my $rescue_location;
+  my $rescue_fname;
+  my $has_liveos;
 
   if($x->{initrd} =~ m#(boot/[^/]+)/#) {
     $instsys_location = "$1/root";
-    $instsys = copy_file $instsys_location;
+    $rescue_location = "$1/rescue";
 
-    die "no inst-sys on media found (looking for $instsys_location)\n" if !$instsys;
+    $instsys_fname = fname $instsys_location;
+    $rescue_fname = fname $rescue_location;
   }
 
-  my $tmp_dir = $tmp->dir();
+  if(@opt_instsys && !$instsys_fname) {
+    $instsys_location = "LiveOS/squashfs.img";
+    $instsys_fname = fname $instsys_location;
 
-  for my $i (@opt_instsys) {
-    my $type = get_archive_type $i;
+    $has_liveos = 1 if $instsys_fname;
+  }
 
-    if($type) {
-      unpack_archive $type, $i, $tmp_dir;
+  if(@opt_instsys && !$instsys_fname) {
+    die "no root file system on media found\n";
+  }
+
+  if(@opt_rescue && !$rescue_fname) {
+    die "no rescue file system on media found\n";
+  }
+
+  if(@opt_instsys) {
+    if($has_liveos) {
+      add_instsys_live $instsys_location, \@opt_instsys;
     }
     else {
-      print STDERR "Warning: ignoring instsys part $i\n";
+      add_instsys_classic $instsys_location, \@opt_instsys;
     }
   }
 
-  if($opt_no_docs) {
-    system "rm -rf $tmp_dir/usr/share/{doc,info,man}";
-    rmdir "$tmp_dir/usr/share";
-    rmdir "$tmp_dir/usr";
+  if(@opt_rescue) {
+    add_instsys_classic $rescue_location, \@opt_rescue;
   }
-
-  my $err = system "mksquashfs $tmp_dir $instsys -all-root -no-progress >/dev/null 2>&1";
-  die "mksquashfs failed to append to $instsys_location\n" if $err;
 }
 
 
@@ -2304,20 +2382,131 @@ sub add_instsys_rh
   return if !@opt_instsys;
 
   my $instsys_location = "images/install.img";
-  my $instsys_old = fname $instsys_location;
+  my $instsys_fname = fname $instsys_location;
 
-  die "no inst-sys on media found (looking for \"$instsys_location\")\n" if !$instsys_old;
+  die "no root file system on media found\n" if !$instsys_fname;
 
+  # Determine whether this is just a squashfs image or an ext4 image
+  # (with name LiveOS/rootfs.img) inside a squashfs image.
+  my $has_liveos;
+  for (`unsquashfs -ls $instsys_fname 2>/dev/null`) {
+    $has_liveos = 1, last if m#squashfs-root/LiveOS#;
+  }
+
+  if($has_liveos) {
+    add_instsys_live $instsys_location, \@opt_instsys;
+  }
+  else {
+   add_instsys_classic $instsys_location, \@opt_instsys;
+  }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# add_instsys_classic(image_name, file_list)
+#
+# Handle classic case (both RH and SUSE).
+#
+# image_name: file name (on media) of squashfs image containing the root file system.
+# file_list: ref to array with list of files to add.
+#
+sub add_instsys_classic
+{
+  my $image_location = $_[0];
+  my $file_list = $_[1];
+
+  my $image_fname = copy_file $image_location;
+
+  print "Identified root file system: $image_location\n";
+
+  my $new_files = prepare_new_instsys_files $file_list;
+
+  # note: squashfs handling needs root for xattrs
+  my $tmp_root = $tmp->dir();
+  my $err = susystem "unsquashfs -no-progress -dest $tmp_root/root $image_fname >/dev/null";
+  die "extracting root file system failed\n" if $err;
+
+  susystem "sh -c 'tar -C $new_files -cf - . | tar -C $tmp_root/root -xpf -'";
+
+  # mksquashfs expects the image *not* to exist
+  unlink $image_fname or die "$image_fname: $!\n";
+
+  my $err = susystem "mksquashfs $tmp_root/root $image_fname -comp xz -all-root -no-progress >/dev/null";
+
+  # change owner so that files can be garbage collected
+  susystem "chown -R $< $image_fname $tmp_root/root";
+
+  die "mksquashfs failed to append to $image_location\n" if $err;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# add_instsys_live(image_name)
+#
+# Handle Live image case (both RH and SUSE).
+#
+# image_name: file name (on media); squashfs image containing an (usually ext4) image "LiveOS/rootfs.img"
+# file_list: ref to array with list of files to add.
+#
+# Note: the size of the included file system image (LiveOS/rootfs.img) is not adjusted.
+#
+sub add_instsys_live
+{
+  my $image_location = $_[0];
+  my $file_list = $_[1];
+
+  my $image_fname = fname $image_location;
+
+  print "Identified Live system: $image_location\n";
+
+  check_root "Sorry, can't update Live root file system; you need root privileges.";
+
+  my $new_files = prepare_new_instsys_files $file_list;
+
+  # extract image, add new stuff, and repack image
+  my $image_new = copy_file $image_location;
+
+  # note: squashfs handling needs root for xattrs
+  my $tmp_live = $tmp->dir();
+  my $err = susystem "unsquashfs -no-progress -dest $tmp_live/root $image_fname LiveOS/rootfs.img >/dev/null 2>&1";
+  die "extracting LiveOS/rootfs.img failed\n" if $err;
+
+  susystem "chmod 755 $tmp_live/root";
+  susystem "chmod 644 $tmp_live/root/LiveOS/rootfs.img";
+  susystem "chown -R $< $tmp_live/root";
+  susystem "chmod 644 $image_new";
+
+  my $tmp_mnt = $tmp->dir();
+  die "\nLiveOS mount failed\n" if susystem "mount -oloop '$tmp_live/root/LiveOS/rootfs.img' $tmp_mnt";
+
+  susystem "sh -c 'tar -C $new_files --owner=0 --group=0 -cf - . | tar -C $tmp_mnt -xpf -'";
+  susystem "umount $tmp_mnt";
+
+  my $err = susystem "mksquashfs $tmp_live/root $image_new -comp xz -all-root -noappend -no-progress >/dev/null 2>&1";
+  die "mksquashfs failed to rebuild $image_location\n" if $err;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# prepare_new_instsys_files(file_list)
+#
+# Unpack all to-be-added instsys parts into a single directory and return this directory.
+#
+# file_list: ref to array with list of files to add.
+#
+sub prepare_new_instsys_files
+{
+  my $file_list = $_[0];
   my $tmp_dir = $tmp->dir();
 
-  for my $i (@opt_instsys) {
+  for my $i (@$file_list) {
     my $type = get_archive_type $i;
 
     if($type) {
       unpack_archive $type, $i, $tmp_dir;
     }
     else {
-      print STDERR "Warning: ignoring instsys part $i\n";
+      print STDERR "Warning: ignoring root file system part $i\n";
     }
   }
 
@@ -2327,33 +2516,7 @@ sub add_instsys_rh
     rmdir "$tmp_dir/usr";
   }
 
-  # Determine whether this is just a squashfs image or an ext4 image
-  # (with name LiveOS/rootfs.img) inside a squashfs image.
-  my $has_liveos;
-  for (`unsquashfs -ls $instsys_old 2>/dev/null`) {
-    $has_liveos = 1, last if m#squashfs-root/LiveOS#;
-  }
-
-  my $instsys = copy_file $instsys_location;
-
-  if($has_liveos) {
-    my $tmp_live = $tmp->dir();
-    my $err = system "unsquashfs -no-progress -dest $tmp_live/root $instsys_old LiveOS/rootfs.img >/dev/null 2>&1";
-    die "extracting LiveOS/rootfs.img failed\n" if $err;
-
-    my $tmp_mnt = $tmp->dir();
-    die "\nLiveOS mount failed\n" if susystem "mount -oloop '$tmp_live/root/LiveOS/rootfs.img' $tmp_mnt";
-
-    susystem "sh -c 'tar -C $tmp_dir --owner=0 --group=0 -cf - . | tar -C $tmp_mnt -xpf -'";
-    susystem "umount $tmp_mnt";
-
-    my $err = system "mksquashfs $tmp_live/root $instsys -all-root -noappend -no-progress >/dev/null 2>&1";
-    die "mksquashfs failed to rebuild $instsys_location\n" if $err;
-  }
-  else {
-    my $err = system "mksquashfs $tmp_dir $instsys -all-root -no-progress >/dev/null 2>&1";
-    die "mksquashfs failed to append to $instsys_location\n" if $err;
-  }
+  return $tmp_dir;
 }
 
 
@@ -2370,7 +2533,11 @@ sub get_kernel_initrd
   for my $b (sort keys %$boot) {
     next if $opt_arch && $opt_arch ne $_;
     if($boot->{$b}{initrd} && $boot->{$b}{kernel}) {
-      $x = { initrd => $boot->{$b}{initrd}, kernel => $boot->{$b}{kernel}} if !$x;
+      if(!$x) {
+        $x = { initrd => $boot->{$b}{initrd}, kernel => $boot->{$b}{kernel}};
+        $x->{initrd_alt} = $boot->{$b}{initrd_alt} if $boot->{$b}{initrd_alt};
+        $x->{kernel_alt} = $boot->{$b}{kernel_alt} if $boot->{$b}{kernel_alt};
+      }
       $cnt++;
     }
   }
@@ -2439,6 +2606,17 @@ sub update_kernel_initrd
     delete $x->{initrd_ext};
   }
 
+  if($x->{initrd_alt}) {
+    my $i_copy = copy_file $x->{initrd_alt};
+    my $i_orig = copy_file $x->{initrd};
+    if(-f $i_copy && -f $i_orig) {
+      unlink $i_copy;
+      if(!link $i_orig, $i_copy) {
+        die "link: $i_orig -> $i_copy: $!\n";
+      }
+    }
+  }
+
   if($add_kernel) {
     copy_file $x->{kernel};
 
@@ -2458,6 +2636,17 @@ sub update_kernel_initrd
   }
   else {
     delete $x->{kernel_ext};
+  }
+
+  if($x->{kernel_alt}) {
+    my $k_copy = copy_file $x->{kernel_alt};
+    my $k_orig = copy_file $x->{kernel};
+    if(-f $k_copy && -f $k_orig) {
+      unlink $k_copy;
+      if(!link $k_orig, $k_copy) {
+        die "link: $k_orig -> $k_copy: $!\n";
+      }
+    }
   }
 
   $kernel->{current} = $x;
@@ -2941,7 +3130,7 @@ sub update_boot_options
 #
 sub prepare_normal
 {
-  # cleaning up KIWI isos a bit
+  # cleaning up bad isos a bit
   for ( "glump" ) {
     my $f = fname($_);
     push @{$mkisofs->{exclude}}, $f if $f;
@@ -4947,6 +5136,22 @@ sub analyze_products
   my $src_idx = 0;
 
   for my $s (@$src) {
+    # check for signature file
+    for my $f (glob "$s->{dir}/.* $s->{dir}/*") {
+      if(-f $f) {
+        if(open my $fd, $f) {
+          my $buf;
+          sysread $fd, $buf, length $magic_sig_id;
+          close $fd;
+          if($buf eq $magic_sig_id) {
+            $f = substr $f, length "$s->{dir}/";
+            print "existing signature file detected: $f\n" if $opt_verbose >= 1;
+            $detected_signature_file = $f if !defined $detected_signature_file;
+          }
+        }
+      }
+    }
+
     # read top-level products file
     $_ = "$s->{dir}/media.1/products";
     if($media_style eq 'suse' && open my $f, $_) {
@@ -5677,7 +5882,7 @@ sub create_efi_image
   return if ! $efi_dir;
 
   # efi image size in 512 byte blocks; giving one extra MiB free space
-  my $efi_size = ((split "", `du --apparent-size -x -B 1M -s $efi_dir`)[0] + 1) << 11;
+  my $efi_size = ((split " ", `du --apparent-size -x -B 1M -s $efi_dir`)[0] + 1) << 11;
 
   # create FAT fs
   open my $fh, ">", $file;
