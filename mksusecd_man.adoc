@@ -128,7 +128,10 @@ Rebuild the entire initrd instead of appending changes. +
 This makes the initrd smaller but requires to run mksusecd with root permissions.
 
 *--instsys*=_DIR_|_RPM_::
-Add content of _DIR_ or _RPM_ to installation system (can be repeated).
+Add content of _DIR_ or _RPM_ to installation system or root file system for Live media (can be repeated).
+
+*--rescue*=_DIR_|_RPM_::
+Add content of _DIR_ or _RPM_ to rescue system (can be repeated).
 
 *--no-docs*::
 Don't include package documentation files (default).
@@ -513,11 +516,11 @@ you need with *--include-repos*.
 
 === Fedora/RHEL notes
 
-Not all options apply to media with Fedora/RHEL layout. The major options that work, are:
+Not all options apply to media with Fedora/RHEL layout. Major options that work, are:
 
 - *--boot* to add boot options
 - *--initrd* to modify the initrd (stage1)
-- *--instsys* to modify the live installation system (stage2)
+- *--instsys* to modify the Live installation system (stage2)
 
 mksusecd will by default create media with a SUSE-like hybrid mode (MBR
 partition table with non-overlapping partitions). You can change that to

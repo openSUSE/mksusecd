@@ -173,6 +173,7 @@ sub fat_data_start;
 sub create_initrd;
 sub add_instsys_rh;
 sub add_instsys_suse;
+sub add_instsys_classic;
 sub add_instsys_live;
 sub prepare_new_instsys_files;
 sub get_kernel_initrd;
@@ -247,6 +248,7 @@ my $opt_check;
 my $opt_digest = 'sha256';
 my @opt_initrds;
 my @opt_instsys;
+my @opt_rescue;
 my $opt_boot_options;
 my $opt_type;
 my $opt_vendor;
@@ -333,6 +335,7 @@ GetOptions(
   'no-mbr-chs'       => \$opt_no_mbr_chs,
   'initrd=s'         => \@opt_initrds,
   'instsys=s'        => \@opt_instsys,
+  'rescue=s'         => \@opt_rescue,
   'rebuild-initrd'   => \$opt_rebuild_initrd,
   'boot=s'           => \$opt_boot_options,
   'grub2'            => sub { $opt_loader = "grub" },
@@ -499,7 +502,7 @@ if($opt_create || $opt_list_repos) {
     next if $_ eq "";
     if(-d) {
       if(`find $_ -xdev \\! -readable`) {
-        die "Some files in $_ are not readable; you need root privileges.\n";
+        die "Some files in $_ are not user-readable; you need root privileges.\n";
       }
       my $d_skel = (<$_/usr/lib/skelcd/*>)[0];
       my $d_tftp = (<$_/usr/share/tftpboot-installation/*>)[0];
@@ -525,7 +528,7 @@ if($opt_create || $opt_list_repos) {
         susystem "mount -oro,loop $_ $d";
         push @sources, { dir => $d, real_name => $_, type => 'iso' };
         if(`find $d -xdev \\! -readable`) {
-          die "Some files in $_ are not readable; you need root privileges.\n";
+          die "Some files in $_ are not user-readable; you need root privileges.\n";
         }
         if($iso_cnt == 1 && $t =~ /GPT partition table/) {
           if(!defined $opt_hybrid_gpt && !defined $opt_hybrid_mbr) {
@@ -629,7 +632,7 @@ if($opt_create || $opt_list_repos) {
 
   if($opt_sign && (
       # we are going to change '/content' resp. '/CHECKSUMS' in one way or another
-      @opt_initrds || @opt_instsys || @opt_kernel_rpms || $opt_boot_options ||
+      @opt_initrds || @opt_instsys || @opt_rescue || @opt_kernel_rpms || $opt_boot_options ||
       $opt_new_boot_entry || $opt_include_repos || update_content_or_checksums
     )
   ) {
@@ -788,7 +791,9 @@ Initrd/instsys update related options:
 
       --initrd DIR|RPM|DUD      Add content of DIR, RPM, or DUD to initrd (can be repeated).
       --rebuild-initrd          Rebuild the entire initrd instead of appending changes.
-      --instsys DIR|RPM         Add content of DIR or RPM to installation system (can be repeated).
+      --instsys DIR|RPM         Add content of DIR or RPM to installation system or root file
+                                system for Live media (can be repeated).
+      --rescue DIR|RPM          Add content of DIR or RPM to rescue system (can be repeated).
       --no-docs                 Don't include package doc files (default).
       --keep-docs               Include package doc files.
 
@@ -2316,38 +2321,52 @@ sub create_initrd
 #
 sub add_instsys_suse
 {
-  return if !@opt_instsys;
-
-  my $instsys;
+  return if !@opt_instsys && !@opt_rescue;
 
   my $x = get_kernel_initrd;
   die "oops: no initrd?\n" unless $x;
 
   my $instsys_location;
+  my $instsys_fname;
+  my $rescue_location;
+  my $rescue_fname;
+  my $has_liveos;
 
   if($x->{initrd} =~ m#(boot/[^/]+)/#) {
     $instsys_location = "$1/root";
-    $instsys = copy_file $instsys_location;
+    $rescue_location = "$1/rescue";
 
-    if(!$instsys) {
-      my $live_image = "LiveOS/squashfs.img";
-      my $live_fname = fname $live_image;
+    $instsys_fname = fname $instsys_location;
+    $rescue_fname = fname $rescue_location;
+  }
 
-      if($live_fname) {
-        add_instsys_live $live_image;
-        return;
-      }
+  if(@opt_instsys && !$instsys_fname) {
+    $instsys_location = "LiveOS/squashfs.img";
+    $instsys_fname = fname $instsys_location;
 
-      die "no inst-sys on media found (looking for $instsys_location)\n";
+    $has_liveos = 1 if $instsys_fname;
+  }
+
+  if(@opt_instsys && !$instsys_fname) {
+    die "no root file system on media found\n";
+  }
+
+  if(@opt_rescue && !$rescue_fname) {
+    die "no rescue file system on media found\n";
+  }
+
+  if(@opt_instsys) {
+    if($has_liveos) {
+      add_instsys_live $instsys_location, \@opt_instsys;
+    }
+    else {
+      add_instsys_classic $instsys_location, \@opt_instsys;
     }
   }
 
-  # FIXME: wrong!
-
-  my $new_files = prepare_new_instsys_files;
-
-  my $err = system "mksquashfs $new_files $instsys -all-root -no-progress >/dev/null 2>&1";
-  die "mksquashfs failed to append to $instsys_location\n" if $err;
+  if(@opt_rescue) {
+    add_instsys_classic $rescue_location, \@opt_rescue;
+  }
 }
 
 
@@ -2363,30 +2382,61 @@ sub add_instsys_rh
   return if !@opt_instsys;
 
   my $instsys_location = "images/install.img";
-  my $instsys_old = fname $instsys_location;
+  my $instsys_fname = fname $instsys_location;
 
-  die "no inst-sys on media found (looking for \"$instsys_location\")\n" if !$instsys_old;
+  die "no root file system on media found\n" if !$instsys_fname;
 
   # Determine whether this is just a squashfs image or an ext4 image
   # (with name LiveOS/rootfs.img) inside a squashfs image.
   my $has_liveos;
-  for (`unsquashfs -ls $instsys_old 2>/dev/null`) {
+  for (`unsquashfs -ls $instsys_fname 2>/dev/null`) {
     $has_liveos = 1, last if m#squashfs-root/LiveOS#;
   }
 
   if($has_liveos) {
-    add_instsys_live $instsys_location;
+    add_instsys_live $instsys_location, \@opt_instsys;
   }
   else {
-    my $instsys = copy_file $instsys_location;
-
-    my $new_files = prepare_new_instsys_files;
-
-    # FIXME: wrong!
-
-    my $err = system "mksquashfs $new_files $instsys -all-root -no-progress >/dev/null 2>&1";
-    die "mksquashfs failed to append to $instsys_location\n" if $err;
+   add_instsys_classic $instsys_location, \@opt_instsys;
   }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# add_instsys_classic(image_name, file_list)
+#
+# Handle classic case (both RH and SUSE).
+#
+# image_name: file name (on media) of squashfs image containing the root file system.
+# file_list: ref to array with list of files to add.
+#
+sub add_instsys_classic
+{
+  my $image_location = $_[0];
+  my $file_list = $_[1];
+
+  my $image_fname = copy_file $image_location;
+
+  print "Identified root file system: $image_location\n";
+
+  my $new_files = prepare_new_instsys_files $file_list;
+
+  # note: squashfs handling needs root for xattrs
+  my $tmp_root = $tmp->dir();
+  my $err = susystem "unsquashfs -no-progress -dest $tmp_root/root $image_fname >/dev/null";
+  die "extracting root file system failed\n" if $err;
+
+  susystem "sh -c 'tar -C $new_files -cf - . | tar -C $tmp_root/root -xpf -'";
+
+  # mksquashfs expects the image *not* to exist
+  unlink $image_fname or die "$image_fname: $!\n";
+
+  my $err = susystem "mksquashfs $tmp_root/root $image_fname -comp xz -all-root -no-progress >/dev/null";
+
+  # change owner so that files can be garbage collected
+  susystem "chown -R $< $image_fname $tmp_root/root";
+
+  die "mksquashfs failed to append to $image_location\n" if $err;
 }
 
 
@@ -2396,30 +2446,35 @@ sub add_instsys_rh
 # Handle Live image case (both RH and SUSE).
 #
 # image_name: file name (on media); squashfs image containing an (usually ext4) image "LiveOS/rootfs.img"
+# file_list: ref to array with list of files to add.
 #
 # Note: the size of the included file system image (LiveOS/rootfs.img) is not adjusted.
 #
 sub add_instsys_live
 {
   my $image_location = $_[0];
+  my $file_list = $_[1];
 
   my $image_fname = fname $image_location;
 
-  print "Identified Live image: $image_location\n";
+  print "Identified Live system: $image_location\n";
 
   check_root "Sorry, can't update Live root file system; you need root privileges.";
 
-  my $new_files = prepare_new_instsys_files;
+  my $new_files = prepare_new_instsys_files $file_list;
 
   # extract image, add new stuff, and repack image
   my $image_new = copy_file $image_location;
 
+  # note: squashfs handling needs root for xattrs
   my $tmp_live = $tmp->dir();
-  my $err = system "unsquashfs -xattrs-include '^user.' -no-progress -dest $tmp_live/root $image_fname LiveOS/rootfs.img >/dev/null";
+  my $err = susystem "unsquashfs -no-progress -dest $tmp_live/root $image_fname LiveOS/rootfs.img >/dev/null 2>&1";
   die "extracting LiveOS/rootfs.img failed\n" if $err;
 
-  chmod 0755, "$tmp_live/root";
-  chmod 0644, "$tmp_live/root/LiveOS/rootfs.img";
+  susystem "chmod 755 $tmp_live/root";
+  susystem "chmod 644 $tmp_live/root/LiveOS/rootfs.img";
+  susystem "chown -R $< $tmp_live/root";
+  susystem "chmod 644 $image_new";
 
   my $tmp_mnt = $tmp->dir();
   die "\nLiveOS mount failed\n" if susystem "mount -oloop '$tmp_live/root/LiveOS/rootfs.img' $tmp_mnt";
@@ -2427,30 +2482,31 @@ sub add_instsys_live
   susystem "sh -c 'tar -C $new_files --owner=0 --group=0 -cf - . | tar -C $tmp_mnt -xpf -'";
   susystem "umount $tmp_mnt";
 
-  my $err = system "mksquashfs $tmp_live/root $image_new -all-root -noappend -no-progress >/dev/null 2>&1";
+  my $err = susystem "mksquashfs $tmp_live/root $image_new -comp xz -all-root -noappend -no-progress >/dev/null 2>&1";
   die "mksquashfs failed to rebuild $image_location\n" if $err;
-
-  chmod 0644, $image_new;
 }
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-# prepare_new_instsys_files()
+# prepare_new_instsys_files(file_list)
 #
 # Unpack all to-be-added instsys parts into a single directory and return this directory.
 #
+# file_list: ref to array with list of files to add.
+#
 sub prepare_new_instsys_files
 {
+  my $file_list = $_[0];
   my $tmp_dir = $tmp->dir();
 
-  for my $i (@opt_instsys) {
+  for my $i (@$file_list) {
     my $type = get_archive_type $i;
 
     if($type) {
       unpack_archive $type, $i, $tmp_dir;
     }
     else {
-      print STDERR "Warning: ignoring instsys part $i\n";
+      print STDERR "Warning: ignoring root file system part $i\n";
     }
   }
 
