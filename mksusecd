@@ -5305,12 +5305,23 @@ sub check_product
 
   # scan primary.xml for directories belonging to the repo and check if
   # there are debuginfo packages
-  if(open my $f, "gunzip -c $base_dir/repodata/*-primary.xml.gz |") {
+
+  my $f;
+  my @xml = glob "$base_dir/repodata/*-primary.xml.*";
+
+  open $f, "gzip --quiet -dc $xml[0] |" if $xml[0] =~ /\.gz$/;
+  open $f, "xz --quiet -dc $xml[0] |" if $xml[0] =~ /\.xz$/;
+  open $f, "zstd --quiet -dc $xml[0] |" if $xml[0] =~ /\.zst$/;
+
+  if(defined $f) {
     while(my $l = <$f>) {
       $repodirs{$1} = 1 if $l =~ m#<location href="([^/]+)/#;
       $debug = 1 if $l =~ m#<location href=".*-debug(info|source)-#;
     }
     close $f;
+  }
+  else {
+    print "no primary.xml in repo\n";
   }
 
   # tag repo if it's a debuginfo or a source repo
