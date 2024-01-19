@@ -4643,17 +4643,31 @@ sub build_module_list
     $fw{$m} = [ @l ] if @l;
   }
 
-  for my $m (sort keys %fw) {
-    for (@{$fw{$m}}) {
-      my $f;
-      $f = "$_" if -f "$kernel->{dir}/$lib_dir/firmware/$_";
-      $f = "$kernel->{version}/$_" if -f "$kernel->{dir}/$lib_dir/firmware/$kernel->{version}/$_";
+  my $kv = $kernel->{version};
+  my $fw_dir = "$kernel->{dir}/$lib_dir/firmware";
 
-      if($f) {
-        system "install -m 644 -D $kernel->{dir}/$lib_dir/firmware/$f $kernel->{new_dir}/$target_lib_dir/firmware/$f";
+  my %fw_ok;
+  my %fw_missing;
+
+  for my $m (sort keys %fw) {
+    for my $fw (@{$fw{$m}}) {
+      my $ok = 0;
+      for my $f (<$fw_dir/$fw $fw_dir/$kv/$fw $fw_dir/$fw.xz $fw_dir/$kv/$fw.xz $fw_dir/$fw.zst $fw_dir/$kv/$fw.zst>) {
+        if(-r $f) {
+          $f =~ s#^$fw_dir/##;
+          system "install -m 644 -D '$fw_dir/$f' '$kernel->{new_dir}/$target_lib_dir/firmware/$f'\n";
+          $fw_ok{$f} = 1;
+          $ok = 1;
+        }
+      }
+      if(!$ok) {
+        $fw_missing{$fw} = 1;
+        print "missing firmware: $fw ($m.ko)\n" if $opt_verbose >= 1;
       }
     }
   }
+
+  printf "kernel firmware: %d/%d files updated\n", scalar(keys %fw_ok), scalar(keys %fw_ok) + scalar(keys %fw_missing);
 
   # print Dumper(\%fw);
 

@@ -624,5 +624,6 @@ Find more usage examples here: https://github.com/openSUSE/mksusecd/blob/master/
 == See Also
 
 - more documentation: `/usr/share/doc/packages/mksusecd` +
+- get latest version: https://github.com/openSUSE/mksusecd?tab=readme-ov-file#downloads +
 - mksusecd web site: https://github.com/openSUSE/mksusecd +
 - openSUSE Build Service: https://build.opensuse.org
