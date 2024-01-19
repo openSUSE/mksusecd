@@ -20,7 +20,12 @@ you can read more about it [here](layout.md).
 
 ## Downloads
 
-Get the latest version from the [openSUSE Build Service](https://software.opensuse.org/package/mksusecd).
+Packages for openSUSE and SLES are built at the [openSUSE Build Service](https://build.opensuse.org). You can grab
+
+- [official releases](https://software.opensuse.org/package/mksusecd) or
+
+- [latest stable versions](https://software.opensuse.org/download/package?project=home:snwint:ports&package=mksusecd)
+  from my [ports](https://build.opensuse.org/package/show/home:snwint:ports/mksusecd) project
 
 ## Blog
 
