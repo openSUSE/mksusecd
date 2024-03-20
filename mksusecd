@@ -4512,9 +4512,23 @@ sub unpack_kernel_rpms
   }
 
   # compat symlink needed for depmod
-  symlink("$lib_dir", "$kernel->{dir}/lib") if $kernel->{usrmerge};
+  if($kernel->{usrmerge}) {
+    symlink("$lib_dir", "$kernel->{dir}/lib");
+  }
+  else {
+    mkdir "$kernel->{dir}/usr", 0755;
+    symlink("../lib", "$kernel->{dir}/usr/lib");
+  }
+
   system "depmod -a -b $kernel->{dir} $kernel->{version}";
-  unlink "$kernel->{dir}/lib" if $kernel->{usrmerge};
+
+  if($kernel->{usrmerge}) {
+    unlink "$kernel->{dir}/lib";
+  }
+  else {
+    unlink "$kernel->{dir}/usr/lib";
+    rmdir "$kernel->{dir}/usr";
+  }
 
   if(! -s "$kernel->{dir}/$lib_dir/modules/$kernel->{version}/modules.dep") {
     # squashfs is randomly picked, assuming it will always exist
@@ -4621,9 +4635,23 @@ sub build_module_list
   }
 
   # compat symlink needed for depmod
-  symlink("$target_lib_dir", "$kernel->{new_dir}/lib") if $kernel->{target_usrmerge};
+  if($kernel->{target_usrmerge}) {
+    symlink("$target_lib_dir", "$kernel->{new_dir}/lib");
+  }
+  else {
+    mkdir "$kernel->{new_dir}/usr", 0755;
+    symlink("../lib", "$kernel->{new_dir}/usr/lib");
+  }
+
   system "depmod -a -b $kernel->{new_dir} $kernel->{version}";
-  unlink "$kernel->{new_dir}/lib" if $kernel->{target_usrmerge};
+
+  if($kernel->{target_usrmerge}) {
+    unlink "$kernel->{new_dir}/lib";
+  }
+  else {
+    unlink "$kernel->{new_dir}/usr/lib";
+    rmdir "$kernel->{new_dir}/usr";
+  }
 
   # now get firmware files
 
