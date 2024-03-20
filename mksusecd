@@ -12,6 +12,7 @@
 
   use File::Temp;
   use strict 'vars';
+  use Cwd 'abs_path';
 
   sub new
   {
@@ -25,7 +26,7 @@
     $x =~ s/(\s+|"|\\|')/_/;
     $x = 'tmp' if$x eq "";
 
-    my $t = File::Temp::tempdir("/tmp/$x.XXXXXXXX", CLEANUP => $save_tmp ? 0 : 1);
+    my $t = File::Temp::tempdir(abs_path("/tmp") . "/$x.XXXXXXXX", CLEANUP => $save_tmp ? 0 : 1);
 
     $self->{base} = $t;
 
