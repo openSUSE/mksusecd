@@ -2299,7 +2299,7 @@ sub create_initrd
   }
 
   my $compr = 'cat';
-  $compr = "xz --quiet --check=crc32 -c" if $initrd_format eq "xz";
+  $compr = "xz --quiet --check=crc32 -9 -c" if $initrd_format eq "xz";
   $compr = "gzip --quiet -9c" if $initrd_format eq "gz";
   $compr = "zstd --quiet -c -T0" if $initrd_format eq "zst";
 
