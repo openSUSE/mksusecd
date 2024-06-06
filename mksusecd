@@ -1332,7 +1332,7 @@ sub prepare_mkisofs
   my $iso_catalog;
 
   # general options
-  $mkisofs->{options} .= " -l -r -pad -input-charset utf8 -o '$iso_file'";
+  $mkisofs->{options} .= " -duplicates-once -l -r -pad -input-charset utf8 -o '$iso_file'";
   $mkisofs->{options} .= " -V '" . substr($opt_volume, 0, 32) . "'";
   $mkisofs->{options} .= " -A '" . substr($opt_application, 0, 128) . "'";
   $mkisofs->{options} .= " -p '" . substr($opt_preparer, 0, 128) . "'";
@@ -2299,7 +2299,7 @@ sub create_initrd
   }
 
   my $compr = 'cat';
-  $compr = "xz --quiet --check=crc32 -c" if $initrd_format eq "xz";
+  $compr = "xz --quiet --check=crc32 -9 -c" if $initrd_format eq "xz";
   $compr = "gzip --quiet -9c" if $initrd_format eq "gz";
   $compr = "zstd --quiet -c -T0" if $initrd_format eq "zst";
 
@@ -5238,6 +5238,27 @@ sub analyze_products
     $src_idx++;
   }
 
+  # Check whether we really need to append a label to the repo directory to make it unique.
+  my $product_dirs;
+  for my $p_entry (@{$product_db->{list}}) {
+    $product_dirs->{$p_entry->{product_dir}}++;
+  }
+
+  # Undo the label appending step if the directory is unique.
+  for my $p_entry (@{$product_db->{list}}) {
+    if(
+      $product_dirs->{$p_entry->{product_dir}} == 1 &&
+      $p_entry->{label}
+    ) {
+      $p_entry->{repo_dir} = $p_entry->{product_dir}
+    }
+  }
+
+  if($opt_verbose >= 3) {
+    print "product_db:\n";
+    print Dumper($product_db)
+  }
+
   # inform the user
   print "Repositories:\n" if $product_db->{list};
 
@@ -5287,7 +5308,7 @@ sub analyze_products
     print $prod_fd "/$_->{repo_dir} $_->{name} $_->{ver}\n";
 
     # include full product dir, not just repo-specific subdirs
-    push @{$mkisofs->{grafts}}, "$_->{product_dir}=$_->{base_dir}" if $_->{product_dir};
+    push @{$mkisofs->{grafts}}, "$_->{repo_dir}=$_->{base_dir}" if $_->{product_dir};
 
     if($opt_enable_repos =~ /^(1|yes|auto|ask)$/i) {
       my $ask_user = $opt_enable_repos =~ /^ask$/i;
