@@ -681,7 +681,16 @@ if($opt_create || $opt_list_repos) {
   # print "todo = ", Dumper($todo);
   # print "mkisofs = ", Dumper($mkisofs);
 
-  # print Dumper($mkisofs->{exclude});
+  if($opt_verbose >= 3) {
+    print "mkisofs files:\n";
+    print Dumper($mkisofs->{filelist});
+    print "mkisofs sort list:\n";
+    print Dumper($mkisofs->{sort});
+    print "mkisofs excluded files:\n";
+    print Dumper($mkisofs->{exclude});
+    print "mkisofs graft points:\n";
+    print Dumper($mkisofs->{grafts});
+  }
 
   if($two_runs) {
     if($opt_hybrid_fs eq 'iso') {
@@ -1468,12 +1477,6 @@ sub run_mkisofs
   $cmd = "$mkisofs->{command}$mkisofs->{options}";
 
   print "running:\n$cmd\n" if $opt_verbose >= 2;
-
-  if($opt_verbose >= 3) {
-    print "$mkisofs->{command} file list:\n", join("\n", @{$mkisofs->{filelist}}), "\n";
-    print "$mkisofs->{command} sort file:\n", join("\n", @{$mkisofs->{sort}}), "\n";
-    print "$mkisofs->{command} exclude file:\n", join("\n", @{$mkisofs->{exclude}}), "\n";
-  }
 
   # seems to be necessary, else some changes are lost...
   system "sync";
