@@ -1332,7 +1332,7 @@ sub prepare_mkisofs
   my $iso_catalog;
 
   # general options
-  $mkisofs->{options} .= " -l -r -pad -input-charset utf8 -o '$iso_file'";
+  $mkisofs->{options} .= " -duplicates-once -l -r -pad -input-charset utf8 -o '$iso_file'";
   $mkisofs->{options} .= " -V '" . substr($opt_volume, 0, 32) . "'";
   $mkisofs->{options} .= " -A '" . substr($opt_application, 0, 128) . "'";
   $mkisofs->{options} .= " -p '" . substr($opt_preparer, 0, 128) . "'";
