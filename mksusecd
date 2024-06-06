@@ -103,7 +103,7 @@
     my $t = $self->dir($dir);
 
     if($t ne '') {
-      eval 'END { umount $t }';
+      eval 'END { local $?; umount $t }';
 
       my $s_t = $SIG{TERM};
       $SIG{TERM} = sub { umount $t; &$s_t if $s_t };
@@ -681,7 +681,16 @@ if($opt_create || $opt_list_repos) {
   # print "todo = ", Dumper($todo);
   # print "mkisofs = ", Dumper($mkisofs);
 
-  # print Dumper($mkisofs->{exclude});
+  if($opt_verbose >= 3) {
+    print "mkisofs files:\n";
+    print Dumper($mkisofs->{filelist});
+    print "mkisofs sort list:\n";
+    print Dumper($mkisofs->{sort});
+    print "mkisofs excluded files:\n";
+    print Dumper($mkisofs->{exclude});
+    print "mkisofs graft points:\n";
+    print Dumper($mkisofs->{grafts});
+  }
 
   if($two_runs) {
     if($opt_hybrid_fs eq 'iso') {
@@ -1332,12 +1341,12 @@ sub prepare_mkisofs
   my $iso_catalog;
 
   # general options
-  $mkisofs->{options} .= " -duplicates-once -l -r -pad -input-charset utf8 -o '$iso_file'";
+  $mkisofs->{options} .= " -duplicates-once -l -r -f -pad -input-charset utf8 -o '$iso_file'";
   $mkisofs->{options} .= " -V '" . substr($opt_volume, 0, 32) . "'";
   $mkisofs->{options} .= " -A '" . substr($opt_application, 0, 128) . "'";
   $mkisofs->{options} .= " -p '" . substr($opt_preparer, 0, 128) . "'";
   $mkisofs->{options} .= " -publisher '" . substr($opt_vendor, 0, 128) . "'";
-  $mkisofs->{options} .= " -J -f -joliet-long" if $opt_joliet;
+  $mkisofs->{options} .= " -J -joliet-long" if $opt_joliet;
 
   # special loader options
   for (@$todo) {
@@ -1354,7 +1363,9 @@ sub prepare_mkisofs
       $mkisofs->{options} .=
         " -no-emul-boot -boot-load-size 4 -boot-info-table" .
         " -b $_->{$t}{base}/$_->{$t}{file} -c $_->{$t}{base}/boot.catalog" .
-        " -hide $_->{$t}{base}/boot.catalog -hide-joliet $_->{$t}{base}/boot.catalog";
+        " -hide $_->{$t}{base}/boot.catalog";
+      $mkisofs->{options} .=
+        " -hide-joliet $_->{$t}{base}/boot.catalog" if $opt_joliet;
       print "El-Torito legacy bootable ($_->{$t}{arch})\n";
       push @$iso_catalog, "Legacy ($_->{$t}{arch})";
     }
@@ -1407,7 +1418,8 @@ sub prepare_mkisofs
   push @{$mkisofs->{sort}}, "$sf 999999";
 
   # hide name if it is "glump" or 'glumps'
-  $mkisofs->{options} .= " -hide glump -hide-joliet glump -hide glumps -hide-joliet glumps";
+  $mkisofs->{options} .= " -hide glump -hide glumps";
+  $mkisofs->{options} .= " -hide-joliet glump -hide-joliet glumps" if $opt_joliet;
 
   if($mkisofs->{sort}) {
     $mkisofs->{options} .= " -sort '$tmp_sort'";
@@ -1466,12 +1478,6 @@ sub run_mkisofs
 
   print "running:\n$cmd\n" if $opt_verbose >= 2;
 
-  if($opt_verbose >= 3) {
-    print "$mkisofs->{command} file list:\n", join("\n", @{$mkisofs->{filelist}}), "\n";
-    print "$mkisofs->{command} sort file:\n", join("\n", @{$mkisofs->{sort}}), "\n";
-    print "$mkisofs->{command} exclude file:\n", join("\n", @{$mkisofs->{exclude}}), "\n";
-  }
-
   # seems to be necessary, else some changes are lost...
   system "sync";
 
@@ -1496,9 +1502,18 @@ sub run_mkisofs
 
   $ok = 0 if $log =~ /mkisofs: Permission denied/;
 
-  print $log if $opt_verbose >= 3 || !$ok;
+  my $joliet_msg;
+  if($log =~ /mkisofs: Cannot use Joliet/) {
+    $joliet_msg =
+      "\n" .
+      "Joliet file names are limited to 103 chars.\n" .
+      "Some file names were longer.\n\n" .
+      "Run mksusecd with the --no-joliet option to avoid this error.\n";
+  }
 
-  die "Error: $mkisofs->{command} failed\n" if !$ok;
+  print $log if $opt_verbose >= 3 || (!$ok && (!$joliet_msg || $opt_verbose >= 1));
+
+  die "Error: $mkisofs->{command} failed\n" . $joliet_msg if !$ok;
 }
 
 
@@ -5523,7 +5538,7 @@ sub run_crypto_disk
   close $fh;
 
   # register cleanup function in case we error out
-  END { crypto_cleanup $image_file, $crypt_vol, $crypt_loop, $crypt_mount, $esp_loop, $esp_mount, $iso_mount }
+  END { local $?; crypto_cleanup $image_file, $crypt_vol, $crypt_loop, $crypt_mount, $esp_loop, $esp_mount, $iso_mount }
 
   # create the empty image
   open $fh, ">", $image_file;

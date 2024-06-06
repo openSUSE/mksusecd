@@ -183,7 +183,8 @@ Lower _NUM_ means higher priority.
 Use Joliet extensions (default).
 
 *--no-joliet*::
-Don't use Joliet extensions.
+Don't use Joliet extensions. This is useful when there are file names longer
+than 103 chars - which Joliet does not support.
 
 *--volume*=_VOLUME_ID_::
 Set ISO volume id to _VOLUME_ID_.
