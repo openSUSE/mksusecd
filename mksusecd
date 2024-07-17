@@ -227,6 +227,7 @@ sub run_crypto_disk;
 sub read_ini;
 sub write_ini;
 sub create_efi_image;
+sub rebuild_efi_image;
 
 my %config;
 my $sudo;
@@ -1372,7 +1373,7 @@ sub prepare_mkisofs
     elsif($opt_efi && $t eq 'efi') {
       $has_efi = 1;
       my $f = fname($_->{$t}{base});
-      if(!$f) {
+      if(!$f || ! -s $f || rebuild_efi_image) {
         create_efi_image $_->{$t}{base};
         $f = fname($_->{$t}{base});
       }
@@ -5965,11 +5966,19 @@ sub write_ini
 #
 sub create_efi_image
 {
-  my $file = new_file($_[0]);
+  return unless fname "EFI";
 
-  my $efi_dir = fname "EFI";
+  print "updating UEFI image $_[0]\n";
 
-  return if ! $efi_dir;
+  my $file = copy_or_new_file($_[0]);
+
+  my $efi_dir = $tmp->dir();
+
+  for my $x (sort keys %$files) {
+    if($x =~ m#^EFI($|/)#) {
+      system "tar -C '$files->{$x}' --mode=u+w -cf - '$x' | tar -C '$efi_dir' -xpf -";
+    }
+  }
 
   # efi image size in 512 byte blocks; giving one extra MiB free space
   my $efi_size = ((split " ", `du --apparent-size -x -B 1M -s $efi_dir`)[0] + 1) << 11;
@@ -5981,5 +5990,29 @@ sub create_efi_image
   system "mformat -i '$file' -s 32 -h 64 -c 1 -d 1 -v 'EFIBOOT' ::";
 
   # copy files
-  system "mcopy -i '$file' -s -D o $efi_dir ::";
+  system "mcopy -i '$file' -s -D o '$efi_dir/EFI' ::";
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# rebuild_efi_image()
+#
+# Check whether there were changes to the 'EFI' directory and we need to
+# rebuild the el-torito efi image.
+#
+# Return 1 if the image needs to be rebuilt.
+#
+sub rebuild_efi_image
+{
+  my $source_list;
+
+  for my $x (sort keys %$files) {
+    if($x =~ m#^EFI($|/)#) {
+      $source_list->{$files->{$x}} = 1;
+    }
+  }
+
+  my $count = keys %$source_list;
+
+  return 1 if $count > 1;
 }
