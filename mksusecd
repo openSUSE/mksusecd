@@ -211,6 +211,7 @@ sub format_array;
 sub get_initrd_modules;
 sub build_module_list;
 sub add_modules_to_initrd;
+sub update_no_compression_settings;
 sub replace_kernel_mods;
 sub new_products_xml;
 sub prepare_addon;
@@ -291,6 +292,7 @@ my $opt_crypto_top_dir;
 my $opt_instsys_in_repo = 1;
 my $opt_create_repo;
 my $opt_signature_file;
+my $opt_no_compression;
 
 
 Getopt::Long::Configure("gnu_compat");
@@ -371,6 +373,7 @@ GetOptions(
   'list-repos'       => \$opt_list_repos,
   'include-repos=s'  => \$opt_include_repos,
   'enable-repos=s'   => \$opt_enable_repos,
+  'no-compression=s' => sub { @$opt_no_compression{split /,/, $_[1]} = ( 1 .. 8 ) },
   'save-temp'        => \$opt_save_temp,
   'verbose|v'        => sub { $opt_verbose++ },
   'version'          => sub { print "$VERSION\n"; exit 0 },
@@ -460,6 +463,7 @@ my $sign_passwd_option;
 my $media_style = 'suse';
 my $media_variant = 'install';
 my $detected_signature_file;
+my $orig_initrd_00_lib;
 
 my $progress_start = 0;
 my $progress_end = 100;
@@ -2315,9 +2319,11 @@ sub create_initrd
   }
 
   my $compr = 'cat';
-  $compr = "xz --quiet --check=crc32 -9 -c" if $initrd_format eq "xz";
-  $compr = "gzip --quiet -9c" if $initrd_format eq "gz";
-  $compr = "zstd --quiet -c -T0" if $initrd_format eq "zst";
+  # don't go for -9 with xz as it doesn't lead to noticeably reduced size
+  # but substancially limits multithreading
+  $compr = "xz --quiet --threads=0 --check=crc32 -c" if $initrd_format eq "xz";
+  $compr = "gzip --quiet -9 -c" if $initrd_format eq "gz";
+  $compr = "zstd --quiet --threads=0 -19 -c" if $initrd_format eq "zst";
 
   chmod 0755, $tmp_dir;
 
@@ -4421,6 +4427,7 @@ sub get_initrd_modules
     if(system "unsquashfs -n -d $unpack_dir $orig_initrd/parts/00_lib >/dev/null 2>&1") {
       die "parts/00_lib: failed to unpack squashfs image - squashfs tools too old?\n";
     }
+    $orig_initrd_00_lib = $unpack_dir;
   }
 
   File::Find::find({
@@ -4521,6 +4528,45 @@ sub unpack_kernel_rpms
   die "no module dir?\n" if $kernel->{version} eq "";
   die "no kernel?\n" if !$kernel->{image};
 
+  # if no firmware packages were specified and we have to build a completely
+  # new initrd, keep existing firmware files
+  if($opt_rebuild_initrd && $orig_initrd_00_lib && ! -d "$kernel->{dir}/$lib_dir/firmware") {
+    print "kernel firmware: keep existing version\n";
+    system "cp -r $orig_initrd_00_lib/$target_lib_dir/firmware $kernel->{dir}/$lib_dir";
+  }
+
+  if($opt_no_compression->{modules}) {
+    my $dir = "$kernel->{dir}/$lib_dir/modules";
+
+    if(-d $dir) {
+      print "uncompressing kernel modules...\n";
+
+      system "find $dir -type f -name \\*.ko.zst -exec zstd -d --quiet --rm '{}' \\;";
+      system "find $dir -type f -name \\*.ko.xz -exec xz -d '{}' \\;";
+      system "find $dir -type f -name \\*.ko.gz -exec gzip -d '{}' \\;";
+    }
+  }
+
+  if($opt_no_compression->{firmware}) {
+    my $dir = "$kernel->{dir}/$lib_dir/firmware";
+
+    if(-d $dir) {
+      print "uncompressing kernel firmware...\n";
+
+      # rename symlinks
+      for my $suffix ("zst", "xz", "gz") {
+        system "find $dir -type l -name \\*.$suffix -exec rename -sl .$suffix '' '{}' \\; -exec rename -l .$suffix '' '{}' \\;";
+      }
+
+      system "find $dir -type f -name \\*.zst -exec zstd -d --quiet --rm '{}' \\;";
+      system "find $dir -type f -name \\*.xz -exec xz -d '{}' \\;";
+      system "find $dir -type f -name \\*.gz -exec gzip -d '{}' \\;";
+
+      my $broken = `find $dir -follow -type l`;
+      print STDERR "firmware uncompressing left broken symlinks:\n$broken\n" if $broken ne "";
+    }
+  }
+
   for (glob "$kernel->{dir}/$lib_dir/modules/*") {
     s#.*/##;
     next if $_ eq $kernel->{version};
@@ -4620,6 +4666,8 @@ sub build_module_list
   close $f;
 
   $kernel->{new_dir} = $tmp->dir();
+
+  chmod 0755, $kernel->{new_dir};
 
   File::Path::make_path "$kernel->{new_dir}/$target_lib_dir/modules/$kernel->{version}/initrd";
 
@@ -4773,9 +4821,18 @@ sub add_modules_to_initrd
       }
     }
 
-    my $err = system "mksquashfs $kernel->{new_dir} $tmp_dir/parts/$p" .
-      ($mksquashfs_has_comp ? " -comp xz" : "") .
-      " -noappend -no-progress >/dev/null 2>&1";
+    my $comp = $mksquashfs_has_comp ? "-comp xz" : "";
+
+    if($opt_no_compression->{squashfs}) {
+      if(!$mksquashfs_has_comp) {
+        die "mksquashfs version too old to allow setting compression algorithm\n";
+      }
+      else {
+        $comp = "-no-compression";
+      }
+    }
+
+    my $err = system "mksquashfs $kernel->{new_dir} $tmp_dir/parts/$p $comp -noappend -no-progress >/dev/null 2>&1";
     die "mksquashfs failed\n" if $err;
   }
   else {
@@ -4810,6 +4867,58 @@ sub add_modules_to_initrd
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# update_no_compression_settings()
+#
+# Merge $opt_no_compression with .no_compression setting in initrd and
+# update initrd if necessary.
+#
+sub update_no_compression_settings
+{
+  die "oops: initrd not unpacked?\n" if !$orig_initrd;
+
+  my $has_setting = 0;
+  my $has_opt_setting = $opt_no_compression ? 1 : 0;
+
+  if(open my $f, "$orig_initrd/.no_compression") {
+    $has_setting = 1;
+    if(!$opt_no_compression) {
+      chomp (my $no_comp = <$f>);
+      for my $c (split /,/, $no_comp) {
+        $opt_no_compression->{$c} = 1;
+      }
+    }
+    close $f;
+  }
+
+  my @keys = qw (firmware modules squashfs);
+  my $comp_str;
+
+  for my $i (@keys) {
+    if($opt_no_compression->{$i}) {
+      $comp_str .= "," if $comp_str ne "";
+      $comp_str .= "$i";
+    }
+  }
+
+  if($has_opt_setting || $has_setting) {
+    print "no compression for: $comp_str\n";
+
+    # change only if necessary
+    if($has_opt_setting) {
+      my $tmp_dir = $tmp->dir();
+
+      if(open my $f, ">$tmp_dir/.no_compression") {
+        print $f "$comp_str\n";
+        close $f;
+      }
+
+      push @opt_initrds, $tmp_dir;
+    }
+  }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # replace_kernel_mods()
 #
 # Replace kernel modules.
@@ -4825,6 +4934,8 @@ sub replace_kernel_mods
   unpack_orig_initrd if !$orig_initrd;
 
   die "initrd unpacking failed\n" if !$orig_initrd;
+
+  update_no_compression_settings;
 
   get_initrd_modules;
 
