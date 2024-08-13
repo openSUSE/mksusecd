@@ -385,6 +385,10 @@ usage 1 if $opt_hybrid_fs !~ '^(|iso|fat)$';
 usage 1 if defined($opt_digest) && $opt_digest !~ '^(md5|sha1|sha224|sha256|sha384|sha512)$';
 usage 1 if defined($opt_enable_repos) && $opt_enable_repos !~ /^(0|1|no|yes|auto|ask)$/i;
 
+for (keys %$opt_no_compression) {
+  die "Option --no-compression only accepts firmware, modules, or squashfs\n" if !/^(firmware|modules|squashfs)$/;
+}
+
 die "no password\n" if $opt_crypto && $opt_crypto_password eq "";
 
 $ENV{PATH} = "/usr/bin:/bin:/usr/sbin:/sbin";
@@ -816,6 +820,7 @@ Kernel/module update related options:
 
       --kernel KERNEL_RPMS      Replace kernel and modules used for booting using KERNEL_RPMS.
       --modules MODULE_LIST     A list of modules to be included additionally in the initrd.
+      --no-compression LIST     A comma-separated list of: firmware, modules, squashfs.
 
 Add-on related options:
 

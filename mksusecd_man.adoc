@@ -125,7 +125,8 @@ Add content of _DIR_, _RPM_, or _DUD_ to initrd (can be repeated).
 
 *--rebuild-initrd*::
 Rebuild the entire initrd instead of appending changes. +
-This makes the initrd smaller but requires to run mksusecd with root permissions.
+This makes the initrd smaller but requires to run mksusecd with root permissions. +
+See *Kernel update notes* below.
 
 *--instsys*=_DIR_|_RPM_::
 Add content of _DIR_ or _RPM_ to installation system or root file system for Live media (can be repeated).
@@ -146,7 +147,8 @@ Replace kernel and modules used for booting. _KERNEL_RPMS_ is
 a list of RPMs that contain the new kernel, modules, and
 firmware files. +
 *Note*: this option takes a variable number of arguments. So
-it may be necessary to terminate the arg list with an explicit '--'.
+it may be necessary to terminate the arg list with an explicit '--'. +
+See *Kernel update notes* below.
 
 *--modules*=_MODULE_LIST_::
 A list of modules to be included additionally to the initrd.
@@ -155,6 +157,10 @@ You can prefix module names with '-' to have them removed instead. +
 _MODULE_LIST_ may be space or comma separated. +
 *Note*: this option takes a variable number of arguments. So
 it may be necessary to terminate the arg list with an explicit '--'.
+
+*--no-compression*=_LIST_::
+A comma-separated list of: firmware, modules, squashfs. +
+See *Kernel compression notes* below.
 
 === Add-on related options
 
@@ -448,6 +454,65 @@ https://raw.githubusercontent.com/openSUSE/checkmedia/master/README.adoc
 Note that this special signature file is always prepared. But actually signing
 the image is not the default and you have to explicitly request it with *--sign-image*.
 You can also add a signature later using *tagmedia*.
+
+=== Kernel update notes
+
+Normally, the *--kernel* option will do what you expect but there are
+situations where it may subtly go wrong. So here is a more in-depth explanation
+how kernel updates work.
+
+The *--kernel* option accepts a mix of kernel packages and kernel firmware packages.
+That is, you can update both kernel firmware and kernel modules. But kernel
+firmware is typically not kernel version dependent (it's in a common '/usr/lib/firmware' tree).
+
+Note that mksusecd will not add all kernel firmware files but only those that are required by
+the kernel modules used.
+
+There are two cases: 1. the 'normal' case and 2. *--rebuild-initrd* is used.
+
+1. New kernel modules / firmware files are added to the initrd. This means your initrd contains
+both the old kernel tree and the new one (making it noticeably larger). +
+If you included kernel firmware packages in *--kernel* then kernel firmware files from these packages
+are added as well, possibly replacing old kernel firmware files with the same name.
+
+2. Old kernel modules / firmware files are removed and only files from packages specified
+in *--kernel* are used. This makes the initrd smaller and exactly reproduces the original
+initrd layout. +
+This also means that if you forgot to add sufficient kernel firmware packages in *--kernel*, kernel
+firmware files might be missing. +
+To mitigate this, as a special case if there are no kernel firmware packages
+specified in *--kernel*, then the old kernel firmware files are kept.
+
+
+=== Kernel compression notes
+
+For SUSE installation media, kernel modules and firmware files are kept in a
+separate squashfs image ('parts/00_lib') within the initrd.
+
+Usually, kernel firmware files and kernel modules are compressed to reduce size.
+
+In certain situations it may be better to keep individual kernel modules or
+kernel firmware files uncompressed and rely on the squashfs file system compression instead.
+
+Or use no squashfs file system compression and rely on the initrd compression.
+
+To fine-tune this, use the *--no-compression* option.
+
+Setting it to 'modules' will uncompress all kernel modules. 'firmware' will uncompress
+firmware files and 'squashfs' will turn off squashfs file system compression.
+
+The current setting is stored in the '.no_compression' file the initrd.
+
+For example, *--no-compression=firmware,modules,squashfs* turns off compression
+everywhere. This results in the smallest compressed initrd size - but it also results in
+the largest uncompressed initrd size.
+
+Note that any new *--no-compression* setting replaces the old setting entirely.
+For example, *--no-compression=modules* will not additionally turn off compression for
+kernel modules but means only kernel modules are uncompressed.
+
+Note also that you almost certainly want to use *--no-compression* together
+with *--rebuild-initrd*.
 
 === Add-on notes
 
