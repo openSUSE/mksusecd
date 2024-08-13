@@ -1382,7 +1382,7 @@ sub prepare_mkisofs
     elsif($opt_efi && $t eq 'efi') {
       $has_efi = 1;
       my $f = fname($_->{$t}{base});
-      if(!$f || ! -s $f || rebuild_efi_image) {
+      if(!$f || ! -s $f || rebuild_efi_image($_->{$t}{base})) {
         create_efi_image $_->{$t}{base};
         $f = fname($_->{$t}{base});
       }
@@ -6084,7 +6084,7 @@ sub create_efi_image
 {
   return unless fname "EFI";
 
-  print "updating UEFI image $_[0]\n";
+  print "updating UEFI image: $_[0]\n";
 
   my $file = copy_or_new_file($_[0]);
 
@@ -6111,7 +6111,9 @@ sub create_efi_image
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-# rebuild_efi_image()
+# rebuild_efi_image(efi_image_name)
+#
+# - efi_image_name: efi image file name (in ISO image)
 #
 # Check whether there were changes to the 'EFI' directory and we need to
 # rebuild the el-torito efi image.
@@ -6120,7 +6122,11 @@ sub create_efi_image
 #
 sub rebuild_efi_image
 {
+  my $efi_image_name = $_[0];
+
   my $source_list;
+
+  $source_list->{$files->{$efi_image_name}} = 1 if $files->{$efi_image_name};
 
   for my $x (sort keys %$files) {
     if($x =~ m#^EFI($|/)#) {
