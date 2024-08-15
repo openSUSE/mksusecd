@@ -2298,6 +2298,12 @@ sub create_initrd
     unpack_orig_initrd if !$orig_initrd;
     die "initrd unpacking failed\n" if !$orig_initrd;
     $tmp_dir = $orig_initrd;
+
+    if($kernel->{initrd_layout} ne 'install') {
+      # remove old modules and firmware trees
+      system "rm -rf $orig_initrd/$kernel->{target_lib_dir}/modules/$kernel->{orig_version}";
+      system "rm -rf $orig_initrd/$kernel->{target_lib_dir}/firmware";
+    }
   }
 
   for my $i (@opt_initrds) {
@@ -4418,21 +4424,45 @@ sub get_initrd_modules
 {
   my $unpack_dir = $tmp->dir();
 
+  # kernel package layout expected in initrd
+  if(-d "$orig_initrd/usr/lib/modules") {
+    $kernel->{target_usrmerge} = 1;
+    $kernel->{target_lib_dir} = "usr/lib";
+  }
+  else {
+    $kernel->{target_usrmerge} = 0;
+    $kernel->{target_lib_dir} = "lib";
+  }
+
   if(-l "$orig_initrd/modules") {
     $_ = readlink "$orig_initrd/modules";
     if(m#/modules/([^/]+)#) {
       $kernel->{orig_version} = $1;
     }
   }
+  elsif(opendir my $d, "$orig_initrd/$kernel->{target_lib_dir}/modules") {
+    for my $v (readdir $d) {
+      $kernel->{orig_version} = $v if $v =~ /^\d/;
+    }
+    closedir $d;
+  }
 
   die "oops, incompatible initrd layout\n" unless $kernel->{orig_version};
 
+  # Note:
+  #   if($kernel->{initrd_layout} == 'install') is atm the same as if($initrd_has_parts)
+  #   There might turn up other layouts in future, though.
+  #
   if(-f "$orig_initrd/parts/00_lib") {
+    $kernel->{initrd_layout} = 'install';
     rmdir $unpack_dir;
     if(system "unsquashfs -n -d $unpack_dir $orig_initrd/parts/00_lib >/dev/null 2>&1") {
       die "parts/00_lib: failed to unpack squashfs image - squashfs tools too old?\n";
     }
     $orig_initrd_00_lib = $unpack_dir;
+  }
+  else {
+    $kernel->{initrd_layout} = 'live';
   }
 
   File::Find::find({
@@ -4446,10 +4476,10 @@ sub get_initrd_modules
       }
     },
     no_chdir => 1
-  }, "$orig_initrd/modules/", $unpack_dir);
+  }, "$orig_initrd/$kernel->{target_lib_dir}/modules/$kernel->{orig_version}", $unpack_dir);
 
   die "no initrd modules?\n" if !$kernel->{initrd_modules};
-  die "no module config?\n" if !$kernel->{initrd_module_config};
+  die "no module config?\n" if $kernel->{initrd_layout} eq 'install' && !$kernel->{initrd_module_config};
 }
 
 
@@ -4466,16 +4496,6 @@ sub unpack_kernel_rpms
     my $type = get_archive_type $_;
     die "$_: don't know how to unpack this\n" if !$type;
     unpack_archive $type, $_, $kernel->{dir};
-  }
-
-  # kernel package layout expected in initrd
-  if(-d "$orig_initrd/usr/lib/modules") {
-    $kernel->{target_usrmerge} = 1;
-    $kernel->{target_lib_dir} = "usr/lib";
-  }
-  else {
-    $kernel->{target_usrmerge} = 0;
-    $kernel->{target_lib_dir} = "lib";
   }
 
   # kernel package layout in new kernel rpms
@@ -4535,9 +4555,25 @@ sub unpack_kernel_rpms
 
   # if no firmware packages were specified and we have to build a completely
   # new initrd, keep existing firmware files
-  if($opt_rebuild_initrd && $orig_initrd_00_lib && ! -d "$kernel->{dir}/$lib_dir/firmware") {
-    print "kernel firmware: keep existing version\n";
-    system "cp -r $orig_initrd_00_lib/$target_lib_dir/firmware $kernel->{dir}/$lib_dir";
+  if($opt_rebuild_initrd && ! -d "$kernel->{dir}/$lib_dir/firmware") {
+    if($kernel->{initrd_layout} eq 'install') {
+      if($orig_initrd_00_lib && -d "$orig_initrd_00_lib/$target_lib_dir/firmware") {
+        print "kernel firmware: keep existing version\n";
+        system "cp -r $orig_initrd_00_lib/$target_lib_dir/firmware $kernel->{dir}/$lib_dir";
+      }
+      else {
+        print "kernel firmware: original firmware files missing\n";
+      }
+    }
+    else {
+      if(-d "$orig_initrd/$target_lib_dir/firmware") {
+        print "kernel firmware: keep existing version\n";
+        system "cp -r $orig_initrd/$target_lib_dir/firmware $kernel->{dir}/$lib_dir";
+      }
+      else {
+        print "kernel firmware: original firmware files missing\n";
+      }
+    }
   }
 
   if($opt_no_compression->{modules}) {
@@ -4674,11 +4710,21 @@ sub build_module_list
 
   chmod 0755, $kernel->{new_dir};
 
-  File::Path::make_path "$kernel->{new_dir}/$target_lib_dir/modules/$kernel->{version}/initrd";
+  if($kernel->{initrd_layout} eq 'install') {
+    File::Path::make_path "$kernel->{new_dir}/$target_lib_dir/modules/$kernel->{version}/initrd";
+  }
+  else {
+    File::Path::make_path "$kernel->{new_dir}/$target_lib_dir";
+  }
 
   for (sort keys %{$kernel->{initrd_modules}}) {
     if($kernel->{modules}{$_} && !$mods_remove{$_}) {
-      system "cp $kernel->{dir}/$lib_dir/modules/$kernel->{version}/$kernel->{modules}{$_} $kernel->{new_dir}/$target_lib_dir/modules/$kernel->{version}/initrd";
+      if($kernel->{initrd_layout} eq 'install') {
+        system "cp $kernel->{dir}/$lib_dir/modules/$kernel->{version}/$kernel->{modules}{$_} $kernel->{new_dir}/$target_lib_dir/modules/$kernel->{version}/initrd";
+      }
+      else {
+        system "cd $kernel->{dir}/$lib_dir && cp --parents modules/$kernel->{version}/$kernel->{modules}{$_} $kernel->{new_dir}/$target_lib_dir";
+      }
       push @{$kernel->{added}}, $_ if $kernel->{initrd_modules}{$_} > 1;
     }
     else {
@@ -4692,16 +4738,21 @@ sub build_module_list
     system "cp -f $kernel->{dir}/$lib_dir/modules/$kernel->{version}/modules.builtin{,.modinfo} $kernel->{new_dir}/$target_lib_dir/modules/$kernel->{version}/";
   }
 
-  if(open my $f, "$kernel->{dir}/$lib_dir/modules/$kernel->{version}/modules.order") {
-    if(open my $w, ">$kernel->{new_dir}/$target_lib_dir/modules/$kernel->{version}/modules.order") {
-      while(<$f>) {
-        chomp;
-        s#.*/#initrd/#;
-        print $w "$_\n" if -f "$kernel->{new_dir}/$lib_dir/modules/$kernel->{version}/$_";
+  if($kernel->{initrd_layout} eq 'install') {
+    if(open my $f, "$kernel->{dir}/$lib_dir/modules/$kernel->{version}/modules.order") {
+      if(open my $w, ">$kernel->{new_dir}/$target_lib_dir/modules/$kernel->{version}/modules.order") {
+        while(<$f>) {
+          chomp;
+          s#.*/#initrd/#;
+          print $w "$_\n" if -f "$kernel->{new_dir}/$lib_dir/modules/$kernel->{version}/$_";
+        }
+        close $w;
       }
-      close $w;
+      close $f;
     }
-    close $f;
+  }
+  else {
+    system "cp $kernel->{dir}/$lib_dir/modules/$kernel->{version}/modules.order $kernel->{new_dir}/$target_lib_dir/modules/$kernel->{version}";
   }
 
   # compat symlink needed for depmod
@@ -4727,19 +4778,21 @@ sub build_module_list
 
   my %fw;
 
-  for my $m (glob("$kernel->{new_dir}/$target_lib_dir/modules/$kernel->{version}/initrd/*${kext_glob}")) {
-    chomp $m;
+  File::Find::find({
+    wanted => sub {
+      return if -l || ! -f;	# no links, only files
+      if(m#([^/]+)${kext_regexp}$#) {
+        my @l;
+        chomp(@l = `modinfo -F firmware $_`);
 
-    next unless -f $m;
+        s#.*/##;
+        s#${kext_regexp}$##;
 
-    my @l;
-    chomp(@l = `modinfo -F firmware $m`);
-
-    $m =~ s#.*/##;
-    $m =~ s#${kext_regexp}$##;
-
-    $fw{$m} = [ @l ] if @l;
-  }
+        $fw{$_} = [ @l ] if @l;
+      }
+    },
+    no_chdir => 1
+  }, "$kernel->{new_dir}/$target_lib_dir/modules/$kernel->{version}");
 
   my $kv = $kernel->{version};
   my $fw_dir = "$kernel->{dir}/$lib_dir/firmware";
@@ -4845,25 +4898,26 @@ sub add_modules_to_initrd
   }
 
   # add module symlink
+  if($kernel->{initrd_layout} eq 'install') {
+    symlink "$target_lib_dir/modules/$kernel->{version}/initrd", "$tmp_dir/modules";
 
-  symlink "$target_lib_dir/modules/$kernel->{version}/initrd", "$tmp_dir/modules";
+    my $cmd = "Exec:\t\tln -snf $lib_dir/modules/`uname -r`/initrd /modules\n";
 
-  my $cmd = "Exec:\t\tln -snf $lib_dir/modules/`uname -r`/initrd /modules\n";
-
-  if(open my $f, "$orig_initrd/linuxrc.config") {
-    my $cmd_found;
-    my @lines;
-    while(<$f>) {
-      push @lines, $_;
-      $cmd_found = 1 if $_ eq $cmd;
-    }
-    close $f;
-
-    if(!$cmd_found) {
-      open my $f, ">$tmp_dir/linuxrc.config";
-      print $f $cmd;
-      print $f @lines;
+    if(open my $f, "$orig_initrd/linuxrc.config") {
+      my $cmd_found;
+      my @lines;
+      while(<$f>) {
+        push @lines, $_;
+        $cmd_found = 1 if $_ eq $cmd;
+      }
       close $f;
+
+      if(!$cmd_found) {
+        open my $f, ">$tmp_dir/linuxrc.config";
+        print $f $cmd;
+        print $f @lines;
+        close $f;
+      }
     }
   }
 
@@ -4905,7 +4959,7 @@ sub update_no_compression_settings
     }
   }
 
-  if($has_opt_setting || $has_setting) {
+  if(($has_opt_setting || $has_setting) && $comp_str ne "") {
     print "no compression for: $comp_str\n";
 
     # change only if necessary
