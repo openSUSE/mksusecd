@@ -128,11 +128,28 @@ Rebuild the entire initrd instead of appending changes. +
 This makes the initrd smaller but requires to run mksusecd with root permissions. +
 See *Kernel update notes* below.
 
+*--no-rebuild-initrd*::
+Append changes to the initrd instead of rebuilding. +
+This makes the initrd larger but does not require to run mksusecd with root permissions. +
+See *Kernel update notes* below.
+
 *--instsys*=_DIR_|_RPM_::
 Add content of _DIR_ or _RPM_ to installation system or root file system for Live media (can be repeated).
 
+*--live.root*=_DIR_|_RPM_::
+Alias for *--instsys*.
+
 *--rescue*=_DIR_|_RPM_::
 Add content of _DIR_ or _RPM_ to rescue system (can be repeated).
+
+*--instsys-size*=_SIZE_SPEC_::
+Resize Live root file system.
+_SIZE_SPEC_ can be a number, optionally followed by a unit ('k',
+'m', 'g', 't') indicating kiB, MiB, GiB, or TiB, respectively.
+If _SIZE_SPEC_ starts with a '+' or '-', the size is increased or decreased, respectively.
+
+*--live-root-size*=_SIZE_SPEC_::
+Aias for *--instsys-size*.
 
 *--no-docs*::
 Don't include package documentation files (default).
@@ -142,16 +159,16 @@ Include package documentation files.
 
 === Kernel/module update related options
 
-*--kernel*=_KERNEL_RPMS_::
-Replace kernel and modules used for booting. _KERNEL_RPMS_ is
-a list of RPMs that contain the new kernel, modules, and
-firmware files. +
+*--kernel*=_RPM_LIST_::
+Replace kernel, kernel modules, and kernel firmware used for booting. _RPM_LIST_ is
+a list of kernel or firmware packages. +
 *Note*: this option takes a variable number of arguments. So
 it may be necessary to terminate the arg list with an explicit '--'. +
+*Note also*: since mksusecd 3.0 this option automatically implies *--rebuild-initrd*. Use *--no-rebuild-inintrd* to revert this. +
 See *Kernel update notes* below.
 
 *--modules*=_MODULE_LIST_::
-A list of modules to be included additionally to the initrd.
+A list of modules to be added to the initrd.
 Use this in combination with *--kernel*.
 You can prefix module names with '-' to have them removed instead. +
 _MODULE_LIST_ may be space or comma separated. +
@@ -212,10 +229,12 @@ See *Hybrid mode notes* below.
 === General image layout related options
 
 *--uefi*::
-Make ISO UEFI bootable (default).
+Make ISO UEFI bootable (default). +
+See *UEFI boot notes* below.
 
 *--no-uefi*::
-Don't make ISO UEFI bootable.
+Don't make ISO UEFI bootable. +
+See *UEFI boot notes* below.
 
 *--zipl*::
 Make image zIPL bootable (default on s390x).
@@ -366,9 +385,9 @@ Don't be too creative here - the file system must be supported by grub2.
 Sources can be
 
 - existing installation media
-- skelcd-installer-<PRODUCT> packages (RPMs)
-- tftpboot-installation-<PRODUCT> packages (RPMs)
-- additional or modified files that should be added/merged into the image
+- skelcd-installer-<PRODUCT> packages
+- tftpboot-installation-<PRODUCT> packages
+- directories with additional or modified files that should be added/merged into the image
 
 either as image/RPM file or unpacked into a directory.
 
@@ -377,7 +396,8 @@ the same files in previous sources.
 
 If you pass a skelcd-installer-<PRODUCT> or tftpboot-installation-<PRODUCT>
 RPM (or a directory with the same layout) - mksusecd will handle these
-specially and extract the relevant parts.
+specially. These packaged contain the complete installation system and mksusecd
+willl extract the relevant parts to update the installer on the medium.
 
 === Hybrid mode notes
 
@@ -461,28 +481,52 @@ Normally, the *--kernel* option will do what you expect but there are
 situations where it may subtly go wrong. So here is a more in-depth explanation
 how kernel updates work.
 
-The *--kernel* option accepts a mix of kernel packages and kernel firmware packages.
-That is, you can update both kernel firmware and kernel modules. But kernel
-firmware is typically not kernel version dependent (it's in a common '/usr/lib/firmware' tree).
+The *--kernel* option accepts a mix of kernel packages and kernel firmware
+packages. That is, you can update both kernel firmware and kernel modules.
+But there must be at least one kernel package.
 
-Note that mksusecd will not add all kernel firmware files but only those that are required by
-the kernel modules used.
+As a special case if there are no kernel firmware packages
+specified in *--kernel*, then the old kernel firmware files are kept (kernel firmware is typically not
+kernel version dependent).
 
-There are two cases: 1. the 'normal' case and 2. *--rebuild-initrd* is used.
+The initrd typically uses a limited set of kernel modules. mksusecd will try to keep the exact list
+of modules but that may not be possible due to kernel package changes. mksusecd output will
+display the differences.
 
-1. New kernel modules / firmware files are added to the initrd. This means your initrd contains
+If you have to adjust the kernel module list, use the *--modules* option. Kernel module
+dependencies are automatically resolved.
+
+Note that there may be not just a single package containing kernel modules (e.g. kernel-default)
+but several others (e.g. kernel-default-extra, kernel-default-optional) or even kmp packages with
+individual modules. If you see missing modules, you might need some of these packages as well.
+
+mksusecd will not add all kernel firmware files to the initrd but only those that are required by
+the kernel modules used in the initrd.
+
+For Live media, kernel modules and firmware are also present in the Live root file system. Kernel modules
+and firmware are also updated there but the complete packages are used.
+
+There are two cases: 1. the 'normal' case (*--rebuild-initrd* is active) and 2. *--no-rebuild-initrd* is active.
+
+Note that since mksusecd 3.0 *--rebuild-initrd* is automatically acivated if *--kernel* is used.
+
+1. Old kernel modules / firmware files are removed and only files from packages specified
+in *--kernel* are used. This makes initrd and Live root smaller and exactly reproduces the original
+initrd and Live root file system layouts. +
+This also means that if you forgot to add sufficient kernel firmware packages in *--kernel*, kernel
+firmware files might be missing.
+
+2. New kernel modules / firmware files are added to initrd and Live root. This means your initrd and Live root file system contain
 both the old kernel tree and the new one (making it noticeably larger). +
 If you included kernel firmware packages in *--kernel* then kernel firmware files from these packages
 are added as well, possibly replacing old kernel firmware files with the same name.
 
-2. Old kernel modules / firmware files are removed and only files from packages specified
-in *--kernel* are used. This makes the initrd smaller and exactly reproduces the original
-initrd layout. +
-This also means that if you forgot to add sufficient kernel firmware packages in *--kernel*, kernel
-firmware files might be missing. +
-To mitigate this, as a special case if there are no kernel firmware packages
-specified in *--kernel*, then the old kernel firmware files are kept.
+In both cases, if you run out of space in the Live root file system, use *--instsys-size* to increase the
+file system size as needed.
 
+Note on usrmerge kernels: kernel packages (and kernel firmware packages) come in two variants: older packages
+with files stored in '/lib' and (typically) newer packages with files stored in '/usr/lib'.
+mksusecd will accept both and adjust the package layout to the one expected in initrd and Live root.
 
 === Kernel compression notes
 
@@ -582,11 +626,8 @@ you need with *--include-repos*.
 
 === Fedora/RHEL notes
 
-Not all options apply to media with Fedora/RHEL layout. Major options that work, are:
-
-- *--boot* to add boot options
-- *--initrd* to modify the initrd (stage1)
-- *--instsys* to modify the Live installation system (stage2)
+Not all options apply to media with Fedora/RHEL layout. It doesn't make
+sense to add a SUSE driver update to a RHEL iso, for example.
 
 mksusecd will by default create media with a SUSE-like hybrid mode (MBR
 partition table with non-overlapping partitions). You can change that to
@@ -602,6 +643,23 @@ embedded MD5 sums.
 
 - You can use other digests instead of MD5 using *--digest DIGEST* but
 checkisomd5 cannot verify these images.
+
+=== UEFI boot notes
+
+There are two ways UEFI firmware finds boot files on our media:
+
+1. by running the boot loader located below the '/EFI' directory
+2. by locating a FAT file system image via the El-Torito standard and running
+the boot loader stored there; this FAT file system image contains the same '/EFI' directory structure
+
+The *--uefi* option refers to method 2.
+
+Note that this FAT file system image might not be visible on the medium (e.g. KIWI produced media hide the file).
+If it is visible, it has names like '/boot/x86_64/efi', '/boot/x86_64/loader/efiboot.img', '/images/efiboot.img', or similar.
+
+If this FAT file system image is missing or files in the '/EFI' directory (on the medium) have changed,
+mksusecd will create a new FAT file system image based on the updated '/EFI' directory content.
+This generated FAT file system image will always be visible on the medium.
 
 === Crypto notes
 
@@ -665,6 +723,9 @@ See *Signing notes* above.
 # create foo.iso from /foo_dir
 mksusecd --create foo.iso /foo_dir
 
+# create foo.iso from bar.iso and integrate files from /foo_dir
+mksusecd --create foo.iso bar.iso /foo_dir
+
 # create foo.iso from /foo_dir, no hybrid mode
 mksusecd --create foo.iso --no-hybrid /foo_dir
 
@@ -677,11 +738,25 @@ mksusecd --create foo.iso --initrd foo_bar old.iso
 # create foo.iso from old.iso and add package bar to the initrd
 mksusecd --create foo.iso --initrd bar.rpm old.iso
 
+# create foo.iso from old.iso and add a driver update to the initrd
+mksusecd --create foo.iso --initrd bar.dud old.iso
+
 # create foo.iso from old.iso and add package bar to rescue system
 mksusecd --create foo.iso --rescue bar.rpm old.iso
 
 # create foo.iso from live.iso and add package bar to Live system
 mksusecd --create foo.iso --instsys bar.rpm live.iso
+
+# create foo.iso from live.iso and update kernel to kernel-default.rpm
+mksusecd --create foo.iso --kernel kernel-default.rpm -- live.iso
+
+# create foo.iso from live.iso and increase Live root file system by 1 GiB
+mksusecd --create foo.iso --live-root-size +1G live.iso
+
+# create new iso from sles.iso taking an updated installer from tftpboot-installation-* package
+mksusecd --create new.iso sles.iso tftpboot-installation-SLE.rpm
+
+
 ----
 
 Find more usage examples here: https://github.com/openSUSE/mksusecd/blob/master/HOWTO.md

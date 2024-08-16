@@ -342,7 +342,8 @@ GetOptions(
   'initrd=s'         => \@opt_initrds,
   'instsys|live-root=s' => \@opt_instsys,
   'rescue=s'         => \@opt_rescue,
-  'rebuild-initrd'   => \$opt_rebuild_initrd,
+  'rebuild-initrd'   => sub { $opt_rebuild_initrd = 2 },
+  'no-rebuild-initrd' => sub { $opt_rebuild_initrd = 0 },
   'boot=s'           => \$opt_boot_options,
   'grub2'            => sub { $opt_loader = "grub" },
   'isolinux'         => sub { $opt_loader = "isolinux" },
@@ -391,12 +392,25 @@ for (keys %$opt_no_compression) {
   die "Option --no-compression only accepts firmware, modules, or squashfs\n" if !/^(firmware|modules|squashfs)$/;
 }
 
+if(@opt_kernel_rpms && ! defined $opt_rebuild_initrd) {
+  $opt_rebuild_initrd = 1;
+}
+
+if(@opt_kernel_modules && !@opt_kernel_rpms) {
+  die "No kernel packages specified. Use --kernel together with --modules.\n";
+}
+
 die "no password\n" if $opt_crypto && $opt_crypto_password eq "";
 
 $ENV{PATH} = "/usr/bin:/bin:/usr/sbin:/sbin";
 
-if($opt_rebuild_initrd && $>) {
-  die "mksusecd must be run with root permissions when --rebuild-initrd is used\n"
+if($>) {
+  if($opt_rebuild_initrd == 2) {
+    die "mksusecd must be run with root permissions when --rebuild-initrd is used\n"
+  }
+  if($opt_rebuild_initrd == 1) {
+    die "mksusecd must be run with root permissions to update kernel config.\nOr use --no-rebuild-initrd.\n"
+  }
 }
 
 if(open my $f, "$ENV{HOME}/.mksusecdrc") {
@@ -786,124 +800,132 @@ Create and modify bootable media.
 
 General options:
 
-      --verbose                 Show more detailed messages. Can be repeated to log even more.
-      --version                 Show mksusecd version.
-      --save-temp               Keep temporary files.
-      --help                    Write this help text.
+      --verbose                   Show more detailed messages. Can be repeated to log even more.
+      --version                   Show mksusecd version.
+      --save-temp                 Keep temporary files.
+      --help                      Write this help text.
 
 Show available repositories:
 
-      --list-repos              List all available repositories in SOURCES.
+      --list-repos                List all available repositories in SOURCES.
 
 Create new image:
 
-  -c, --create FILE             Create ISO or disk image FILE from SOURCES.
+  -c, --create FILE               Create ISO or disk image FILE from SOURCES.
 
 Media type related options:
 
-      --micro                   Create image with just enough files to run the installer (for testing).
-      --nano                    Create image with just enough files for a network based installation.
-      --pico                    Even less than --nano, keep just the bootloader (for testing).
+      --micro                     Create image with just enough files to run the installer (for testing).
+      --nano                      Create image with just enough files for a network based installation.
+      --pico                      Even less than --nano, keep just the bootloader (for testing).
 
 Media integrity related options:
 
-      --check                   Tag ISO to be verified before starting the installation.
-      --no-check                Don't tag ISO (default).
-      --digest DIGEST           Embed DIGEST to verify ISO integrity (default: sha256).
-      --no-digest               Don't embed any digest to verify ISO integrity.
-      --sign-image              Embed signature for entire image.
-      --no-sign-image           Don't embed signature for entire image. (default)
-      --signature-file FILE     Store embedded signature in FILE. (default: /.signature)
-      --sign                    Re-sign '/CHECKSUMS' if it has changed (default).
-      --no-sign                 Don't re-sign '/CHECKSUMS'.
-      --sign-key KEY_FILE       Use this key file instead of generating a transient key.
-      --sign-key-id KEY_ID      Use this key id instead of generating a transient key.
-      --sign-pass-file          Use the password stored in this file to open the key.
+      --check                     Tag ISO to be verified before starting the installation.
+      --no-check                  Don't tag ISO (default).
+      --digest DIGEST             Embed DIGEST to verify ISO integrity (default: sha256).
+      --no-digest                 Don't embed any digest to verify ISO integrity.
+      --sign-image                Embed signature for entire image.
+      --no-sign-image             Don't embed signature for entire image. (default)
+      --signature-file FILE       Store embedded signature in FILE. (default: /.signature)
+      --sign                      Re-sign '/CHECKSUMS' if it has changed (default).
+      --no-sign                   Don't re-sign '/CHECKSUMS'.
+      --sign-key KEY_FILE         Use this key file instead of generating a transient key.
+      --sign-key-id KEY_ID        Use this key id instead of generating a transient key.
+      --sign-pass-file            Use the password stored in this file to open the key.
 
 Initrd/instsys update related options:
 
-      --initrd DIR|RPM|DUD      Add content of DIR, RPM, or DUD to initrd (can be repeated).
-      --rebuild-initrd          Rebuild the entire initrd instead of appending changes.
-      --instsys DIR|RPM         Add content of DIR or RPM to installation system or root file
-                                system for Live media (can be repeated).
-      --rescue DIR|RPM          Add content of DIR or RPM to rescue system (can be repeated).
-      --instsys-size SIZE_SPEC  Resize Live root file system.
-      --no-docs                 Don't include package doc files (default).
-      --keep-docs               Include package doc files.
+      --initrd DIR|RPM|DUD        Add content of DIR, RPM, or DUD to initrd (can be repeated).
+      --rebuild-initrd            Rebuild the entire initrd instead of appending changes.
+      --no-rebuild-initrd         Append changes to the initrd instead of rebuilding.
+      --instsys DIR|RPM           Add content of DIR or RPM to installation system or root file
+                                  system for Live media (can be repeated).
+      --live-root DIR|RPM         Alias for --instsys.
+      --rescue DIR|RPM            Add content of DIR or RPM to rescue system (can be repeated).
+      --instsys-size SIZE_SPEC    Resize Live root file system.
+      --live-root-size SIZE_SPEC  Alias for --instsys-size.
+      --no-docs                   Don't include package doc files (default).
+      --keep-docs                 Include package doc files.
 
 Kernel/module update related options:
 
-      --kernel KERNEL_RPMS      Replace kernel and modules used for booting using KERNEL_RPMS.
-      --modules MODULE_LIST     A list of modules to be included additionally in the initrd.
-      --no-compression LIST     A comma-separated list of: firmware, modules, squashfs.
+      --kernel RPM_LIST           Replace kernel, kernel modules, and kernel firmware used for booting.
+                                  RPM_LIST is a list of kernel or firmware packages.
+                                  Note: this option expects a variable number of arguments.
+                                  Note also: implies --rebuild-initrd since mksusecd 3.0.
+      --modules MODULE_LIST       A list of modules to be added to the initrd.
+                                  To be used together with --kernel.
+                                  Note: this option expects a variable number of arguments.
+      --no-compression LIST       A comma-separated list of: firmware, modules, squashfs.
 
 Add-on related options:
 
-      --addon RPM_LIST          A list of RPMs that should be made available as add-on.
-      --addon-name NAME         Use NAME as the add-on name.
-      --addon-alias ALIAS       Set repo alias to ALIAS.
-      --addon-prio NUM          Set add-on repository priority to NUM (default: 60).
+      --addon RPM_LIST            A list of RPMs that should be made available as add-on.
+      --addon-name NAME           Use NAME as the add-on name.
+      --addon-alias ALIAS         Set repo alias to ALIAS.
+      --addon-prio NUM            Set add-on repository priority to NUM (default: 60).
 
 ISO file system related options:
 
-      --joliet                  Use Joliet extensions (default).
-      --no-joliet               Don't use Joliet extensions.
-      --volume VOLUME_ID        Set ISO volume id to VOLUME_ID.
-      --vendor VENDOR_ID        Set ISO publisher id to VENDOR_ID.
-      --preparer PREPARER_ID    Set ISO data preparer id to PREPARER_ID.
-      --application APP_ID      Set ISO application id to APP_ID.
-      --volume1 VOLUME_ID       Specify ISO volume id of the entire image - in case it should differ
-                                from the ISO volume id used for the partition.
+      --joliet                    Use Joliet extensions (default).
+      --no-joliet                 Don't use Joliet extensions.
+      --volume VOLUME_ID          Set ISO volume id to VOLUME_ID.
+      --vendor VENDOR_ID          Set ISO publisher id to VENDOR_ID.
+      --preparer PREPARER_ID      Set ISO data preparer id to PREPARER_ID.
+      --application APP_ID        Set ISO application id to APP_ID.
+      --volume1 VOLUME_ID         Specify ISO volume id of the entire image - in case it should differ
+                                  from the ISO volume id used for the partition.
 
 General image layout related options:
 
-      --uefi                    Make ISO UEFI bootable (default).
-      --no-uefi                 Don't make ISO UEFI bootable.
-      --zipl                    Make image zIPL bootable (default on s390x).
-      --no-zipl                 Don't make image zIPL bootable (default if not on s390x).
-      --gpt                     Add GPT when in isohybrid mode.
-      --mbr                     Add MBR when in isohybrid mode (default).
-      --prot-mbr                When writing a GPT, write a protective MBR (default).
-      --no-prot-mbr             When writing a GPT, don't write a protective MBR.
-      --mbr-code                Include x86 MBR boot code (default).
-      --no-mbr-code             Don't include x86 MBR boot code.
-      --mbr-chs                 Fill in sensible CHS values in MBR partition table (default).
-      --no-mbr-chs              Use 0xffffff instead of CHS values in MBR partition table.
-      --no-iso                  Don't make image accessible as ISO9660 file system.
-      --hybrid                  Create an image which is both an ISO and a disk (default).
-      --no-hybrid               Create a regular ISO image without extra gimmicks.
-      --hybrid-fs FS            Use file system FS for the disk partition created in hybrid mode.
-      --fat                     Create an image that's suitable to be put on a USB disk.
-      --size SIZE_SPEC          The intended size of the disk image when using a FAT file.
+      --uefi                      Make ISO UEFI bootable (default).
+      --no-uefi                   Don't make ISO UEFI bootable.
+      --zipl                      Make image zIPL bootable (default on s390x).
+      --no-zipl                   Don't make image zIPL bootable (default if not on s390x).
+      --gpt                       Add GPT when in isohybrid mode.
+      --mbr                       Add MBR when in isohybrid mode (default).
+      --prot-mbr                  When writing a GPT, write a protective MBR (default).
+      --no-prot-mbr               When writing a GPT, don't write a protective MBR.
+      --mbr-code                  Include x86 MBR boot code (default).
+      --no-mbr-code               Don't include x86 MBR boot code.
+      --mbr-chs                   Fill in sensible CHS values in MBR partition table (default).
+      --no-mbr-chs                Use 0xffffff instead of CHS values in MBR partition table.
+      --no-iso                    Don't make image accessible as ISO9660 file system.
+      --hybrid                    Create an image which is both an ISO and a disk (default).
+      --no-hybrid                 Create a regular ISO image without extra gimmicks.
+      --hybrid-fs FS              Use file system FS for the disk partition created in hybrid mode.
+      --fat                       Create an image that's suitable to be put on a USB disk.
+      --size SIZE_SPEC            The intended size of the disk image when using a FAT file.
 
 Media repository related options:
 
-      --merge-repos             Create a common media.1/products file (default).
-      --no-merge-repos          Skip the special treatment of repositories and just merge all SOURCES.
-      --include-repos LIST      Comma-separated list of repository names to include in the final image.
-      --enable-repos WHEN       Whether to enable repos. WHEN can be 'auto', 'yes', 'ask', or 'no' (default: no).
-      --create-repo             Re-create and sign the repository (default: don't).
+      --merge-repos               Create a common media.1/products file (default).
+      --no-merge-repos            Skip the special treatment of repositories and just merge all SOURCES.
+      --include-repos LIST        Comma-separated list of repository names to include in the final image.
+      --enable-repos WHEN         Whether to enable repos. WHEN can be 'auto', 'yes', 'ask', or 'no' (default: no).
+      --create-repo               Re-create and sign the repository (default: don't).
 
 Repository location related options:
 
-      --net URL                 Use URL as default network repository.
-      --instsys-url URL         Load the installation system from the specified URL.
-      --instsys-in-repo         Load installation system from repository (default).
-      --no-instsys-in-repo      Do not load installation system from repository but from local disks.
-      --defaultrepo URL_LIST    URL_LIST is a list of comma (',') separated URLs the installer will try in turn.
+      --net URL                   Use URL as default network repository.
+      --instsys-url URL           Load the installation system from the specified URL.
+      --instsys-in-repo           Load installation system from repository (default).
+      --no-instsys-in-repo        Do not load installation system from repository but from local disks.
+      --defaultrepo URL_LIST      URL_LIST is a list of comma (',') separated URLs the installer will try in turn.
 
 Boot menu related options:
 
-      --boot OPTIONS            Add OPTIONS to default boot options.
-      --add-entry BOOT_ENTRY    Create a new boot entry with name BOOT_ENTRY.
+      --boot OPTIONS              Add OPTIONS to default boot options.
+      --add-entry BOOT_ENTRY      Create a new boot entry with name BOOT_ENTRY.
 
 Image encryption related options:
 
-      --crypto                  If set, an encrypted disk image is created.
-      --password PASSWORD       Use PASSWORD for encrypting the disk image.
-      --title TITLE             The password query screen uses TITLE as title (default: openSUSE).
-      --top-dir DIR             The installation files are placed into subdir DIR.
-      --filesystem FS           Use file system FS for the encrypted image (default: ext4).
+      --crypto                    If set, an encrypted disk image is created.
+      --password PASSWORD         Use PASSWORD for encrypting the disk image.
+      --title TITLE               The password query screen uses TITLE as title (default: openSUSE).
+      --top-dir DIR               The installation files are placed into subdir DIR.
+      --filesystem FS             Use file system FS for the encrypted image (default: ext4).
 
 More information is available in the mksusecd(1) manual page.
 = = = = = = = =
@@ -2310,6 +2332,7 @@ sub create_initrd
   my $tmp_dir = $tmp->dir();
 
   if($opt_rebuild_initrd) {
+    print "initrd: complete rebuild\n" if $opt_verbose >= 1;
     unpack_orig_initrd if !$orig_initrd;
     die "initrd unpacking failed\n" if !$orig_initrd;
     $tmp_dir = $orig_initrd;
