@@ -211,6 +211,8 @@ sub format_array;
 sub get_initrd_modules;
 sub build_module_list;
 sub add_modules_to_initrd;
+sub add_modules_to_instsys;
+sub update_no_compression_settings;
 sub replace_kernel_mods;
 sub new_products_xml;
 sub prepare_addon;
@@ -291,7 +293,8 @@ my $opt_crypto_top_dir;
 my $opt_instsys_in_repo = 1;
 my $opt_create_repo;
 my $opt_signature_file;
-
+my $opt_no_compression;
+my $opt_instsys_size;
 
 Getopt::Long::Configure("gnu_compat");
 
@@ -329,6 +332,7 @@ GetOptions(
   'filesystem=s'     => \$opt_crypto_fs,
   'no-iso'           => \$opt_no_iso,
   'size=s'           => \$opt_size,
+  'instsys-size|live-root-size=s' => \$opt_instsys_size,
   'protective-mbr'   => sub { $opt_no_prot_mbr = 0 },
   'no-protective-mbr' => \$opt_no_prot_mbr,
   'mbr-code'         => sub { $opt_no_mbr_code = 0 },
@@ -336,9 +340,10 @@ GetOptions(
   'mbr-chs'          => sub { $opt_no_mbr_chs = 0 },
   'no-mbr-chs'       => \$opt_no_mbr_chs,
   'initrd=s'         => \@opt_initrds,
-  'instsys=s'        => \@opt_instsys,
+  'instsys|live-root=s' => \@opt_instsys,
   'rescue=s'         => \@opt_rescue,
-  'rebuild-initrd'   => \$opt_rebuild_initrd,
+  'rebuild-initrd'   => sub { $opt_rebuild_initrd = 2 },
+  'no-rebuild-initrd' => sub { $opt_rebuild_initrd = 0 },
   'boot=s'           => \$opt_boot_options,
   'grub2'            => sub { $opt_loader = "grub" },
   'isolinux'         => sub { $opt_loader = "isolinux" },
@@ -371,6 +376,7 @@ GetOptions(
   'list-repos'       => \$opt_list_repos,
   'include-repos=s'  => \$opt_include_repos,
   'enable-repos=s'   => \$opt_enable_repos,
+  'no-compression=s' => sub { @$opt_no_compression{split /,/, $_[1]} = ( 1 .. 8 ) },
   'save-temp'        => \$opt_save_temp,
   'verbose|v'        => sub { $opt_verbose++ },
   'version'          => sub { print "$VERSION\n"; exit 0 },
@@ -382,12 +388,29 @@ usage 1 if $opt_hybrid_fs !~ '^(|iso|fat)$';
 usage 1 if defined($opt_digest) && $opt_digest !~ '^(md5|sha1|sha224|sha256|sha384|sha512)$';
 usage 1 if defined($opt_enable_repos) && $opt_enable_repos !~ /^(0|1|no|yes|auto|ask)$/i;
 
+for (keys %$opt_no_compression) {
+  die "Option --no-compression only accepts firmware, modules, or squashfs\n" if !/^(firmware|modules|squashfs)$/;
+}
+
+if(@opt_kernel_rpms && ! defined $opt_rebuild_initrd) {
+  $opt_rebuild_initrd = 1;
+}
+
+if(@opt_kernel_modules && !@opt_kernel_rpms) {
+  die "No kernel packages specified. Use --kernel together with --modules.\n";
+}
+
 die "no password\n" if $opt_crypto && $opt_crypto_password eq "";
 
 $ENV{PATH} = "/usr/bin:/bin:/usr/sbin:/sbin";
 
-if($opt_rebuild_initrd && $>) {
-  die "mksusecd must be run with root permissions when --rebuild-initrd is used\n"
+if($>) {
+  if($opt_rebuild_initrd == 2) {
+    die "mksusecd must be run with root permissions when --rebuild-initrd is used\n"
+  }
+  if($opt_rebuild_initrd == 1) {
+    die "mksusecd must be run with root permissions to update kernel config.\nOr use --no-rebuild-initrd.\n"
+  }
 }
 
 if(open my $f, "$ENV{HOME}/.mksusecdrc") {
@@ -460,6 +483,8 @@ my $sign_passwd_option;
 my $media_style = 'suse';
 my $media_variant = 'install';
 my $detected_signature_file;
+my $orig_initrd_00_lib;
+my $instsys_size;
 
 my $progress_start = 0;
 my $progress_end = 100;
@@ -473,6 +498,17 @@ $mksquashfs_has_comp = check_mksquashfs_comp;
 if(defined $opt_size) {
   $image_size = eval_size $opt_size;
   die "$opt_size: invalid size\n" unless $image_size;
+  printf "target image size: %.2f GiB ($image_size blocks)\n", $image_size / (1 << 21);
+}
+
+if(defined $opt_instsys_size) {
+  $instsys_size = eval_size $opt_instsys_size;
+  die "$opt_instsys_size: invalid size\n" unless defined $instsys_size;
+
+  # add at least an empty directory if we are going to resize the live root file system
+  if(!@opt_instsys) {
+    push @opt_instsys, $tmp->dir();
+  }
 }
 
 if($opt_sign_pass_file) {
@@ -764,122 +800,132 @@ Create and modify bootable media.
 
 General options:
 
-      --verbose                 Show more detailed messages. Can be repeated to log even more.
-      --version                 Show mksusecd version.
-      --save-temp               Keep temporary files.
-      --help                    Write this help text.
+      --verbose                   Show more detailed messages. Can be repeated to log even more.
+      --version                   Show mksusecd version.
+      --save-temp                 Keep temporary files.
+      --help                      Write this help text.
 
 Show available repositories:
 
-      --list-repos              List all available repositories in SOURCES.
+      --list-repos                List all available repositories in SOURCES.
 
 Create new image:
 
-  -c, --create FILE             Create ISO or disk image FILE from SOURCES.
+  -c, --create FILE               Create ISO or disk image FILE from SOURCES.
 
 Media type related options:
 
-      --micro                   Create image with just enough files to run the installer (for testing).
-      --nano                    Create image with just enough files for a network based installation.
-      --pico                    Even less than --nano, keep just the bootloader (for testing).
+      --micro                     Create image with just enough files to run the installer (for testing).
+      --nano                      Create image with just enough files for a network based installation.
+      --pico                      Even less than --nano, keep just the bootloader (for testing).
 
 Media integrity related options:
 
-      --check                   Tag ISO to be verified before starting the installation.
-      --no-check                Don't tag ISO (default).
-      --digest DIGEST           Embed DIGEST to verify ISO integrity (default: sha256).
-      --no-digest               Don't embed any digest to verify ISO integrity.
-      --sign-image              Embed signature for entire image.
-      --no-sign-image           Don't embed signature for entire image. (default)
-      --signature-file FILE     Store embedded signature in FILE. (default: /.signature)
-      --sign                    Re-sign '/CHECKSUMS' if it has changed (default).
-      --no-sign                 Don't re-sign '/CHECKSUMS'.
-      --sign-key KEY_FILE       Use this key file instead of generating a transient key.
-      --sign-key-id KEY_ID      Use this key id instead of generating a transient key.
-      --sign-pass-file          Use the password stored in this file to open the key.
+      --check                     Tag ISO to be verified before starting the installation.
+      --no-check                  Don't tag ISO (default).
+      --digest DIGEST             Embed DIGEST to verify ISO integrity (default: sha256).
+      --no-digest                 Don't embed any digest to verify ISO integrity.
+      --sign-image                Embed signature for entire image.
+      --no-sign-image             Don't embed signature for entire image. (default)
+      --signature-file FILE       Store embedded signature in FILE. (default: /.signature)
+      --sign                      Re-sign '/CHECKSUMS' if it has changed (default).
+      --no-sign                   Don't re-sign '/CHECKSUMS'.
+      --sign-key KEY_FILE         Use this key file instead of generating a transient key.
+      --sign-key-id KEY_ID        Use this key id instead of generating a transient key.
+      --sign-pass-file            Use the password stored in this file to open the key.
 
 Initrd/instsys update related options:
 
-      --initrd DIR|RPM|DUD      Add content of DIR, RPM, or DUD to initrd (can be repeated).
-      --rebuild-initrd          Rebuild the entire initrd instead of appending changes.
-      --instsys DIR|RPM         Add content of DIR or RPM to installation system or root file
-                                system for Live media (can be repeated).
-      --rescue DIR|RPM          Add content of DIR or RPM to rescue system (can be repeated).
-      --no-docs                 Don't include package doc files (default).
-      --keep-docs               Include package doc files.
+      --initrd DIR|RPM|DUD        Add content of DIR, RPM, or DUD to initrd (can be repeated).
+      --rebuild-initrd            Rebuild the entire initrd instead of appending changes.
+      --no-rebuild-initrd         Append changes to the initrd instead of rebuilding.
+      --instsys DIR|RPM           Add content of DIR or RPM to installation system or root file
+                                  system for Live media (can be repeated).
+      --live-root DIR|RPM         Alias for --instsys.
+      --rescue DIR|RPM            Add content of DIR or RPM to rescue system (can be repeated).
+      --instsys-size SIZE_SPEC    Resize Live root file system.
+      --live-root-size SIZE_SPEC  Alias for --instsys-size.
+      --no-docs                   Don't include package doc files (default).
+      --keep-docs                 Include package doc files.
 
 Kernel/module update related options:
 
-      --kernel KERNEL_RPMS      Replace kernel and modules used for booting using KERNEL_RPMS.
-      --modules MODULE_LIST     A list of modules to be included additionally in the initrd.
+      --kernel RPM_LIST           Replace kernel, kernel modules, and kernel firmware used for booting.
+                                  RPM_LIST is a list of kernel or firmware packages.
+                                  Note: this option expects a variable number of arguments.
+                                  Note also: implies --rebuild-initrd since mksusecd 3.0.
+      --modules MODULE_LIST       A list of modules to be added to the initrd.
+                                  To be used together with --kernel.
+                                  Note: this option expects a variable number of arguments.
+      --no-compression LIST       A comma-separated list of: firmware, modules, squashfs.
 
 Add-on related options:
 
-      --addon RPM_LIST          A list of RPMs that should be made available as add-on.
-      --addon-name NAME         Use NAME as the add-on name.
-      --addon-alias ALIAS       Set repo alias to ALIAS.
-      --addon-prio NUM          Set add-on repository priority to NUM (default: 60).
+      --addon RPM_LIST            A list of RPMs that should be made available as add-on.
+      --addon-name NAME           Use NAME as the add-on name.
+      --addon-alias ALIAS         Set repo alias to ALIAS.
+      --addon-prio NUM            Set add-on repository priority to NUM (default: 60).
 
 ISO file system related options:
 
-      --joliet                  Use Joliet extensions (default).
-      --no-joliet               Don't use Joliet extensions.
-      --volume VOLUME_ID        Set ISO volume id to VOLUME_ID.
-      --vendor VENDOR_ID        Set ISO publisher id to VENDOR_ID.
-      --preparer PREPARER_ID    Set ISO data preparer id to PREPARER_ID.
-      --application APP_ID      Set ISO application id to APP_ID.
-      --volume1 VOLUME_ID       Specify ISO volume id of the entire image - in case it should differ
-                                from the ISO volume id used for the partition.
+      --joliet                    Use Joliet extensions (default).
+      --no-joliet                 Don't use Joliet extensions.
+      --volume VOLUME_ID          Set ISO volume id to VOLUME_ID.
+      --vendor VENDOR_ID          Set ISO publisher id to VENDOR_ID.
+      --preparer PREPARER_ID      Set ISO data preparer id to PREPARER_ID.
+      --application APP_ID        Set ISO application id to APP_ID.
+      --volume1 VOLUME_ID         Specify ISO volume id of the entire image - in case it should differ
+                                  from the ISO volume id used for the partition.
 
 General image layout related options:
 
-      --uefi                    Make ISO UEFI bootable (default).
-      --no-uefi                 Don't make ISO UEFI bootable.
-      --zipl                    Make image zIPL bootable (default on s390x).
-      --no-zipl                 Don't make image zIPL bootable (default if not on s390x).
-      --gpt                     Add GPT when in isohybrid mode.
-      --mbr                     Add MBR when in isohybrid mode (default).
-      --prot-mbr                When writing a GPT, write a protective MBR (default).
-      --no-prot-mbr             When writing a GPT, don't write a protective MBR.
-      --mbr-code                Include x86 MBR boot code (default).
-      --no-mbr-code             Don't include x86 MBR boot code.
-      --mbr-chs                 Fill in sensible CHS values in MBR partition table (default).
-      --no-mbr-chs              Use 0xffffff instead of CHS values in MBR partition table.
-      --no-iso                  Don't make image accessible as ISO9660 file system.
-      --hybrid                  Create an image which is both an ISO and a disk (default).
-      --no-hybrid               Create a regular ISO image without extra gimmicks.
-      --hybrid-fs FS            Use file system FS for the disk partition created in hybrid mode.
-      --fat                     Create an image that's suitable to be put on a USB disk.
-      --size SIZE_SPEC          The intended size of the disk image when using a FAT file.
+      --uefi                      Make ISO UEFI bootable (default).
+      --no-uefi                   Don't make ISO UEFI bootable.
+      --zipl                      Make image zIPL bootable (default on s390x).
+      --no-zipl                   Don't make image zIPL bootable (default if not on s390x).
+      --gpt                       Add GPT when in isohybrid mode.
+      --mbr                       Add MBR when in isohybrid mode (default).
+      --prot-mbr                  When writing a GPT, write a protective MBR (default).
+      --no-prot-mbr               When writing a GPT, don't write a protective MBR.
+      --mbr-code                  Include x86 MBR boot code (default).
+      --no-mbr-code               Don't include x86 MBR boot code.
+      --mbr-chs                   Fill in sensible CHS values in MBR partition table (default).
+      --no-mbr-chs                Use 0xffffff instead of CHS values in MBR partition table.
+      --no-iso                    Don't make image accessible as ISO9660 file system.
+      --hybrid                    Create an image which is both an ISO and a disk (default).
+      --no-hybrid                 Create a regular ISO image without extra gimmicks.
+      --hybrid-fs FS              Use file system FS for the disk partition created in hybrid mode.
+      --fat                       Create an image that's suitable to be put on a USB disk.
+      --size SIZE_SPEC            The intended size of the disk image when using a FAT file.
 
 Media repository related options:
 
-      --merge-repos             Create a common media.1/products file (default).
-      --no-merge-repos          Skip the special treatment of repositories and just merge all SOURCES.
-      --include-repos LIST      Comma-separated list of repository names to include in the final image.
-      --enable-repos WHEN       Whether to enable repos. WHEN can be 'auto', 'yes', 'ask', or 'no' (default: no).
-      --create-repo             Re-create and sign the repository (default: don't).
+      --merge-repos               Create a common media.1/products file (default).
+      --no-merge-repos            Skip the special treatment of repositories and just merge all SOURCES.
+      --include-repos LIST        Comma-separated list of repository names to include in the final image.
+      --enable-repos WHEN         Whether to enable repos. WHEN can be 'auto', 'yes', 'ask', or 'no' (default: no).
+      --create-repo               Re-create and sign the repository (default: don't).
 
 Repository location related options:
 
-      --net URL                 Use URL as default network repository.
-      --instsys-url URL         Load the installation system from the specified URL.
-      --instsys-in-repo         Load installation system from repository (default).
-      --no-instsys-in-repo      Do not load installation system from repository but from local disks.
-      --defaultrepo URL_LIST    URL_LIST is a list of comma (',') separated URLs the installer will try in turn.
+      --net URL                   Use URL as default network repository.
+      --instsys-url URL           Load the installation system from the specified URL.
+      --instsys-in-repo           Load installation system from repository (default).
+      --no-instsys-in-repo        Do not load installation system from repository but from local disks.
+      --defaultrepo URL_LIST      URL_LIST is a list of comma (',') separated URLs the installer will try in turn.
 
 Boot menu related options:
 
-      --boot OPTIONS            Add OPTIONS to default boot options.
-      --add-entry BOOT_ENTRY    Create a new boot entry with name BOOT_ENTRY.
+      --boot OPTIONS              Add OPTIONS to default boot options.
+      --add-entry BOOT_ENTRY      Create a new boot entry with name BOOT_ENTRY.
 
 Image encryption related options:
 
-      --crypto                  If set, an encrypted disk image is created.
-      --password PASSWORD       Use PASSWORD for encrypting the disk image.
-      --title TITLE             The password query screen uses TITLE as title (default: openSUSE).
-      --top-dir DIR             The installation files are placed into subdir DIR.
-      --filesystem FS           Use file system FS for the encrypted image (default: ext4).
+      --crypto                    If set, an encrypted disk image is created.
+      --password PASSWORD         Use PASSWORD for encrypting the disk image.
+      --title TITLE               The password query screen uses TITLE as title (default: openSUSE).
+      --top-dir DIR               The installation files are placed into subdir DIR.
+      --filesystem FS             Use file system FS for the encrypted image (default: ext4).
 
 More information is available in the mksusecd(1) manual page.
 = = = = = = = =
@@ -1181,7 +1227,7 @@ sub build_todo
     my $x = $legacy_eltorito[0]{eltorito}{base};
     push @$todo, $legacy_eltorito[0];
     if(@legacy_eltorito > 1) {
-      print "More than one El Torito legacy boot entry detected, choosing /$x\n";
+      print "more than one El Torito legacy boot entry detected, choosing /$x\n";
     }
   }
 
@@ -1373,7 +1419,7 @@ sub prepare_mkisofs
     elsif($opt_efi && $t eq 'efi') {
       $has_efi = 1;
       my $f = fname($_->{$t}{base});
-      if(!$f || ! -s $f || rebuild_efi_image) {
+      if(!$f || ! -s $f || rebuild_efi_image($_->{$t}{base})) {
         create_efi_image $_->{$t}{base};
         $f = fname($_->{$t}{base});
       }
@@ -2286,9 +2332,16 @@ sub create_initrd
   my $tmp_dir = $tmp->dir();
 
   if($opt_rebuild_initrd) {
+    print "initrd: complete rebuild\n" if $opt_verbose >= 1;
     unpack_orig_initrd if !$orig_initrd;
     die "initrd unpacking failed\n" if !$orig_initrd;
     $tmp_dir = $orig_initrd;
+
+    if($kernel->{initrd_layout} ne 'install') {
+      # remove old modules and firmware trees
+      system "rm -rf $orig_initrd/$kernel->{target_lib_dir}/modules/$kernel->{orig_version}";
+      system "rm -rf $orig_initrd/$kernel->{target_lib_dir}/firmware";
+    }
   }
 
   for my $i (@opt_initrds) {
@@ -2315,9 +2368,11 @@ sub create_initrd
   }
 
   my $compr = 'cat';
-  $compr = "xz --quiet --check=crc32 -9 -c" if $initrd_format eq "xz";
-  $compr = "gzip --quiet -9c" if $initrd_format eq "gz";
-  $compr = "zstd --quiet -c -T0" if $initrd_format eq "zst";
+  # don't go for -9 with xz as it doesn't lead to noticeably reduced size
+  # but substancially limits multithreading
+  $compr = "xz --quiet --threads=0 --check=crc32 -c" if $initrd_format eq "xz";
+  $compr = "gzip --quiet -9 -c" if $initrd_format eq "gz";
+  $compr = "zstd --quiet --threads=0 -19 -c" if $initrd_format eq "zst";
 
   chmod 0755, $tmp_dir;
 
@@ -2434,7 +2489,7 @@ sub add_instsys_classic
 
   my $image_fname = copy_file $image_location;
 
-  print "Identified root file system: $image_location\n";
+  print "identified root file system: $image_location\n";
 
   my $new_files = prepare_new_instsys_files $file_list;
 
@@ -2443,7 +2498,7 @@ sub add_instsys_classic
   my $err = susystem "unsquashfs -no-progress -dest $tmp_root/root $image_fname >/dev/null";
   die "extracting root file system failed\n" if $err;
 
-  susystem "sh -c 'tar -C $new_files -cf - . | tar -C $tmp_root/root -xpf -'";
+  susystem "sh -c 'tar -C $new_files -cf - . | tar -C $tmp_root/root --keep-directory-symlink -xpf -'";
 
   # mksquashfs expects the image *not* to exist
   unlink $image_fname or die "$image_fname: $!\n";
@@ -2493,10 +2548,57 @@ sub add_instsys_live
   susystem "chown -R $< $tmp_live/root";
   susystem "chmod 644 $image_new";
 
+  if(defined $instsys_size) {
+    my $root_size = -s "$tmp_live/root/LiveOS/rootfs.img";
+    $root_size >>= 9;
+    $instsys_size += $root_size if $opt_instsys_size =~ /^\+/;
+    $instsys_size = $root_size - $instsys_size if $opt_instsys_size =~ /^\-/;
+
+    die "target live root fs size too small: $instsys_size blocks\n" if $instsys_size <= 0;
+
+    printf "target live root file system size: %.2f GiB\n", $instsys_size / (1 << 21);
+
+    if($instsys_size > $root_size) {
+      if(open my $f, "+<", "$tmp_live/root/LiveOS/rootfs.img") {
+        truncate $f, $instsys_size << 9;
+        close $f;
+      }
+
+      $err = susystem "resize2fs -f $tmp_live/root/LiveOS/rootfs.img >/dev/null 2>&1";
+      die "resizing live root fs failed\n" if $err;
+    }
+
+    if($instsys_size < $root_size) {
+      my $log = $tmp->file();
+      $err = susystem "resize2fs -f $tmp_live/root/LiveOS/rootfs.img ${instsys_size}s >$log 2>&1";
+      if($err) {
+        my $r = `cat $log`;
+        $r = $r =~ /No space left on device/ ? " (no space left on device)" : "";
+        die "resizing live root fs failed$r\n";
+      }
+
+      if(open my $f, "+<", "$tmp_live/root/LiveOS/rootfs.img") {
+        truncate $f, $instsys_size << 9;
+        close $f;
+      }
+    }
+  }
+
   my $tmp_mnt = $tmp->dir();
   die "\nLiveOS mount failed\n" if susystem "mount -oloop '$tmp_live/root/LiveOS/rootfs.img' $tmp_mnt";
 
-  susystem "sh -c 'tar -C $new_files --owner=0 --group=0 -cf - . | tar -C $tmp_mnt -xpf -'";
+  if($opt_rebuild_initrd) {
+    susystem "rm -rf $tmp_mnt/$kernel->{target_lib_dir}/modules/$kernel->{orig_version}";
+    susystem "rm -rf $tmp_mnt/$kernel->{target_lib_dir}/firmware" unless $kernel->{keep_firmware};
+  }
+
+  susystem "sh -c 'tar -C $new_files --owner=0 --group=0 -cf - . | tar -C $tmp_mnt --keep-directory-symlink -xpf -'";
+  susystem "chmod 0755 $tmp_mnt";
+
+  for my $i (glob "$tmp_mnt/boot/* $tmp_mnt/boot/.*") {
+    susystem "rm -f '$i'" unless -e $i;
+  }
+
   susystem "umount $tmp_mnt";
 
   my $err = susystem "mksquashfs $tmp_live/root $image_new -comp xz -all-root -noappend -no-progress >/dev/null 2>&1";
@@ -4330,7 +4432,7 @@ sub unpack_archive
     }
     elsif($_ eq 'tar') {
       $cmd = "cat '$file'" if !$cmd;
-      $cmd .= " | tar -C '$dir' -xpf - 2>/dev/null";
+      $cmd .= " | tar -C '$dir' --keep-directory-symlink -xpf - 2>/dev/null";
       last;
     }
     elsif($_ eq 'cpio') {
@@ -4407,20 +4509,45 @@ sub get_initrd_modules
 {
   my $unpack_dir = $tmp->dir();
 
+  # kernel package layout expected in initrd
+  if(-d "$orig_initrd/usr/lib/modules") {
+    $kernel->{target_usrmerge} = 1;
+    $kernel->{target_lib_dir} = "usr/lib";
+  }
+  else {
+    $kernel->{target_usrmerge} = 0;
+    $kernel->{target_lib_dir} = "lib";
+  }
+
   if(-l "$orig_initrd/modules") {
     $_ = readlink "$orig_initrd/modules";
     if(m#/modules/([^/]+)#) {
       $kernel->{orig_version} = $1;
     }
   }
+  elsif(opendir my $d, "$orig_initrd/$kernel->{target_lib_dir}/modules") {
+    for my $v (readdir $d) {
+      $kernel->{orig_version} = $v if $v =~ /^\d/;
+    }
+    closedir $d;
+  }
 
   die "oops, incompatible initrd layout\n" unless $kernel->{orig_version};
 
+  # Note:
+  #   if($kernel->{initrd_layout} == 'install') is atm the same as if($initrd_has_parts)
+  #   There might turn up other layouts in future, though.
+  #
   if(-f "$orig_initrd/parts/00_lib") {
+    $kernel->{initrd_layout} = 'install';
     rmdir $unpack_dir;
     if(system "unsquashfs -n -d $unpack_dir $orig_initrd/parts/00_lib >/dev/null 2>&1") {
       die "parts/00_lib: failed to unpack squashfs image - squashfs tools too old?\n";
     }
+    $orig_initrd_00_lib = $unpack_dir;
+  }
+  else {
+    $kernel->{initrd_layout} = 'live';
   }
 
   File::Find::find({
@@ -4434,10 +4561,10 @@ sub get_initrd_modules
       }
     },
     no_chdir => 1
-  }, "$orig_initrd/modules/", $unpack_dir);
+  }, "$orig_initrd/$kernel->{target_lib_dir}/modules/$kernel->{orig_version}", $unpack_dir);
 
   die "no initrd modules?\n" if !$kernel->{initrd_modules};
-  die "no module config?\n" if !$kernel->{initrd_module_config};
+  die "no module config?\n" if $kernel->{initrd_layout} eq 'install' && !$kernel->{initrd_module_config};
 }
 
 
@@ -4456,14 +4583,19 @@ sub unpack_kernel_rpms
     unpack_archive $type, $_, $kernel->{dir};
   }
 
-  # kernel package layout expected in initrd
-  if(-d "$orig_initrd/usr/lib/modules") {
-    $kernel->{target_usrmerge} = 1;
-    $kernel->{target_lib_dir} = "usr/lib";
-  }
-  else {
-    $kernel->{target_usrmerge} = 0;
-    $kernel->{target_lib_dir} = "lib";
+  # if kernel and firmware have different ideas about usrmerge, move firmware files to match kernel package layout
+  if(! -l "$kernel->{dir}/lib") {
+    if(-d "$kernel->{dir}/lib/modules" && -d "$kernel->{dir}/usr/lib/firmware") {
+      system "tar -C $kernel->{dir}/usr/lib -cf - firmware | tar -C $kernel->{dir}/lib --keep-directory-symlink -xpf -";
+      system "rm -rf $kernel->{dir}/usr/lib/firmware";
+      rmdir "$kernel->{dir}/usr/lib";
+      rmdir "$kernel->{dir}/usr";
+    }
+    elsif(-d "$kernel->{dir}/usr/lib/modules" && -d "$kernel->{dir}/lib/firmware") {
+      system "tar -C $kernel->{dir}/lib -cf - firmware | tar -C $kernel->{dir}/usr/lib --keep-directory-symlink -xpf -";
+      system "rm -rf $kernel->{dir}/lib/firmware";
+      rmdir "$kernel->{dir}/lib";
+    }
   }
 
   # kernel package layout in new kernel rpms
@@ -4514,6 +4646,7 @@ sub unpack_kernel_rpms
   for my $name ( qw ( vmlinuz Image image vmlinux ) ) {
     if( -f "$kernel->{dir}/$kernel_location/$name$kernel_name_suffix" ) {
       $kernel->{image} = "$kernel->{dir}/$kernel_location/$name$kernel_name_suffix";
+      $kernel->{name} = $name;
       last;
     }
   }
@@ -4521,11 +4654,35 @@ sub unpack_kernel_rpms
   die "no module dir?\n" if $kernel->{version} eq "";
   die "no kernel?\n" if !$kernel->{image};
 
+  # if no firmware packages were specified and we have to build a completely
+  # new initrd, keep existing firmware files
+  if($opt_rebuild_initrd && ! -d "$kernel->{dir}/$lib_dir/firmware") {
+    $kernel->{keep_firmware} = 1;
+    if($kernel->{initrd_layout} eq 'install') {
+      if($orig_initrd_00_lib && -d "$orig_initrd_00_lib/$target_lib_dir/firmware") {
+        print "kernel firmware: keep existing version\n";
+        system "cp -r $orig_initrd_00_lib/$target_lib_dir/firmware $kernel->{dir}/$lib_dir";
+      }
+      else {
+        print "kernel firmware: original firmware files missing\n";
+      }
+    }
+    else {
+      if(-d "$orig_initrd/$target_lib_dir/firmware") {
+        print "kernel firmware: keep existing version\n";
+        system "cp -r $orig_initrd/$target_lib_dir/firmware $kernel->{dir}/$lib_dir";
+      }
+      else {
+        print "kernel firmware: original firmware files missing\n";
+      }
+    }
+  }
+
   for (glob "$kernel->{dir}/$lib_dir/modules/*") {
     s#.*/##;
     next if $_ eq $kernel->{version};
     print "warning: kmp version mismatch, adjusting: $_ --> $kernel->{version}\n";
-    system "tar -C '$kernel->{dir}/$lib_dir/modules/$_' -cf - . | tar -C '$kernel->{dir}/$lib_dir/modules/$kernel->{version}' -xf -";
+    system "tar -C '$kernel->{dir}/$lib_dir/modules/$_' -cf - . | tar -C '$kernel->{dir}/$lib_dir/modules/$kernel->{version}' --keep-directory-symlink -xf -";
   }
 
   # compat symlink needed for depmod
@@ -4621,11 +4778,23 @@ sub build_module_list
 
   $kernel->{new_dir} = $tmp->dir();
 
-  File::Path::make_path "$kernel->{new_dir}/$target_lib_dir/modules/$kernel->{version}/initrd";
+  chmod 0755, $kernel->{new_dir};
+
+  if($kernel->{initrd_layout} eq 'install') {
+    File::Path::make_path "$kernel->{new_dir}/$target_lib_dir/modules/$kernel->{version}/initrd";
+  }
+  else {
+    File::Path::make_path "$kernel->{new_dir}/$target_lib_dir";
+  }
 
   for (sort keys %{$kernel->{initrd_modules}}) {
     if($kernel->{modules}{$_} && !$mods_remove{$_}) {
-      system "cp $kernel->{dir}/$lib_dir/modules/$kernel->{version}/$kernel->{modules}{$_} $kernel->{new_dir}/$target_lib_dir/modules/$kernel->{version}/initrd";
+      if($kernel->{initrd_layout} eq 'install') {
+        system "cp $kernel->{dir}/$lib_dir/modules/$kernel->{version}/$kernel->{modules}{$_} $kernel->{new_dir}/$target_lib_dir/modules/$kernel->{version}/initrd";
+      }
+      else {
+        system "cd $kernel->{dir}/$lib_dir && cp --parents modules/$kernel->{version}/$kernel->{modules}{$_} $kernel->{new_dir}/$target_lib_dir";
+      }
       push @{$kernel->{added}}, $_ if $kernel->{initrd_modules}{$_} > 1;
     }
     else {
@@ -4639,16 +4808,21 @@ sub build_module_list
     system "cp -f $kernel->{dir}/$lib_dir/modules/$kernel->{version}/modules.builtin{,.modinfo} $kernel->{new_dir}/$target_lib_dir/modules/$kernel->{version}/";
   }
 
-  if(open my $f, "$kernel->{dir}/$lib_dir/modules/$kernel->{version}/modules.order") {
-    if(open my $w, ">$kernel->{new_dir}/$target_lib_dir/modules/$kernel->{version}/modules.order") {
-      while(<$f>) {
-        chomp;
-        s#.*/#initrd/#;
-        print $w "$_\n" if -f "$kernel->{new_dir}/$lib_dir/modules/$kernel->{version}/$_";
+  if($kernel->{initrd_layout} eq 'install') {
+    if(open my $f, "$kernel->{dir}/$lib_dir/modules/$kernel->{version}/modules.order") {
+      if(open my $w, ">$kernel->{new_dir}/$target_lib_dir/modules/$kernel->{version}/modules.order") {
+        while(<$f>) {
+          chomp;
+          s#.*/#initrd/#;
+          print $w "$_\n" if -f "$kernel->{new_dir}/$lib_dir/modules/$kernel->{version}/$_";
+        }
+        close $w;
       }
-      close $w;
+      close $f;
     }
-    close $f;
+  }
+  else {
+    system "cp $kernel->{dir}/$lib_dir/modules/$kernel->{version}/modules.order $kernel->{new_dir}/$target_lib_dir/modules/$kernel->{version}";
   }
 
   # compat symlink needed for depmod
@@ -4658,6 +4832,18 @@ sub build_module_list
   else {
     mkdir "$kernel->{new_dir}/usr", 0755;
     symlink("../lib", "$kernel->{new_dir}/usr/lib");
+  }
+
+  if($opt_no_compression->{modules}) {
+    my $dir = "$kernel->{new_dir}/$target_lib_dir/modules";
+
+    if(-d $dir) {
+      print "uncompressing kernel modules...\n";
+
+      system "find $dir -type f -name \\*.ko.zst -exec zstd -d --quiet --rm '{}' \\;";
+      system "find $dir -type f -name \\*.ko.xz -exec xz -d '{}' \\;";
+      system "find $dir -type f -name \\*.ko.gz -exec gzip -d '{}' \\;";
+    }
   }
 
   system "depmod -a -b $kernel->{new_dir} $kernel->{version}";
@@ -4674,19 +4860,21 @@ sub build_module_list
 
   my %fw;
 
-  for my $m (glob("$kernel->{new_dir}/$target_lib_dir/modules/$kernel->{version}/initrd/*${kext_glob}")) {
-    chomp $m;
+  File::Find::find({
+    wanted => sub {
+      return if -l || ! -f;	# no links, only files
+      if(m#([^/]+)${kext_regexp}$#) {
+        my @l;
+        chomp(@l = `modinfo -F firmware $_`);
 
-    next unless -f $m;
+        s#.*/##;
+        s#${kext_regexp}$##;
 
-    my @l;
-    chomp(@l = `modinfo -F firmware $m`);
-
-    $m =~ s#.*/##;
-    $m =~ s#${kext_regexp}$##;
-
-    $fw{$m} = [ @l ] if @l;
-  }
+        $fw{$_} = [ @l ] if @l;
+      }
+    },
+    no_chdir => 1
+  }, "$kernel->{new_dir}/$target_lib_dir/modules/$kernel->{version}");
 
   my $kv = $kernel->{version};
   my $fw_dir = "$kernel->{dir}/$lib_dir/firmware";
@@ -4709,6 +4897,26 @@ sub build_module_list
         $fw_missing{$fw} = 1;
         print "missing firmware: $fw ($m.ko)\n" if $opt_verbose >= 1;
       }
+    }
+  }
+
+  if($opt_no_compression->{firmware}) {
+    my $dir = "$kernel->{new_dir}/$target_lib_dir/firmware";
+
+    if(-d $dir) {
+      print "uncompressing kernel firmware...\n";
+
+      # rename symlinks
+      for my $suffix ("zst", "xz", "gz") {
+        system "find $dir -type l -name \\*.$suffix -exec rename -sl .$suffix '' '{}' \\; -exec rename -l .$suffix '' '{}' \\;";
+      }
+
+      system "find $dir -type f -name \\*.zst -exec zstd -d --quiet --rm '{}' \\;";
+      system "find $dir -type f -name \\*.xz -exec xz -d '{}' \\;";
+      system "find $dir -type f -name \\*.gz -exec gzip -d '{}' \\;";
+
+      my $broken = `find $dir -follow -type l`;
+      print STDERR "firmware uncompressing left broken symlinks:\n$broken\n" if $broken ne "";
     }
   }
 
@@ -4773,9 +4981,18 @@ sub add_modules_to_initrd
       }
     }
 
-    my $err = system "mksquashfs $kernel->{new_dir} $tmp_dir/parts/$p" .
-      ($mksquashfs_has_comp ? " -comp xz" : "") .
-      " -noappend -no-progress >/dev/null 2>&1";
+    my $comp = $mksquashfs_has_comp ? "-comp xz" : "";
+
+    if($opt_no_compression->{squashfs}) {
+      if(!$mksquashfs_has_comp) {
+        die "mksquashfs version too old to allow setting compression algorithm\n";
+      }
+      else {
+        $comp = "-no-compression";
+      }
+    }
+
+    my $err = system "mksquashfs $kernel->{new_dir} $tmp_dir/parts/$p $comp -noappend -no-progress >/dev/null 2>&1";
     die "mksquashfs failed\n" if $err;
   }
   else {
@@ -4783,29 +5000,108 @@ sub add_modules_to_initrd
   }
 
   # add module symlink
+  if($kernel->{initrd_layout} eq 'install') {
+    symlink "$target_lib_dir/modules/$kernel->{version}/initrd", "$tmp_dir/modules";
 
-  symlink "$target_lib_dir/modules/$kernel->{version}/initrd", "$tmp_dir/modules";
+    my $cmd = "Exec:\t\tln -snf $lib_dir/modules/`uname -r`/initrd /modules\n";
 
-  my $cmd = "Exec:\t\tln -snf $lib_dir/modules/`uname -r`/initrd /modules\n";
-
-  if(open my $f, "$orig_initrd/linuxrc.config") {
-    my $cmd_found;
-    my @lines;
-    while(<$f>) {
-      push @lines, $_;
-      $cmd_found = 1 if $_ eq $cmd;
-    }
-    close $f;
-
-    if(!$cmd_found) {
-      open my $f, ">$tmp_dir/linuxrc.config";
-      print $f $cmd;
-      print $f @lines;
+    if(open my $f, "$orig_initrd/linuxrc.config") {
+      my $cmd_found;
+      my @lines;
+      while(<$f>) {
+        push @lines, $_;
+        $cmd_found = 1 if $_ eq $cmd;
+      }
       close $f;
+
+      if(!$cmd_found) {
+        open my $f, ">$tmp_dir/linuxrc.config";
+        print $f $cmd;
+        print $f @lines;
+        close $f;
+      }
     }
   }
 
   push @opt_initrds, $tmp_dir;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# add_modules_to_instsys()
+#
+# Add new kernel modules and firmware to instsys.
+#
+sub add_modules_to_instsys
+{
+  return if $kernel->{initrd_layout} eq 'install';
+
+  if(! -d "$kernel->{dir}/boot") {
+    mkdir "$kernel->{dir}/boot", 0755;
+
+    my $k_dir = "$kernel->{lib_dir}/modules/$kernel->{version}";
+
+    for my $i ("System.map", "config", "sysctl.conf", $kernel->{name}) {
+      symlink "../$k_dir/$i", "$kernel->{dir}/boot/$i-$kernel->{version}";
+    }
+    symlink "../$k_dir/.$kernel->{name}.hmac", "$kernel->{dir}/boot/.$kernel->{name}-$kernel->{version}.hmac" if -f "$kernel->{dir}/$k_dir/.$kernel->{name}.hmac";
+  }
+
+  symlink "$kernel->{name}-$kernel->{version}", "$kernel->{dir}/boot/$kernel->{name}";
+
+  unshift @opt_instsys, $kernel->{dir};
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# update_no_compression_settings()
+#
+# Merge $opt_no_compression with .no_compression setting in initrd and
+# update initrd if necessary.
+#
+sub update_no_compression_settings
+{
+  die "oops: initrd not unpacked?\n" if !$orig_initrd;
+
+  my $has_setting = 0;
+  my $has_opt_setting = $opt_no_compression ? 1 : 0;
+
+  if(open my $f, "$orig_initrd/.no_compression") {
+    $has_setting = 1;
+    if(!$opt_no_compression) {
+      chomp (my $no_comp = <$f>);
+      for my $c (split /,/, $no_comp) {
+        $opt_no_compression->{$c} = 1;
+      }
+    }
+    close $f;
+  }
+
+  my @keys = qw (firmware modules squashfs);
+  my $comp_str;
+
+  for my $i (@keys) {
+    if($opt_no_compression->{$i}) {
+      $comp_str .= "," if $comp_str ne "";
+      $comp_str .= "$i";
+    }
+  }
+
+  if(($has_opt_setting || $has_setting) && $comp_str ne "") {
+    print "no compression for: $comp_str\n";
+
+    # change only if necessary
+    if($has_opt_setting) {
+      my $tmp_dir = $tmp->dir();
+
+      if(open my $f, ">$tmp_dir/.no_compression") {
+        print $f "$comp_str\n";
+        close $f;
+      }
+
+      push @opt_initrds, $tmp_dir;
+    }
+  }
 }
 
 
@@ -4826,6 +5122,8 @@ sub replace_kernel_mods
 
   die "initrd unpacking failed\n" if !$orig_initrd;
 
+  update_no_compression_settings;
+
   get_initrd_modules;
 
   unpack_kernel_rpms;
@@ -4845,6 +5143,8 @@ sub replace_kernel_mods
   }
 
   add_modules_to_initrd;
+
+  add_modules_to_instsys;
 
   # now replace kernel
 
@@ -5011,10 +5311,14 @@ sub check_mksquashfs_comp
 # size_string is either a numerical size like '64G' or a file or block
 # device name. In this case the size of the file or block device is used.
 #
+# An optional '+' or '-' at the beginning is ignored.
+#
 sub eval_size
 {
   my $size = $_[0];
   my $unit = { b => 9 - 9, k => 10 - 9, m => 20 - 9, g => 30 - 9, t => 40 - 9 };
+
+  $size =~ s/^[+\-]//;
 
   return undef unless $size;
 
@@ -5042,8 +5346,6 @@ sub eval_size
   else {
     $size = undef;
   }
-
-  printf "target image size: %.2f GiB ($size blocks)\n", $size / (1 << 21);
 
   return $size;
 }
@@ -5728,7 +6030,7 @@ sub run_crypto_disk
 
   # copy everything except the efi config - it's already on the efi system
   # partition
-  system "${sudo}tar -C $iso_mount --exclude EFI -cf - . | ${sudo}tar -C $crypt_mount/$top_dir -xpf -";
+  system "${sudo}tar -C $iso_mount --exclude EFI -cf - . | ${sudo}tar -C $crypt_mount/$top_dir --keep-directory-symlink -xpf -";
 
   show_progress 90;
 
@@ -5968,7 +6270,7 @@ sub create_efi_image
 {
   return unless fname "EFI";
 
-  print "updating UEFI image $_[0]\n";
+  print "updating UEFI image: $_[0]\n";
 
   my $file = copy_or_new_file($_[0]);
 
@@ -5976,7 +6278,7 @@ sub create_efi_image
 
   for my $x (sort keys %$files) {
     if($x =~ m#^EFI($|/)#) {
-      system "tar -C '$files->{$x}' --mode=u+w -cf - '$x' | tar -C '$efi_dir' -xpf -";
+      system "tar -C '$files->{$x}' --mode=u+w -cf - '$x' | tar -C '$efi_dir' --keep-directory-symlink -xpf -";
     }
   }
 
@@ -5995,7 +6297,9 @@ sub create_efi_image
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-# rebuild_efi_image()
+# rebuild_efi_image(efi_image_name)
+#
+# - efi_image_name: efi image file name (in ISO image)
 #
 # Check whether there were changes to the 'EFI' directory and we need to
 # rebuild the el-torito efi image.
@@ -6004,7 +6308,11 @@ sub create_efi_image
 #
 sub rebuild_efi_image
 {
+  my $efi_image_name = $_[0];
+
   my $source_list;
+
+  $source_list->{$files->{$efi_image_name}} = 1 if $files->{$efi_image_name};
 
   for my $x (sort keys %$files) {
     if($x =~ m#^EFI($|/)#) {
