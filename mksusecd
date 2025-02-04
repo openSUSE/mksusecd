@@ -2884,23 +2884,48 @@ sub create_cd_ikr
   my $dst = $ikr;
   $dst =~ s#/[^/]*$##;
 
-  my $new_initrd_siz = copy_or_new_file "$src/initrd.siz";
+  my $initrd_name = "initrd";
+  my $initrd_siz_name = "${initrd_name}.siz";
+  my $initrd_off_name = "${initrd_name}.off";
+
+  my $new_initrd_siz = copy_or_new_file "$src/$initrd_siz_name";
   if(open my $f, ">", $new_initrd_siz) {
-    syswrite $f, pack("N", -s fname("$src/initrd"));
+    syswrite $f, pack("N", -s fname("$src/$initrd_name"));
     close $f;
   }
 
   my @layout;
 
+  my $off_layout;
+
   if(open my $s, fname($ins)) {
     while(<$s>) {
       next if /^\s*\*/;
       push @layout, { name => "$src/$1", file => fname("$src/$1"), ofs => oct($2) } if /^\s*(\S+)\s+(\S+)/;
+      $off_layout = $layout[-1] if $1 eq $initrd_off_name;
     }
     close $s;
   }
 
   die "$ins: nothing to do?\n" if !@layout;
+
+  # create initrd offset entry, if it shows up in layout file
+  if($off_layout) {
+    for (@layout) {
+      my $fname = $_->{file};
+      if($fname =~ m#/${initrd_name}$#) {
+        my $ofs = $_->{ofs};
+        my $new_initrd_ofs = copy_or_new_file "$src/$initrd_off_name";
+        if(open my $f, ">", $new_initrd_ofs) {
+          syswrite $f, pack("N", $ofs);
+          close $f;
+        }
+        $off_layout->{file} = fname($off_layout->{name});
+
+        last;
+      }
+    }
+  }
 
   my $new_ikr = copy_or_new_file $ikr;
 
