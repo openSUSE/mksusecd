@@ -616,6 +616,9 @@ if($opt_create || $opt_list_repos) {
 
   $media_style = get_media_style \@sources;
   $media_variant = get_media_variant \@sources;
+
+  print "media style $media_style, variant $media_variant\n" if $opt_verbose >= 1;
+
   analyze_products \@sources;
   build_filelist \@sources;
   $boot = analyze_boot;
@@ -714,9 +717,14 @@ if($opt_create || $opt_list_repos) {
   prepare_mkisofs;
 
   # print "sources = ", Dumper(\@sources);
-  # print "boot = ", Dumper($boot);
-  # print "todo = ", Dumper($todo);
   # print "mkisofs = ", Dumper($mkisofs);
+
+  if($opt_verbose >= 2) {
+    print "analyzed boot config:\n";
+    print Dumper($boot);
+    print "creating boot config:\n";
+    print Dumper($todo);
+  }
 
   if($opt_verbose >= 3) {
     print "mkisofs files:\n";
@@ -1186,9 +1194,33 @@ sub analyze_boot
 
   if(-d fname("EFI/BOOT")) {
     $boot->{efi} = { base => "EFI/BOOT" };
-  }
 
-  print Dumper $boot if $opt_verbose >= 2;
+    # Ensure there will be a UEFI boot image if it is currently missing,
+    # guessing its name if necessary.
+    #
+    # This is for media where the UEFI image is 'hidden' in the file system and
+    # cannot be accessed.
+    #
+    # The image will be auto-generated based on the content of the 'EFI' directory.
+
+    for my $arch (@boot_archs) {
+      next unless $boot->{$arch};
+      next if $boot->{$arch}{bl} && $boot->{$arch}{bl}{efi};
+      next unless $arch eq 'x86_64' || $arch eq 'i386' || $arch eq 'aarch64';
+      next unless -d fname("boot/$arch");
+      if($media_variant eq 'live') {
+        next unless -d fname("boot/$arch/loader");
+        $boot->{$arch}{bl}{efi} = { base => "boot/$arch/loader/efiboot.img", arch => $arch };
+        if(-f fname("boot/$arch/loader/boot_hybrid.img")) {
+          $hybrid_mbr_code = fname("boot/$arch/loader/boot_hybrid.img");
+          $hybrid_grub = 1;
+        }
+      }
+      else {
+        $boot->{$arch}{bl}{efi} = { base => "boot/$arch/efi", arch => $arch };
+      }
+    }
+  }
 
   return $boot;
 }
@@ -1210,10 +1242,11 @@ sub build_todo
   # In theory more than one entry could be created, but BIOSes don't really
   # expect that...
   for (sort keys %$boot) {
-    if($boot->{$_}{bl}{isolinux} && (!$opt_loader || $opt_loader eq "isolinux")) {
+    if($boot->{$_}{bl} && $boot->{$_}{bl}{isolinux} && (!$opt_loader || $opt_loader eq "isolinux")) {
       push @legacy_eltorito, { eltorito => $boot->{$_}{bl}{isolinux} };
     }
     if(
+      $boot->{$_}{bl} &&
       $boot->{$_}{bl}{grub2} &&
       !$boot->{$_}{bl}{chrp} &&
       (!$opt_loader || $opt_loader eq "grub")
@@ -1233,7 +1266,7 @@ sub build_todo
 
   # standard UEFI boot
   for (sort keys %$boot) {
-    if($boot->{$_}{bl}{efi}) {
+    if($boot->{$_}{bl} && $boot->{$_}{bl}{efi}) {
       push @$todo, { efi => $boot->{$_}{bl}{efi} };
     }
   }
@@ -1263,14 +1296,14 @@ sub build_todo
         print "zIPL bootable (s390x)\n";
       }
     }
-    if($boot->{$_}{bl}{ikr}) {
+    if($boot->{$_}{bl} && $boot->{$_}{bl}{ikr}) {
       push @$todo, { ikr => $boot->{$_}{bl}{ikr} };
     }
   }
 
   # chrp: just ensure we get a proper partition table
   for (sort keys %$boot) {
-    if($boot->{$_}{bl}{chrp}) {
+    if($boot->{$_}{bl} && $boot->{$_}{bl}{chrp}) {
       print "CHRP bootable ($_)\n";
       $hybrid_part_type = 0x96;
       $opt_hybrid = 1;
