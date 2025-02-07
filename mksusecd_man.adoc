@@ -380,6 +380,16 @@ config is adjusted accordingly.
 Use file system _FS_ for the encrypted image (default: ext4). +
 Don't be too creative here - the file system must be supported by grub2.
 
+=== Debug options
+
+*--mount-iso*::
+Mount ISO images to access them (default if run as root).
+
+*--no-mount-iso*::
+Unpack ISO images to access them (default if run as normal user). +
+Note: the ISO image is unpacked into a temporary directory below '/tmp'.
+Make sure that your file system has enough free space.
+
 === Sources
 
 Sources can be

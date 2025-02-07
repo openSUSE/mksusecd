@@ -234,6 +234,7 @@ sub rebuild_efi_image;
 my %config;
 my $sudo;
 my $sudo_checked;
+my $check_root_ok;
 my $opt_create;
 my $opt_save_temp;
 my $opt_dst;
@@ -295,6 +296,7 @@ my $opt_create_repo;
 my $opt_signature_file;
 my $opt_no_compression;
 my $opt_instsys_size;
+my $opt_mount_iso;
 
 Getopt::Long::Configure("gnu_compat");
 
@@ -377,6 +379,8 @@ GetOptions(
   'include-repos=s'  => \$opt_include_repos,
   'enable-repos=s'   => \$opt_enable_repos,
   'no-compression=s' => sub { @$opt_no_compression{split /,/, $_[1]} = ( 1 .. 8 ) },
+  'mount-iso'        => \$opt_mount_iso,
+  'no-mount-iso'     => sub { $opt_mount_iso = 0 },
   'save-temp'        => \$opt_save_temp,
   'verbose|v'        => sub { $opt_verbose++ },
   'version'          => sub { print "$VERSION\n"; exit 0 },
@@ -560,10 +564,21 @@ if($opt_create || $opt_list_repos) {
     elsif(-f _) {
       my $t = `file -b -k -L $_ 2>/dev/null`;
       if($t =~ /ISO 9660 CD-ROM/) {
-        check_root "Sorry, can't access ISO images; you need root privileges.";
+        my $d;
+        $opt_mount_iso = check_root if ! defined $opt_mount_iso;
+        if($opt_mount_iso) {
+          check_root "Sorry, can't access ISO images; you need root privileges.";
+          print "mounting $_\n" if $opt_verbose >= 2;
+          $d = $tmp->mnt(sprintf("mnt_%04d", $iso_cnt));
+          susystem "mount -oro,loop $_ $d";
+        }
+        else {
+          print "unpacking $_\n" if $opt_verbose >= 2;
+          $d = $tmp->dir();
+          system "cd $d && isoinfo -i '" . abs_path($_) . "' -RJX 2>/dev/null && chmod -R a=r,a=rX,u+w ."
+            and die "$_: ISO unpacking failed\n";
+        }
         $iso_cnt++;
-        my $d = $tmp->mnt(sprintf("mnt_%04d", $iso_cnt));
-        susystem "mount -oro,loop $_ $d";
         push @sources, { dir => $d, real_name => $_, type => 'iso' };
         if(`find $d -xdev \\! -readable`) {
           die "Some files in $_ are not user-readable; you need root privileges.\n";
@@ -935,6 +950,10 @@ Image encryption related options:
       --top-dir DIR               The installation files are placed into subdir DIR.
       --filesystem FS             Use file system FS for the encrypted image (default: ext4).
 
+Debug options:
+      --mount-iso                 Mount ISO images to access them (default if run as root).
+      --no-mount-iso              Unpack ISO images to access them (default if run as normal user).
+
 More information is available in the mksusecd(1) manual page.
 = = = = = = = =
 
@@ -948,26 +967,31 @@ More information is available in the mksusecd(1) manual page.
 # Checks if we can get root privileges if required.
 #
 # - msg: message to show to user if things fail
+#        if msg is not set, return status whether running as root is possible
 #
 sub check_root
 {
   my $p;
   my $msg = shift;
 
-  return if $sudo_checked;
+  if(!$sudo_checked) {
+    $sudo_checked = 1;
 
-  $sudo_checked = 1;
-
-  if(!$>) {
-    undef $sudo;
-    return;
+    $check_root_ok = 0;
+    if(!$>) {
+      undef $sudo;
+      $check_root_ok = 1;
+    }
+    else {
+      my $p;
+      chomp($p = `bash -c 'type -p $sudo'`) if $sudo;
+      $check_root_ok = 1 if $p ne "";
+    }
   }
 
-  chomp($p = `bash -c 'type -p $sudo'`) if $sudo;
+  die "$msg\n" if !$check_root_ok && $msg;
 
-  $msg = "sorry, you must be root" if $msg eq "";
-
-  die "$msg\n" if $p eq "";
+  return $check_root_ok;
 }
 
 
