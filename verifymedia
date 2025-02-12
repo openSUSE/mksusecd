@@ -1,0 +1,1412 @@
+#! /usr/bin/perl
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# package Tmp version 1.0
+#
+# Create temporary files/directories and ensures they are removed at
+# program end.
+#
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+{
+  package Tmp;
+
+  use File::Temp;
+  use strict 'vars';
+  use Cwd 'abs_path';
+
+  sub new
+  {
+    my $self = {};
+    my $save_tmp = shift;
+
+    bless $self;
+
+    my $x = $0;
+    $x =~ s#.*/##;
+    $x =~ s/(\s+|"|\\|')/_/;
+    $x = 'tmp' if$x eq "";
+
+    my $t = File::Temp::tempdir(abs_path("/tmp") . "/$x.XXXXXXXX", CLEANUP => $save_tmp ? 0 : 1);
+
+    $self->{base} = $t;
+
+    if(!$save_tmp) {
+      my $s_t = $SIG{TERM};
+      $SIG{TERM} = sub { File::Temp::cleanup; &$s_t if $s_t };
+
+      my $s_i = $SIG{INT};
+      $SIG{INT} = sub { File::Temp::cleanup; &$s_i if $s_i };
+    }
+
+    return $self
+  }
+
+  sub dir
+  {
+    my $self = shift;
+    my $dir = shift;
+    my $t;
+
+    if($dir ne "" && !-e("$self->{base}/$dir")) {
+      $t = "$self->{base}/$dir";
+      die "error: mktemp failed\n" unless mkdir $t, 0755;
+    }
+    else {
+      chomp ($t = `mktemp -d $self->{base}/XXXX`);
+      die "error: mktemp failed\n" if $?;
+    }
+
+    return $t;
+  }
+
+  sub file
+  {
+    my $self = shift;
+    my $file = shift;
+    my $t;
+
+    if($file ne "" && !-e("$self->{base}/$file")) {
+      $t = "$self->{base}/$file";
+      open my $f, ">$t";
+      close $f;
+    }
+    else {
+      chomp ($t = `mktemp $self->{base}/XXXX`);
+      die "error: mktemp failed\n" if $?;
+    }
+
+    return $t;
+  }
+
+  # helper function
+  sub umount
+  {
+    my $mp = shift;
+
+    if(open(my $f, "/proc/mounts")) {
+      while(<$f>) {
+        if((split)[1] eq $mp) {
+          # print STDERR "umount $mp\n";
+          ::susystem("umount $mp");
+          return;
+        }
+      }
+      close $f;
+    }
+  }
+
+  sub mnt
+  {
+    my $self = shift;
+    my $dir = shift;
+
+    my $t = $self->dir($dir);
+
+    if($t ne '') {
+      eval 'END { local $?; umount $t }';
+
+      my $s_t = $SIG{TERM};
+      $SIG{TERM} = sub { umount $t; &$s_t if $s_t };
+
+      my $s_i = $SIG{INT};
+      $SIG{INT} = sub { umount $t; &$s_i if $s_i };
+    }
+
+    return $t;
+  }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+use strict;
+use utf8;
+
+use Getopt::Long;
+use Digest::MD5;
+use Digest::SHA;
+use File::Find;
+use File::Path;
+use Cwd 'abs_path';
+
+use Data::Dumper;
+$Data::Dumper::Sortkeys = 1;
+$Data::Dumper::Terse = 1;
+$Data::Dumper::Indent = 1;
+
+binmode(STDOUT, ":utf8");
+binmode(STDERR, ":utf8");
+
+our $VERSION = "0.0";
+our $LIBEXECDIR = "/usr/lib";
+
+sub usage;
+sub show;
+sub show_and_exit;
+sub show_conditional;
+
+sub chk_joliet;
+sub ckh_rockridge;
+sub chk_files_permission;
+sub chk_files_owner;
+sub chk_file_exists;
+sub chk_file_exists_optional;
+sub chk_grub_root_exists;
+
+sub check_root;
+sub susystem;
+sub get_iso9660_info;
+sub unpack_iso_image;
+sub iso_ls;
+sub read_treeinfo;
+sub read_ini;
+sub get_media_style;
+sub get_media_variant;
+sub get_arch;
+sub get_expected_media_layout;
+sub read_file;
+sub get_grub_root;
+sub get_archive_type;
+sub unpack_cpiox;
+sub unpack_archive;
+sub file_magic;
+sub unpack_initrd;
+sub get_live_root;
+
+my $opt_save_temp;
+my $opt_verbose = 0;
+my $opt_mount_iso;
+
+my $config;
+my $tmp;
+my $media;
+my $iso9660;
+my $errors = 0;
+my $error_detail;
+my $src;
+my $src_short;
+my $iso_ls_rockridge;
+my $treeinfo;
+my $iso_dir;
+my $initrd_dir;
+
+Getopt::Long::Configure("gnu_compat");
+
+GetOptions(
+  'mount-iso'        => \$opt_mount_iso,
+  'no-mount-iso'     => sub { $opt_mount_iso = 0 },
+  'save-temp'        => \$opt_save_temp,
+  'verbose|v'        => sub { $opt_verbose++ },
+  'version'          => sub { print "$VERSION\n"; exit 0 },
+  'help'             => sub { usage 0 },
+) || usage 1;
+
+$ENV{PATH} = "/usr/bin:/bin:/usr/sbin:/sbin";
+
+if(open my $f, "$ENV{HOME}/.verifymediarc") {
+  while(<$f>) {
+    next if /^\s*#/;
+    if(/^\s*(\S+?)\s*=\s*(.*?)\s*$/) {
+      my $key = $1;
+      my $val = $2;
+      $val =~ s/^\"|\"$//g;
+      $config->{$key} = $val;
+    }
+  }
+  close $f;
+}
+
+$tmp = Tmp::new($opt_save_temp);
+
+usage 1 unless @ARGV == 1;
+
+$src = shift;
+
+die "$src: no such file\n" unless -f $src;
+die "$src: not readable\n" unless -r _;
+
+($src_short = $src) =~ s#^.*/##;
+print "Verifying: $src_short\n";
+
+$iso9660 = get_iso9660_info $src;
+print "- iso header info:\n", Dumper($iso9660) if $opt_verbose >= 2;
+
+show_and_exit
+  defined($iso9660),
+  "image has ISO-9660 file system",
+  "Image must be using an ISO-9660 file system.";
+
+show
+  chk_rockridge($iso9660),
+  "image uses Rock Ridge extension",
+  "ISO image must use Rock Ridge extension ('mkisofs -R', default in xorriso).";
+
+show
+  chk_joliet($iso9660),
+  "image uses Joliet extension",
+  "ISO image must use Joliet extension ('mkisofs -J', 'xorriso -joliet on').";
+
+$iso_ls_rockridge = iso_ls $src, "rockridge";
+print "- iso file list (rock ridge):\n", Dumper($iso_ls_rockridge) if $opt_verbose >= 2;
+
+$iso_dir = unpack_iso_image $src; 
+
+show
+  chk_files_permission($iso_ls_rockridge),
+  "all files are world-readable",
+  "Files on the ISO image should be readable by all users (chmod o+r).";
+
+show
+  chk_files_owner($iso_ls_rockridge),
+  "all files are owned by root",
+  "Files on the ISO image should have uid and gid 0.";
+
+$treeinfo = read_treeinfo $iso_dir;
+print "- .treeinfo:\n", Dumper($treeinfo) if $opt_verbose >= 2;
+
+$media->{style} = get_media_style $iso_dir;
+$media->{variant} = get_media_variant $iso_dir;
+$media->{arch} = get_arch $iso_dir, $treeinfo;
+get_expected_media_layout $iso_dir, $media;
+
+print "- media:\n", Dumper($media) if $opt_verbose >= 2;
+die "failed to detect architecture\n" unless $media->{arch};
+print "- media style: $media->{style}\n" if $opt_verbose >= 1;
+print "- media variant: $media->{variant}\n" if $opt_verbose >= 1;
+print "- media architecture: $media->{arch}\n" if $opt_verbose >= 1;
+
+show
+  chk_file_exists($iso_dir, $media->{kernel}),
+  "kernel exists",
+  "Kernel must exist and have non-zero size.";
+
+show
+  chk_file_exists($iso_dir, $media->{initrd}),
+  "initrd exists",
+  "Initrd must exist and have non-zero size.";
+
+show_conditional
+  $media->{initrd_off},
+  chk_file_exists($iso_dir, $media->{initrd_off}),
+  "initrd.off exists",
+  "initrd.off must exist and have non-zero size.";
+
+show_conditional
+  $media->{initrd_siz},
+  chk_file_exists($iso_dir, $media->{initrd_siz}),
+  "initrd.siz exists",
+  "initrd.siz must exist and have non-zero size.";
+
+show_conditional
+  $media->{cd_ikr},
+  chk_file_exists($iso_dir, $media->{cd_ikr}),
+  "cd.ikr exists",
+  "cd.ikr must exist and have non-zero size.";
+
+show_conditional
+  $media->{suse_ins},
+  chk_file_exists($iso_dir, $media->{suse_ins}),
+  "suse.ins exists",
+  "suse.ins must exist and have non-zero size.";
+
+show_conditional
+  $media->{isolinux_cfg},
+  chk_file_exists($iso_dir, $media->{isolinux_cfg}),
+  "isolinux config exists",
+  "isolinux.cfg must exist and have non-zero size.";
+
+show_conditional
+  $media->{grub_earlyboot_cfg},
+  chk_file_exists($iso_dir, $media->{grub_earlyboot_cfg}),
+  "grub earlyboot config exists",
+  "earlyboot.cfg must exist and have non-zero size.";
+
+show_conditional
+  $media->{grub_earlyboot_cfg},
+  chk_grub_root_exists($iso_dir, $media->{grub_earlyboot_cfg}),
+  "grub earlyboot config references correct root file system",
+  "$media->{grub_earlyboot_cfg} searches for a specific file to identify its root file system.\nThis file should exist.";
+
+show_conditional
+  $media->{grub_cfg},
+  chk_file_exists($iso_dir, $media->{grub_cfg}),
+  "grub config exists",
+  "grub.cfg must exist and have non-zero size.";
+
+show_conditional
+  $media->{grub_cfg},
+  chk_grub_root_exists($iso_dir, $media->{grub_cfg}),
+  "grub config references correct root file system",
+  "$media->{grub_cfg} searches for a specific file to identify its root file system.\nThis file should exist.";
+
+show_conditional
+  $media->{efi_grub_cfg},
+  chk_file_exists($iso_dir, $media->{efi_grub_cfg}),
+  "UEFI grub config exists",
+  "UEFI grub.cfg must exist and have non-zero size.";
+
+show_conditional
+  $media->{efi_grub_cfg},
+  chk_grub_root_exists($iso_dir, $media->{efi_grub_cfg}),
+  "UEFI grub config references correct root file system",
+  "$media->{efi_grub_cfg} searches for a specific file to identify its root file system.\nThis file should exist.";
+
+show_conditional
+  $media->{efi_loader},
+  chk_file_exists($iso_dir, $media->{efi_loader}),
+  "UEFI boot loader exists",
+  "UEFI boot loader must exist and have non-zero size.";
+
+show_conditional
+  $media->{efi_image},
+  chk_file_exists_optional($iso_dir, $media->{efi_image}),
+  "UEFI boot image exists",
+  "UEFI boot image should exist and have non-zero size.";
+
+if($media->{variant} eq 'live' && -f "$iso_dir/$media->{initrd}") {
+  $initrd_dir = unpack_initrd $iso_dir, $media->{initrd};
+}
+
+if($media->{variant} eq 'live') {
+  $media->{live_root} = get_live_root $iso_dir, $initrd_dir;
+  print "- live root fs: $media->{live_root}\n" if $media->{live_root} && $opt_verbose >= 1;
+
+  show
+    $media->{live_root} && $media->{live_root} eq "LABEL=$iso9660->{volume_id}",
+    "ISO label matches dracut live root option",
+    "ISO label '$iso9660->{volume_id}' must correspond to dracut live root option '$media->{live_root}'.";
+}
+
+print "- $errors error(s)\n" if $opt_verbose >= 1;
+
+exit($errors ? 1 : 0);
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# usage(exit_code)
+#
+# Print help text and exit with exit_code.
+#
+sub usage
+{
+  print <<"= = = = = = = =";
+Usage: verifymedia ISO
+Verfiy bootable media.
+
+General options:
+
+      --verbose                   Show more detailed messages. Can be repeated to log even more.
+      --version                   Show verifymedia version.
+      --save-temp                 Keep temporary files.
+      --help                      Write this help text.
+
+Debug options:
+      --mount-iso                 Mount ISO images to access them (default if run as root).
+      --no-mount-iso              Unpack ISO images to access them (default if run as normal user).
+
+More information is available in the verifymedia(1) manual page.
+= = = = = = = =
+
+  exit shift;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub show
+{
+  my $result = $_[0];
+  my $topic = $_[1];
+  my $comment = $_[2];
+
+  if(defined $result) {
+    $result++;
+  }
+  else {
+    $result = 0;
+  }
+
+  $errors++ if $result == 1;
+
+  # values: not checked, bad, ok, not nice
+  my @mark = ( "", "\x{2718}", "\x{2714}", "!" );
+
+  my $indent = "";
+  my $indent_c = "  ";
+  
+  printf "${indent}[%-1s] %s\n", $mark[$result], $topic;
+
+  if($result == 1 || $result == 3) {
+    $comment =~ s/\s+$//g;
+    $comment =~ s/^\s*/$indent_c/;
+    $comment =~ s/\n\s*/\n$indent_c/g;
+
+    if($error_detail ne "") {
+      $error_detail =~ s/\s+$//g;
+      $error_detail =~ s/^\s*/$indent_c/;
+      $error_detail =~ s/\n\s*/\n$indent_c/g;
+      print "$error_detail\n";
+    }
+
+    print "$comment\n";
+  }
+
+  undef $error_detail;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub show_and_exit
+{
+  show @_;
+
+  exit 1 if $errors;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub show_conditional
+{
+  return unless $_[0];
+
+  shift;
+
+  show @_;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub chk_joliet
+{
+  my $iso_header = $_[0];
+
+  return $iso_header->{joliet} ? 1 : 0;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub chk_rockridge
+{
+  my $iso_header = $_[0];
+
+  return $iso_header->{rockridge} ? 1 : 0;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub chk_files_permission
+{
+  my $files = $_[0];
+  my $ok = 1;
+
+  for my $file (@$files) {
+    if(substr($file->{perm}, 6, 1) ne 'r') {
+      $error_detail .= sprintf "%s %3d %3d %10d %s\n", $file->{perm}, $file->{uid}, $file->{gid}, $file->{size}, $file->{name};
+      $ok = 0;
+    }
+  }
+
+  return $ok;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub chk_files_owner
+{
+  my $files = $_[0];
+  my $ok = 1;
+
+  for my $file (@$files) {
+    if($file->{uid} != 0 || $file->{gid} != 0) {
+      $error_detail .= sprintf "%s %3d %3d %10d %s\n", $file->{perm}, $file->{uid}, $file->{gid}, $file->{size}, $file->{name};
+      $ok = 0;
+    }
+  }
+
+  return $ok;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub chk_file_exists
+{
+  my $dir = $_[0];
+  my $file = $_[1];
+
+  my $ok = $file ne "" && -s "$dir/$file" ? 1 : 0;
+
+  $error_detail = $file if !$ok;
+
+  return $ok;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub chk_file_exists_optional
+{
+  my $ok = chk_file_exists @_;
+
+  $ok = 2 if !$ok;
+
+  return $ok;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub chk_grub_root_exists
+{
+  my $dir = $_[0];
+  my $grub_cfg = $_[1];
+
+  my $grub_root = get_grub_root $iso_dir, $grub_cfg;
+
+  my $state;
+
+  if($grub_root ne "") {
+    $state = -f "$iso_dir/$grub_root" ? 1 : 0;
+  }
+
+  $error_detail = $grub_root if !$state;
+
+  return $state;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub get_iso9660_info
+{
+  my $iso = $_[0];
+  my $info = `isoinfo -d -i $iso 2>/dev/null`;
+  my $data = {};
+
+  return unless $info =~ /CD-ROM is in ISO 9660 format/;
+
+  $data->{system_id} = $1 if $info =~ /^System id: (.*)/m;
+  $data->{volume_id} = $1 if $info =~ /^Volume id: (.*)/m;
+  $data->{publisher_id} = $1 if $info =~ /^Publisher id: (.*)/m;
+  $data->{application_id} = $1 if $info =~ /^Application id: (.*)/m;
+  $data->{preparer_id} = $1 if $info =~ /^Data preparer id: (.*)/m;
+  $data->{joliet} = 1 if $info =~ /^Joliet .* found/m;
+  $data->{rockridge} = 1 if $info =~ /^Rock Ridge .* found/m;
+  $data->{eltorito} = $1 if $info =~ /^El Torito .* found, boot catalog is in sector (\d+)/m;
+
+  print "- iso header info:\n", Dumper($iso9660) if $opt_verbose >= 2;
+
+  return $data;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub unpack_iso_image
+{
+  my $iso = $_[0];
+
+  my $dir;
+
+  $opt_mount_iso = check_root if ! defined $opt_mount_iso;
+  if($opt_mount_iso) {
+    check_root "Sorry, can't access ISO images; you need root privileges.";
+    print "- mounting $iso\n" if $opt_verbose >= 1;
+    $dir = $tmp->mnt("iso");
+    susystem "mount -oro,loop $iso $dir";
+  }
+  else {
+    print "- unpacking $iso\n" if $opt_verbose >= 1;
+    $dir = $tmp->dir();
+    system "cd $dir && isoinfo -i '" . abs_path($iso) . "' -RJX 2>/dev/null && chmod -R a=r,a=rX,u+w ."
+      and die "$iso: ISO unpacking failed\n";
+  }
+
+  return $dir;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# ISO file list sorted by start address.
+#
+# Return ref to array with files.
+#
+sub iso_ls
+{
+  my $iso = $_[0];
+  my $extension = $_[1];
+  my $files;
+
+  if($extension eq "joliet") {
+    $extension = "-J";
+  }
+  elsif($extension eq "rockridge") {
+    $extension = "-R";
+  }
+  else {
+    $extension = "";
+  }
+
+  open my $fd, "isoinfo $extension -l -i $iso 2>/dev/null |";
+
+  my $dir = "/";
+
+  while(<$fd>) {
+    if(/^Directory listing of\s*(\/.*\/)/) {
+      $dir = $1;
+      next;
+    }
+
+    # isoinfo format change
+    # cf. https://sourceforge.net/p/cdrtools/mailman/message/35173024
+    s/^\s*\d+\s+//;
+
+    if(/^(.)(.*)\s\[\s*(\d+)(\s+\d+)?\]\s+(.*?)\s*$/) {
+      my $type = $1;
+      my @x = split ' ', $2;
+      $type = ' ' if $type eq '-';
+      if($5 ne '.' && $5 ne '..') {
+        my $start = $3 + 0;
+        my $name = "$dir$5";
+        $name =~ s#^/##;
+        $name =~ s/\.?\;1$// if !$extension;
+        push @$files, { name => $name, type => $type, start => $start, perm => $x[0], uid => $x[2], gid => $x[3], size => $x[4] };
+      }
+    }
+  }
+
+  close $fd;
+
+  $files = [ sort { $a->{start} <=> $b->{start} } @$files ] if $files;
+
+  return $files;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# check_root(msg)
+#
+# Checks if we can get root privileges if required.
+#
+# - msg: message to show to user if things fail
+#        if msg is not set, return status whether running as root is possible
+#
+sub check_root
+{
+  my $p;
+  my $msg = shift;
+
+  if(!$config->{sudo_checked}) {
+    $config->{sudo_checked} = 1;
+
+    $config->{check_root_ok} = 0;
+    if(!$>) {
+      delete $config->{sudo};
+      $config->{check_root_ok} = 1;
+    }
+    else {
+      my $p;
+      chomp($p = `bash -c 'type -p $config->{sudo}'`) if $config->{sudo};
+      $config->{check_root_ok} = 1 if $p ne "";
+    }
+  }
+
+  die "$msg\n" if !$config->{check_root_ok} && $msg;
+
+  return $config->{check_root_ok};
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# susystem(cmd)
+#
+# Run command with root privileges.
+#
+# - cmd: command to run
+#
+sub susystem
+{
+  system "$config->{sudo} $_[0]";
+}
+
+
+# -------------------------------------------------------------------------------------------------
+# -------------------------------------------------------------------------------------------------
+# -------------------------------------------------------------------------------------------------
+
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# get_media_style(sources)
+#
+# - sources: array_ref containing a list of directories
+#
+# Look at sources and determine media style (suse vs. rh).
+#
+# Assume rh style if there's an '/isolinux' dir or a '.discinfo' file or
+# there are '<FOO>/Packages' subdirectories.
+#
+# FIXME: Ferdora Live is reported as 'suse'.
+#
+sub get_media_style
+{
+  my $dir = $_[0];
+
+  if(-d "$dir/isolinux" || -f "$dir/.discinfo") {
+    return 'rh';
+  }
+
+  for my $file (glob "$dir/*/Packages") {
+    return 'rh' if -d $file;
+  }
+
+  return 'suse';
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# get_media_variant(sources)
+#
+# - sources: array_ref containing a list of directories
+#
+# Look at sources and determine media variant (install vs. live).
+#
+# Assume a Live medium if there's an '/LiveOS' dir.
+#
+sub get_media_variant
+{
+  my $dir = $_[0];
+
+  return 'live' if -d "$dir/LiveOS";
+  return 'selfinstall' if -f "$dir/config.isoclient";
+
+  return 'install';
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub read_treeinfo
+{
+  my $dir = $_[0];
+
+  my $ini = read_ini "$dir/.treeinfo";
+
+  return $ini;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# read_ini(file)
+#
+# - file: file name
+#
+# Read ini-style config file.
+#
+# Return content as hash reference.
+#
+sub read_ini
+{
+  my $file = $_[0];
+  my $ini;
+  my $section;
+
+  if(open my $f, $file) {
+    while(<$f>) {
+      chomp;
+      s/\s*;.*//;
+      next if /^\s*$/;
+      if(/^\s*\[([^]]+)\]/) {
+        $section = $1;
+        next;
+      }
+      next if !defined $section;
+      if(/^\s*([^=>]+?)\s*+=\s*+(.*?)\s*$/) {
+        $ini->{$section}{$1} = $2;
+      }
+    }
+    close $f;
+  }
+
+  return $ini;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub get_arch
+{
+  my $dir = $_[0];
+  my $treeinfo = $_[1];
+
+  my $arch;
+
+  # Note: .treeinfo is broken on SUSE media
+  #
+  # if($treeinfo) {
+  #   return $treeinfo->{general}{arch} if $treeinfo->{general} && $treeinfo->{general}{arch};
+  # }
+
+  for my $x ('aarch64', 'i386', 'ppc64', 'ppc64le', 's390x', 'x86_64') {
+    return $x if -d "$dir/boot/$x";
+  }
+
+  return $arch;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub get_expected_media_layout
+{
+  my $dir = $_[0];
+  my $media = $_[1];
+
+  my $arch = $media->{arch};
+
+  return unless $arch;
+
+  if($media->{variant} eq 'install') {
+    if($arch eq 'aarch64') {
+      $media->{initrd} = "boot/aarch64/initrd";
+      $media->{kernel} = "boot/aarch64/linux";
+      $media->{efi_loader} = "EFI/BOOT/bootaa64.efi";
+      $media->{efi_grub_cfg} = "EFI/BOOT/grub.cfg";
+    }
+    elsif($arch eq 'ppc64le') {
+      $media->{initrd} = "boot/ppc64le/initrd";
+      $media->{kernel} = "boot/ppc64le/linux";
+    }
+    elsif($arch eq 's390x') {
+      $media->{initrd} = "boot/s390x/initrd";
+      $media->{initrd_off} = "boot/s390x/initrd.off";
+      $media->{initrd_siz} = "boot/s390x/initrd.siz";
+      $media->{kernel} = "boot/s390x/linux";
+      $media->{cd_ikr} = "boot/s390x/cd.ikr";
+      $media->{suse_ins} = "boot/s390x/suse.ins";
+    }
+    elsif($arch eq 'x86_64') {
+      $media->{isolinux_cfg} = "boot/x86_64/loader/isolinux.cfg";
+      $media->{el_torito_image} = "boot/x86_64/loader/isolinux.bin";
+      $media->{initrd} = "boot/x86_64/loader/initrd";
+      $media->{kernel} = "boot/x86_64/loader/linux";
+      $media->{efi_image} = "boot/x86_64/efi";
+      $media->{efi_loader} = "EFI/BOOT/bootx64.efi";
+      $media->{efi_grub_cfg} = "EFI/BOOT/grub.cfg";
+    }
+  }
+  elsif($media->{variant} eq 'live') {
+    if($arch eq 'aarch64') {
+      $media->{grub_cfg} = "boot/grub2/grub.cfg";
+      $media->{initrd} = "boot/aarch64/loader/initrd";
+      $media->{kernel} = "boot/aarch64/loader/linux";
+      $media->{efi_image} = "boot/aarch64/loader/efiboot.img";
+      $media->{efi_loader} = "EFI/BOOT/bootaa64.efi";
+      $media->{efi_grub_cfg} = "EFI/BOOT/grub.cfg";
+      if(open my $fd, "$dir/boot/mbrid") {
+        my $id = <$fd>;
+        close $fd;
+        chomp $id;
+        if($id && -f "$dir/boot/$id") {
+          $media->{grub_search_id} = "/boot/$id";
+        }
+      }
+    }
+    elsif($arch eq 'ppc64le') {
+      $media->{initrd} = "boot/ppc64le/initrd";
+      $media->{kernel} = "boot/ppc64le/linux";
+    }
+    elsif($arch eq 's390x') {
+      $media->{initrd} = "boot/s390x/initrd";
+      $media->{initrd_off} = "boot/s390x/initrd.off";
+      $media->{initrd_siz} = "boot/s390x/initrd.siz";
+      $media->{kernel} = "boot/s390x/linux";
+      $media->{cd_ikr} = "boot/s390x/cd.ikr";
+      $media->{suse_ins} = "boot/s390x/suse.ins";
+    }
+    elsif($arch eq 'x86_64') {
+      $media->{grub_cfg} = "boot/grub2/grub.cfg";
+      $media->{grub_earlyboot_cfg} = "boot/grub2/earlyboot.cfg";
+      $media->{el_torito_image} = "boot/x86_64/loader/eltorito.img";
+      $media->{initrd} = "boot/x86_64/loader/initrd";
+      $media->{kernel} = "boot/x86_64/loader/linux";
+      $media->{efi_image} = "boot/x86_64/loader/efiboot.img";
+      $media->{efi_loader} = "EFI/BOOT/bootx64.efi";
+      $media->{efi_grub_cfg} = "EFI/BOOT/grub.cfg";
+      if(open my $fd, "$dir/boot/mbrid") {
+        my $id = <$fd>;
+        close $fd;
+        chomp $id;
+        if($id && -f "$dir/boot/$id") {
+          $media->{grub_search_id} = "/boot/$id";
+        }
+      }
+    }
+  }
+  elsif($media->{variant} eq 'selfinstall') {
+    if($arch eq 'aarch64') {
+      $media->{grub_cfg} = "boot/grub2/grub.cfg";
+      $media->{initrd} = "boot/aarch64/loader/initrd";
+      $media->{kernel} = "boot/aarch64/loader/linux";
+      $media->{efi_image} = "boot/aarch64/loader/efiboot.img";
+      $media->{efi_loader} = "EFI/BOOT/bootaa64.efi";
+      $media->{efi_grub_cfg} = "EFI/BOOT/grub.cfg";
+      if(open my $fd, "$dir/boot/mbrid") {
+        my $id = <$fd>;
+        close $fd;
+        chomp $id;
+        if($id && -f "$dir/boot/$id") {
+          $media->{grub_search_id} = "/boot/$id";
+        }
+      }
+    }
+    elsif($arch eq 'ppc64le') {
+      $media->{initrd} = "boot/ppc64le/initrd";
+      $media->{kernel} = "boot/ppc64le/linux";
+    }
+    elsif($arch eq 's390x') {
+      $media->{initrd} = "boot/s390x/initrd";
+      $media->{initrd_off} = "boot/s390x/initrd.off";
+      $media->{initrd_siz} = "boot/s390x/initrd.siz";
+      $media->{kernel} = "boot/s390x/linux";
+      $media->{cd_ikr} = "boot/s390x/cd.ikr";
+      $media->{suse_ins} = "boot/s390x/suse.ins";
+    }
+    elsif($arch eq 'x86_64') {
+      $media->{grub_cfg} = "boot/grub2/grub.cfg";
+      $media->{grub_earlyboot_cfg} = "boot/grub2/earlyboot.cfg";
+      $media->{el_torito_image} = "boot/x86_64/loader/eltorito.img";
+      $media->{initrd} = "boot/x86_64/loader/initrd";
+      $media->{kernel} = "boot/x86_64/loader/linux";
+      $media->{efi_image} = "boot/x86_64/loader/efiboot.img";
+      $media->{efi_loader} = "EFI/BOOT/bootx64.efi";
+      $media->{efi_grub_cfg} = "EFI/BOOT/grub.cfg";
+      if(open my $fd, "$dir/boot/mbrid") {
+        my $id = <$fd>;
+        close $fd;
+        chomp $id;
+        if($id && -f "$dir/boot/$id") {
+          $media->{grub_search_id} = "/boot/$id";
+        }
+      }
+    }
+  }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub read_file
+{
+  my $dir = $_[0];
+  my $file = $_[1];
+
+  my $data;
+
+  if(open my $fd, "$dir/$file") {
+    local $/;
+    $data = <$fd>;
+    close $fd;
+  }
+
+  return $data;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub get_grub_root
+{
+  my $dir = $_[0];
+  my $file = $_[1];
+
+  my $data = read_file $dir, $file;
+
+  my $root;
+
+  if($data) {
+    # search --file --set=root /boot/0x11cebed2
+    # search --no-floppy --file /boot/aarch64/efi --set
+    if($data =~ /^search .*--set=root \/(\S+)/m) {
+      $root = $1;
+    }
+    elsif($data =~ /^search .*--file \/(\S+) .*--set/m) {
+      $root = $1;
+    }
+  }
+
+  return $root;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# Get archive type;
+#
+# type = get_archive_type(file)
+#
+# - file: the archive name
+# - type: something like 'tar.xz' or undef if the archive is unsupported.
+#
+sub get_archive_type
+{
+  my $file = $_[0];
+  my $type;
+  my $cmd;
+
+  my $orig = $file;
+
+  if(-d $file) {
+    return 'dir';
+  }
+
+  if(! -f $file) {
+    return undef;
+  }
+
+  if(! -r $file) {
+    die "$orig: not readable; you need root privileges.\n";
+  }
+
+  do {
+    my $t = file_magic $file, $cmd;
+
+    if($t =~ /^RPM/) {
+      $type = "cpio.rpm$type";
+    }
+    elsif($t =~ /^ASCII cpio archive \(SVR4/) {
+      $type = "cpiox$type";
+    }
+    elsif($t =~ /\b(cpio|tar) archive/) {
+      $type = "$1$type";
+    }
+    elsif($t =~ /^(gzip|XZ|Zstandard) compressed data/) {
+      my $c = "\L$1";
+      $c =~ s/zstandard/zstd/;
+      if($cmd) {
+        $cmd .= " | $c --quiet -dc";
+      }
+      else {
+        $cmd = "$c --quiet -dc '$file'";
+      }
+      $file = "-";
+      $c =~ s/gzip/gz/;
+      $c =~ s/zstd/zst/;
+      $type = ".$c$type";
+    }
+    else {
+      die "$orig: unsupported archive format\n";
+    }
+  } while($type =~ /^\./);
+
+  # print "$file = $type\n";
+
+  return $type;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# Unpack multiple concatenated cpio archives.
+#
+# The archives are expected to be in cpio ASCII format ('cpio -H newc').
+# Between the idividual archives an arbitrary sequence of (binary) zeros is
+# allowed. (This is what the kernel allows for the initramfs image.)
+#
+# unpack_cpiox(dst, file, part)
+#
+# -  dst: the directory to unpack to
+# - file: the archive file name
+# - part: the part number (1 based) of a multipart archive (0 = unpack all)
+#
+sub unpack_cpiox
+{
+  my $dst = shift;
+  my $file = shift;
+  my $part = shift() + 0;
+
+  my $cpio_cmd = 'cpio --quiet -dmiu --sparse --no-absolute-filenames 2>/dev/null';
+
+  # the archive number we are looking for (1 based)
+  my $cnt = 1;
+
+  # input and output file handles
+  my ($f, $p);
+
+  # data transfer buffer
+  my $buf;
+
+  # search for cpio header in input stream on next read operation
+  my $sync = 0;
+
+  # track # of written bytes (reset at start of each cpio archive)
+  my $write_ofs;
+
+  # Read # of bytes from input and write to output.
+  #
+  # bytes = $read_write->(len)
+  # -   len: number of bytes to transfer
+  # - bytes: size of data actually transferred
+  #
+  # This function implicitly opens a new output pipe if none is open and data
+  # need to be written.
+  #
+  # If the $sync variable is set search the input stream for a valid cpio
+  # header (and reset $sync to 0).
+  #
+  my $read_write = sub
+  {
+    my $len = $_[0];
+
+    # nothing to do
+    return $len if !$len;
+
+    # clear buffer
+    undef $buf;
+
+    # Search for next cpio header.
+    #
+    # This assumes there's a number of binary zeros in the input stream
+    # until the next cpio header.
+    # Actually this only looks for the next non-zero data blob.
+    if($sync) {
+      $sync = 0;
+      while(sysread($f, $buf, 1) == 1 && $buf eq "\x00") {};
+      $len -= length $buf;
+    }
+
+    # read $len bytes
+    while($len) {
+      my $x = sysread $f, substr($buf, length $buf), $len;
+      last if !$x;
+      $len -= $x;
+    };
+
+    # In case we did read something, write it to output pipe.
+    if(length $buf) {
+      # Open a new pipe if needed.
+      # But only if part number matches or is 0 (== all parts).
+      if(!$p && ($part == 0 || $part == $cnt)) {
+        open $p, "| ( cd $dst ; $cpio_cmd )" or die "failed to open cpio: $!\n";
+        $write_ofs = 0;
+      }
+
+      # Write data and track output size for padding calculation at the end.
+      if($p) {
+        syswrite $p, $buf;
+        $write_ofs += length $buf;
+      }
+    }
+
+    return length $buf;
+  };
+
+  # Write padding bytes (pad with 0 to full 512 byte blocks) and close
+  # output pipe.
+  #
+  # $write_pad_and_close->()
+  #
+  # This also sets a sync flag indicating that we should search for the next
+  # valid cpio header in the input stream.
+  #
+  my $write_pad_and_close = sub
+  {
+    if($p) {
+      my $pad = (($write_ofs + 0x1ff) & ~0x1ff) - $write_ofs;
+      syswrite $p, "\x00" x $pad, $pad if $pad;
+      close $p;
+      undef $p;
+    }
+
+    # search for next cpio header in input stream
+    $sync = 1;
+  };
+
+  # open archive and get going...
+  if(open $f, $file) {
+    my $len;
+
+    # We have to trace the cpio archive structure.
+    # Keep going as long as there's a header.
+    while(($len = $read_write->(110)) == 110) {
+      my $magic = substr($buf, 0, 6);
+      my $head = substr($buf, 6);
+
+      my $fname_len = hex substr $buf, 94, 8;
+      my $data_len = hex substr $buf, 54, 8;
+
+      die "broken cpio header\n" if $magic !~ /^07070[12]$/;
+
+      $fname_len += (2, 1, 0, 3)[$fname_len & 3];
+      $data_len = (($data_len + 3) & ~3);
+
+      $read_write->($fname_len);
+
+      my $fname = $buf;
+      $fname =~ s/\x00*$//;
+
+      $read_write->($data_len);
+
+      # Look for cpio archive end marker.
+      # If found, close cpio process. A new process will be started at the
+      # next valid cpio archive header.
+      if(
+        $fname eq 'TRAILER!!!' &&
+        $head =~ /^0{39}10{55}b0{8}$/i
+      ) {
+        $write_pad_and_close->();
+        # exit if we're done
+        if($cnt++ == $part) {
+          close $f;
+          return;
+        }
+      }
+    }
+
+    # we're done, close input file...
+    close $f;
+
+    # ...and output file.
+    $write_pad_and_close->();
+
+    # If $len is != 0 this means we've seen something that's not a header of
+    # a cpio archive entry.
+    die "invalid cpio data\n" if $len;
+  }
+  else {
+    die "error reading cpio archive: $!\n";
+  }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# Unpack archive file.
+#
+# unpack_archive(type, file, dir, part)
+#
+# - type: a type string as returned by get_archive_type
+# - file: the archive
+# -  dir: the directory to unpack to
+# - part: is the part number of a multipart archive (0 = unpack all)
+#
+sub unpack_archive
+{
+  my $type = $_[0];
+  my $file = $_[1];
+  my $dir = $_[2];
+  my $part = $_[3];
+
+  return undef if $type eq '';
+
+  my $cmd;
+  my $cpiox;
+
+  if($type eq 'dir') {
+    $cmd = "tar -C '$file' -cf - .";
+    $type = 'tar';
+  }
+  elsif(! -r $file) {
+    die "$file: not readable; you need root privileges.\n";
+  }
+
+  for (reverse split /\./, $type) {
+    if(/^(gz|xz|zst|rpm)$/) {
+      my $c;
+      if($1 eq 'gz') {
+        $c = 'gzip --quiet -dc';
+      }
+      elsif($1 eq 'xz') {
+        $c = 'xz --quiet -dc';
+      }
+      elsif($1 eq 'zst') {
+        $c = 'zstd --quiet -dc';
+      }
+      else {
+        $c = 'rpm2cpio';
+      }
+      if($cmd) {
+        $cmd .= " | $c";
+      }
+      else {
+        $cmd = "$c '$file'";
+      }
+    }
+    elsif($_ eq 'tar') {
+      $cmd = "cat '$file'" if !$cmd;
+      $cmd .= " | tar -C '$dir' --keep-directory-symlink -xpf - 2>/dev/null";
+      last;
+    }
+    elsif($_ eq 'cpio') {
+      $cmd = "cat '$file'" if !$cmd;
+      $cmd .= " | ( cd '$dir' ; cpio --quiet -dmiu --sparse --no-absolute-filenames 2>/dev/null )";
+      last;
+    }
+    elsif($_ eq 'cpiox') {
+      if(!$cmd) {
+        $cmd = $file;
+      }
+      else {
+        $cmd .= " |";
+      }
+      $cpiox = 1;
+      last;
+    }
+  }
+
+  # cpiox = concatenated compressed cpio archives as the kernel uses for initrd
+  # must be SVR4 ASCII format, with or without CRC ('cpio -H newc')
+  # in this case we have to parse the cpio stream and handle the 'TRAILER!!!' entries
+  if($cpiox) {
+    # print STDERR "unpack_cpiox($cmd)\n";
+    unpack_cpiox $dir, $cmd, $part;
+  }
+  else {
+    # print STDERR "$cmd\n";
+    system $cmd;
+  }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# Run 'file' system command.
+#
+# result = file_magic(file, pipe)
+#
+# -   file: the input file, or '-' if pipe is set
+# -   pipe: (if set) the command to read from
+# - result: everything 'file' returns
+#
+sub file_magic
+{
+  my $type = "file -b -k -L $_[0] 2>/dev/null";
+  $type = "$_[1] | $type" if $_[1];
+
+  return `$type`;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub unpack_initrd
+{
+  my $dir = $_[0];
+  my $file = $_[1];
+
+  return undef unless $file;
+
+  my $tmp_dir = $tmp->dir('initrd');
+
+  my $type = get_archive_type "$dir/$file";
+
+  if($type) {
+    unpack_archive $type, "$dir/$file", $tmp_dir;
+  }
+  else {
+    die "$dir: initrd unpacking failed\n";
+  }
+
+  return $tmp_dir;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub get_live_root
+{
+  my $iso = $_[0];
+  my $initrd = $_[1];
+
+  return undef unless $initrd;
+
+  return undef unless -d "$initrd/etc/cmdline.d";
+
+  my $config = `cat $initrd/etc/cmdline.d/*.conf`;
+
+  return $1 if $config =~ /^root=live:(\S+)/m;
+
+  return undef;
+}
