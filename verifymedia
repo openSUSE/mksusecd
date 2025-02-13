@@ -124,8 +124,7 @@ use utf8;
 use Getopt::Long;
 use Digest::MD5;
 use Digest::SHA;
-use File::Find;
-use File::Path;
+use File::Path 'make_path';
 use Cwd 'abs_path';
 
 use Data::Dumper;
@@ -155,10 +154,8 @@ sub chk_treeinfo_arch;
 sub chk_treeinfo_files;
 sub chk_bootinfo;
 
-sub check_root;
 sub susystem;
 sub get_iso9660_info;
-sub unpack_iso_image;
 sub iso_ls;
 sub read_treeinfo;
 sub read_ini;
@@ -166,7 +163,11 @@ sub get_media_style;
 sub get_media_variant;
 sub get_arch;
 sub get_expected_media_layout;
+sub stat_file;
+sub is_dir;
+sub is_file;
 sub read_file;
+sub extract_file;
 sub get_grub_root;
 sub get_archive_type;
 sub unpack_cpiox;
@@ -178,9 +179,7 @@ sub get_root_option_bootloader;
 
 my $opt_save_temp;
 my $opt_verbose = 0;
-my $opt_mount_iso;
 
-my $config;
 my $tmp;
 my $media;
 my $iso9660;
@@ -196,8 +195,6 @@ my $initrd_dir;
 Getopt::Long::Configure("gnu_compat");
 
 GetOptions(
-  'mount-iso'        => \$opt_mount_iso,
-  'no-mount-iso'     => sub { $opt_mount_iso = 0 },
   'save-temp'        => \$opt_save_temp,
   'verbose|v'        => sub { $opt_verbose++ },
   'version'          => sub { print "$VERSION\n"; exit 0 },
@@ -205,19 +202,6 @@ GetOptions(
 ) || usage 1;
 
 $ENV{PATH} = "/usr/bin:/bin:/usr/sbin:/sbin";
-
-if(open my $f, "$ENV{HOME}/.verifymediarc") {
-  while(<$f>) {
-    next if /^\s*#/;
-    if(/^\s*(\S+?)\s*=\s*(.*?)\s*$/) {
-      my $key = $1;
-      my $val = $2;
-      $val =~ s/^\"|\"$//g;
-      $config->{$key} = $val;
-    }
-  }
-  close $f;
-}
 
 $tmp = Tmp::new($opt_save_temp);
 
@@ -230,6 +214,8 @@ die "$src: not readable\n" unless -r _;
 
 ($src_short = $src) =~ s#^.*/##;
 print "Verifying: $src_short\n";
+
+$iso_dir = $tmp->dir('iso');
 
 $iso9660 = get_iso9660_info $src;
 print "- iso header info:\n", Dumper($iso9660) if $opt_verbose >= 2;
@@ -253,8 +239,6 @@ $iso_ls_plain = iso_ls $src;
 $iso_ls_rockridge = iso_ls $src, "rockridge";
 print "- iso file list (rock ridge):\n", Dumper($iso_ls_rockridge) if $opt_verbose >= 2;
 
-$iso_dir = unpack_iso_image $src; 
-
 show
   chk_files_permission($iso_ls_rockridge),
   "all files are world-readable",
@@ -265,13 +249,13 @@ show
   "all files are owned by root",
   "Files on the ISO image should have uid and gid 0.";
 
-$media->{treeinfo} = read_treeinfo $iso_dir;
+$media->{treeinfo} = read_treeinfo;
 print "- .treeinfo:\n", Dumper($media->{treeinfo}) if $media->{treeinfo} && $opt_verbose >= 2;
 
-$media->{style} = get_media_style $iso_dir;
-$media->{variant} = get_media_variant $iso_dir;
-$media->{arch} = get_arch $iso_ls_rockridge, $media->{treeinfo};
-get_expected_media_layout $iso_dir, $media;
+$media->{style} = get_media_style;
+$media->{variant} = get_media_variant;
+$media->{arch} = get_arch;
+get_expected_media_layout $media;
 
 print "- media:\n", Dumper($media) if $opt_verbose >= 2;
 die "failed to detect architecture\n" unless $media->{arch};
@@ -304,116 +288,116 @@ show_conditional
 
 show_conditional
   $media->{treeinfo},
-  chk_treeinfo_files($iso_ls_rockridge, $media),
+  chk_treeinfo_files($media),
   "kernel and initrd referenced in .treeinfo exist",
   "Kernel and initrd referenced in .treeinfo must exist.";
 
 show
-  chk_file_exists($iso_ls_rockridge, $media->{kernel}),
+  chk_file_exists($media->{kernel}),
   "kernel exists",
   "Kernel must exist and have non-zero size.";
 
 show
-  chk_file_exists($iso_ls_rockridge, $media->{initrd}),
+  chk_file_exists($media->{initrd}),
   "initrd exists",
   "Initrd must exist and have non-zero size.";
 
 show_conditional
   $media->{initrd_off},
-  chk_file_exists($iso_ls_rockridge, $media->{initrd_off}),
+  chk_file_exists($media->{initrd_off}),
   "initrd.off exists",
   "initrd.off must exist and have non-zero size.";
 
 show_conditional
   $media->{initrd_siz},
-  chk_file_exists($iso_ls_rockridge, $media->{initrd_siz}),
+  chk_file_exists($media->{initrd_siz}),
   "initrd.siz exists",
   "initrd.siz must exist and have non-zero size.";
 
 show_conditional
   $media->{cd_ikr},
-  chk_file_exists($iso_ls_rockridge, $media->{cd_ikr}),
+  chk_file_exists($media->{cd_ikr}),
   "cd.ikr exists",
   "cd.ikr must exist and have non-zero size.";
 
 show_conditional
   $media->{suse_ins},
-  chk_file_exists($iso_ls_rockridge, $media->{suse_ins}),
+  chk_file_exists($media->{suse_ins}),
   "suse.ins exists",
   "suse.ins must exist and have non-zero size.";
 
 show_conditional
   $media->{isolinux_cfg},
-  chk_file_exists($iso_ls_rockridge, $media->{isolinux_cfg}),
+  chk_file_exists($media->{isolinux_cfg}),
   "isolinux config exists",
   "isolinux.cfg must exist and have non-zero size.";
 
 show_conditional
   $media->{bootinfo_txt},
-  chk_file_exists($iso_ls_rockridge, $media->{bootinfo_txt}),
+  chk_file_exists($media->{bootinfo_txt}),
   "bootinfo config exists",
   "bootinfo.txt must exist and have non-zero size.";
 
 show_conditional
   $media->{bootinfo_txt},
-  chk_bootinfo($iso_dir, $iso_ls_plain, $media),	# use $iso_ls_plain as PowerPC firmware does not understand Rock Ridge extension
+  chk_bootinfo($media),
   "bootinfo config points to grub",
   "boot-script entry in bootinfo.txt must point to grub and\ngrub must have a config file in the same location.";
 
 show_conditional
   $media->{grub_earlyboot_cfg},
-  chk_file_exists($iso_ls_rockridge, $media->{grub_earlyboot_cfg}),
+  chk_file_exists($media->{grub_earlyboot_cfg}),
   "early grub config exists",
   "Early grub config must exist and have non-zero size.";
 
 show_conditional
   $media->{grub_earlyboot_cfg},
-  chk_grub_root_exists($iso_dir, $media->{grub_earlyboot_cfg}),
+  chk_grub_root_exists($media->{grub_earlyboot_cfg}),
   "grub early config references correct root file system",
   "$media->{grub_earlyboot_cfg} searches for a specific file to identify its root file system.\nThis file should exist.";
 
 show_conditional
   $media->{grub_cfg},
-  chk_file_exists($iso_ls_rockridge, $media->{grub_cfg}),
+  chk_file_exists($media->{grub_cfg}),
   "grub config exists",
   "grub.cfg must exist and have non-zero size.";
 
 show_conditional
   $media->{grub_cfg},
-  chk_grub_root_exists($iso_dir, $media->{grub_cfg}),
+  chk_grub_root_exists($media->{grub_cfg}),
   "grub config references correct root file system",
   "$media->{grub_cfg} searches for a specific file to identify its root file system.\nThis file should exist.";
 
 show_conditional
   $media->{efi_grub_cfg},
-  chk_file_exists($iso_ls_rockridge, $media->{efi_grub_cfg}),
+  chk_file_exists($media->{efi_grub_cfg}),
   "UEFI grub config exists",
   "UEFI grub.cfg must exist and have non-zero size.";
 
 show_conditional
   $media->{efi_grub_cfg},
-  chk_grub_root_exists($iso_dir, $media->{efi_grub_cfg}),
+  chk_grub_root_exists($media->{efi_grub_cfg}),
   "UEFI grub config references correct root file system",
   "$media->{efi_grub_cfg} searches for a specific file to identify its root file system.\nThis file should exist.";
 
 show_conditional
   $media->{efi_loader},
-  chk_file_exists($iso_ls_rockridge, $media->{efi_loader}),
+  chk_file_exists($media->{efi_loader}),
   "UEFI boot loader exists",
   "UEFI boot loader must exist and have non-zero size.";
 
 show_conditional
   $media->{efi_image},
-  chk_file_exists_optional($iso_ls_rockridge, $media->{efi_image}),
+  chk_file_exists_optional($media->{efi_image}),
   "UEFI boot image exists",
   "UEFI boot image should exist and have non-zero size.";
 
-if($media->{variant} eq 'live' && -f "$iso_dir/$media->{initrd}") {
-  $initrd_dir = unpack_initrd $iso_dir, $media->{initrd};
+if($media->{variant} eq 'live') {
+  $initrd_dir = unpack_initrd $media->{initrd};
 }
 
 if($media->{variant} eq 'live') {
-  $media->{root_option_initrd} = get_root_option_initrd $iso_dir, $initrd_dir;
+  $media->{root_option_initrd} = get_root_option_initrd $initrd_dir;
   print "- root option: $media->{root_option_initrd}\n" if $media->{root_option_initrd} && $opt_verbose >= 1;
 
   show
@@ -423,7 +407,7 @@ if($media->{variant} eq 'live') {
 }
 
 if($media->{variant} eq 'selfinstall') {
-  $media->{root_option_bootloader} = get_root_option_bootloader $iso_dir, $media;
+  $media->{root_option_bootloader} = get_root_option_bootloader $media;
   print "- root option: $media->{root_option_bootloader}\n" if $media->{root_option_bootloader} && $opt_verbose >= 1;
 
   show
@@ -454,10 +438,6 @@ General options:
       --version                   Show verifymedia version.
       --save-temp                 Keep temporary files.
       --help                      Write this help text.
-
-Debug options:
-      --mount-iso                 Mount ISO images to access them (default if run as root).
-      --no-mount-iso              Unpack ISO images to access them (default if run as normal user).
 
 More information is available in the verifymedia(1) manual page.
 = = = = = = = =
@@ -586,10 +566,11 @@ sub chk_files_owner
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 sub chk_file_exists
 {
-  my $iso_by_name = $_[0]->{by_name};
-  my $file = $_[1];
+  my $file = $_[0];
 
-  my $ok = $iso_by_name->{$file} && $iso_by_name->{$file}{size} > 0 ? 1 : 0;
+  my $stat = stat_file $file;
+
+  my $ok = $stat && $stat->{size} > 0 ? 1 : 0;
 
   $error_detail = $file if !$ok;
 
@@ -611,15 +592,14 @@ sub chk_file_exists_optional
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 sub chk_grub_root_exists
 {
-  my $dir = $_[0];
-  my $grub_cfg = $_[1];
+  my $grub_cfg = $_[0];
 
-  my $grub_root = get_grub_root $iso_dir, $grub_cfg;
+  my $grub_root = get_grub_root $grub_cfg;
 
   my $state;
 
   if($grub_root ne "") {
-    $state = -f "$iso_dir/$grub_root" ? 1 : 0;
+    $state = is_file($grub_root) ? 1 : 0;
   }
 
   $error_detail = $grub_root if !$state;
@@ -646,8 +626,7 @@ sub chk_treeinfo_arch
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 sub chk_treeinfo_files
 {
-  my $iso_by_name = $_[0]->{by_name};
-  my $media = $_[1];
+  my $media = $_[0];
 
   return 0 unless $media->{treeinfo};
 
@@ -656,9 +635,7 @@ sub chk_treeinfo_files
   for my $section (sort keys %{$media->{treeinfo}}) {
     my $t = $media->{treeinfo}{$section};
     for my $file ('initrd', 'kernel') {
-      if($t->{$file} && !$iso_by_name->{$t->{$file}}) {
-        $missing->{$t->{$file}} = 1;
-      }
+      $missing->{$t->{$file}} = 1 if $t->{$file} && !is_file $t->{$file};
     }
   }
 
@@ -675,13 +652,14 @@ sub chk_treeinfo_files
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 sub chk_bootinfo
 {
-  my $iso_dir = $_[0];
-  my $iso_by_name = $_[1]->{by_name};
-  my $media = $_[2];
+  my $media = $_[0];
+
+  # use $iso_ls_plain as PowerPC firmware does not understand Rock Ridge extension
+  my $iso_by_name = $iso_ls_plain->{by_name};
 
   return 0 unless $media->{bootinfo_txt} && $iso_by_name->{$media->{bootinfo_txt}};
 
-  my $data = read_file $iso_dir, $media->{bootinfo_txt};
+  my $data = read_file $media->{bootinfo_txt};
 
   my $grub;
 
@@ -734,31 +712,6 @@ sub get_iso9660_info
   print "- iso header info:\n", Dumper($iso9660) if $opt_verbose >= 2;
 
   return $data;
-}
-
-
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-sub unpack_iso_image
-{
-  my $iso = $_[0];
-
-  my $dir;
-
-  $opt_mount_iso = check_root if ! defined $opt_mount_iso;
-  if($opt_mount_iso) {
-    check_root "Sorry, can't access ISO images; you need root privileges.";
-    print "- mounting $iso\n" if $opt_verbose >= 1;
-    $dir = $tmp->mnt("iso");
-    susystem "mount -oro,loop $iso $dir";
-  }
-  else {
-    print "- unpacking $iso\n" if $opt_verbose >= 1;
-    $dir = $tmp->dir();
-    system "cd $dir && isoinfo -i '" . abs_path($iso) . "' -RJX 2>/dev/null && chmod -R a=r,a=rX,u+w ."
-      and die "$iso: ISO unpacking failed\n";
-  }
-
-  return $dir;
 }
 
 
@@ -827,53 +780,6 @@ sub iso_ls
 }
 
 
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-# check_root(msg)
-#
-# Checks if we can get root privileges if required.
-#
-# - msg: message to show to user if things fail
-#        if msg is not set, return status whether running as root is possible
-#
-sub check_root
-{
-  my $p;
-  my $msg = shift;
-
-  if(!$config->{sudo_checked}) {
-    $config->{sudo_checked} = 1;
-
-    $config->{check_root_ok} = 0;
-    if(!$>) {
-      delete $config->{sudo};
-      $config->{check_root_ok} = 1;
-    }
-    else {
-      my $p;
-      chomp($p = `bash -c 'type -p $config->{sudo}'`) if $config->{sudo};
-      $config->{check_root_ok} = 1 if $p ne "";
-    }
-  }
-
-  die "$msg\n" if !$config->{check_root_ok} && $msg;
-
-  return $config->{check_root_ok};
-}
-
-
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-# susystem(cmd)
-#
-# Run command with root privileges.
-#
-# - cmd: command to run
-#
-sub susystem
-{
-  system "$config->{sudo} $_[0]";
-}
-
-
 # -------------------------------------------------------------------------------------------------
 # -------------------------------------------------------------------------------------------------
 # -------------------------------------------------------------------------------------------------
@@ -894,14 +800,12 @@ sub susystem
 #
 sub get_media_style
 {
-  my $dir = $_[0];
-
-  if(-d "$dir/isolinux" || -f "$dir/.discinfo") {
+  if(is_dir "isolinux" || is_file ".discinfo" || is_dir 'Packages') {
     return 'rh';
   }
 
-  for my $file (glob "$dir/*/Packages") {
-    return 'rh' if -d $file;
+  for my $stream ('BaseOS', 'AppStream') {
+    return 'rh' if is_dir "$stream/Packages";
   }
 
   return 'suse';
@@ -919,10 +823,8 @@ sub get_media_style
 #
 sub get_media_variant
 {
-  my $dir = $_[0];
-
-  return 'live' if -d "$dir/LiveOS";
-  return 'selfinstall' if -f "$dir/config.isoclient";
+  return 'live' if is_dir "LiveOS";
+  return 'selfinstall' if is_file "config.isoclient";
 
   return 'install';
 }
@@ -931,9 +833,11 @@ sub get_media_variant
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 sub read_treeinfo
 {
-  my $dir = $_[0];
+  my $ini;
 
-  my $ini = read_ini "$dir/.treeinfo";
+  if(extract_file ".treeinfo") {
+    $ini = read_ini ".treeinfo";
+  }
 
   return $ini;
 }
@@ -954,7 +858,7 @@ sub read_ini
   my $ini;
   my $section;
 
-  if(open my $f, $file) {
+  if(open my $f, "$iso_dir/$file") {
     while(<$f>) {
       chomp;
       s/\s*;.*//;
@@ -978,29 +882,20 @@ sub read_ini
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 sub get_arch
 {
-  my $iso_by_name = $_[0]->{by_name};
-  my $treeinfo = $_[1];
-
   my $arch;
 
-  # Note: .treeinfo is broken on SUSE media
-  #
-  # if($treeinfo) {
-  #   return $treeinfo->{general}{arch} if $treeinfo->{general} && $treeinfo->{general}{arch};
-  # }
-
   for my $x ('aarch64', 'i386', 'ppc64', 'ppc64le', 's390x', 'x86_64') {
-    return $x if $iso_by_name->{"boot/$x"};
+    return $x if is_dir "boot/$x";
   }
 
-  return 'x86_64' if $iso_by_name->{"EFI/BOOT/BOOTX64.EFI"};
-  return 'x86_64' if $iso_by_name->{"EFI/BOOT/bootx64.efi"};
+  return 'x86_64' if is_file "EFI/BOOT/BOOTX64.EFI";
+  return 'x86_64' if is_file "EFI/BOOT/bootx64.efi";
 
-  return 'i386' if $iso_by_name->{"EFI/BOOT/BOOTIA32.EFI"};
-  return 'i386' if $iso_by_name->{"EFI/BOOT/bootia32.efi"};
+  return 'i386' if is_file "EFI/BOOT/BOOTIA32.EFI";
+  return 'i386' if is_file "EFI/BOOT/bootia32.efi";
 
-  return 'aarch64' if $iso_by_name->{"EFI/BOOT/BOOTAA64.EFI"};
-  return 'aarch64' if $iso_by_name->{"EFI/BOOT/bootaa64.efi"};
+  return 'aarch64' if is_file "EFI/BOOT/BOOTAA64.EFI";
+  return 'aarch64' if is_file "EFI/BOOT/bootaa64.efi";
 
   return $arch;
 }
@@ -1009,8 +904,7 @@ sub get_arch
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 sub get_expected_media_layout
 {
-  my $dir = $_[0];
-  my $media = $_[1];
+  my $media = $_[0];
 
   my $arch = $media->{arch};
 
@@ -1067,14 +961,8 @@ sub get_expected_media_layout
       $media->{efi_image} = "boot/aarch64/loader/efiboot.img";
       $media->{efi_loader} = "EFI/BOOT/bootaa64.efi";
       $media->{efi_grub_cfg} = "EFI/BOOT/grub.cfg";
-      if(open my $fd, "$dir/boot/mbrid") {
-        my $id = <$fd>;
-        close $fd;
-        chomp $id;
-        if($id && -f "$dir/boot/$id") {
-          $media->{grub_search_id} = "/boot/$id";
-        }
-      }
+      chomp(my $id = read_file "boot/mbrid");
+      $media->{grub_search_id} = "/boot/$id" if is_file "boot/$id";
     }
     elsif($arch eq 'ppc64le') {
       $media->{initrd} = "boot/ppc64le/initrd";
@@ -1100,14 +988,8 @@ sub get_expected_media_layout
       $media->{efi_image} = "boot/x86_64/loader/efiboot.img";
       $media->{efi_loader} = "EFI/BOOT/bootx64.efi";
       $media->{efi_grub_cfg} = "EFI/BOOT/grub.cfg";
-      if(open my $fd, "$dir/boot/mbrid") {
-        my $id = <$fd>;
-        close $fd;
-        chomp $id;
-        if($id && -f "$dir/boot/$id") {
-          $media->{grub_search_id} = "/boot/$id";
-        }
-      }
+      chomp(my $id = read_file "boot/mbrid");
+      $media->{grub_search_id} = "/boot/$id" if is_file "boot/$id";
     }
   }
   elsif($media->{variant} eq 'selfinstall') {
@@ -1118,14 +1000,8 @@ sub get_expected_media_layout
       $media->{efi_image} = "boot/aarch64/loader/efiboot.img";
       $media->{efi_loader} = "EFI/BOOT/bootaa64.efi";
       $media->{efi_grub_cfg} = "EFI/BOOT/grub.cfg";
-      if(open my $fd, "$dir/boot/mbrid") {
-        my $id = <$fd>;
-        close $fd;
-        chomp $id;
-        if($id && -f "$dir/boot/$id") {
-          $media->{grub_search_id} = "/boot/$id";
-        }
-      }
+      chomp(my $id = read_file "boot/mbrid");
+      $media->{grub_search_id} = "/boot/$id" if is_file "boot/$id";
     }
     elsif($arch eq 'ppc64le') {
       $media->{initrd} = "boot/ppc64le/loader/initrd";
@@ -1151,30 +1027,71 @@ sub get_expected_media_layout
       $media->{efi_image} = "boot/x86_64/loader/efiboot.img";
       $media->{efi_loader} = "EFI/BOOT/bootx64.efi";
       $media->{efi_grub_cfg} = "EFI/BOOT/grub.cfg";
-      if(open my $fd, "$dir/boot/mbrid") {
-        my $id = <$fd>;
-        close $fd;
-        chomp $id;
-        if($id && -f "$dir/boot/$id") {
-          $media->{grub_search_id} = "/boot/$id";
-        }
-      }
+      chomp(my $id = read_file "boot/mbrid");
+      $media->{grub_search_id} = "/boot/$id" if is_file "boot/$id";
     }
   }
 }
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# Note: uses global var $iso_ls_rockridge.
+#
+sub stat_file
+{
+  my $file = $_[0];
+
+  return undef if !defined $file;
+
+  my $stat = $iso_ls_rockridge->{by_name}{$file};
+
+  return $stat;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub is_dir
+{
+  my $file = $_[0];
+
+  my $stat = stat_file $file;
+
+  return $stat && $stat->{type} eq 'd';
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub is_file
+{
+  my $file = $_[0];
+
+  my $stat = stat_file $file;
+
+  return $stat && $stat->{type} eq ' ';
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# Note: uses global var $src.
+#
 sub read_file
 {
-  my $dir = $_[0];
-  my $file = $_[1];
+  my $file = $_[0];
+
+  my $stat = stat_file $file;
+
+  return undef if !defined($stat) || $stat->{type} ne " ";
 
   my $data;
 
-  if(open my $fd, "$dir/$file") {
-    local $/;
-    $data = <$fd>;
+  if(open my $fd, $src) {
+    sysseek($fd, $stat->{start} * 2048, 0) or die "$src: seek to block $stat->{start} failed\n";
+    if($stat->{size}) {
+      sysread($fd, $data, $stat->{size}) == $stat->{size} or die "$src: reading $stat->{size} bytes failed\n";
+    }
+    else {
+      $data = "";
+    }
     close $fd;
   }
 
@@ -1183,12 +1100,49 @@ sub read_file
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# Note: uses global var $iso_dir.
+#
+sub extract_file
+{
+  my $file = $_[0];
+
+  my $stat = stat_file $file;
+
+  return undef if !defined($stat) || $stat->{type} ne " ";
+
+  return 1 if $stat->{extracted};
+
+  my $dir = $file;
+  $dir =~ s#[^/]+$##;
+
+  make_path "$iso_dir/$dir" if $dir ne "";
+
+  my $ok;
+
+  if(-d "$iso_dir/$dir") {
+    my $data = read_file $file;
+    if(defined $data) {
+      if(open my $fd, ">", "$iso_dir/$file") {
+        $ok = syswrite($fd, $data) == length($data);
+        close $fd;
+      }
+    }
+  }
+
+  $stat->{extracted} = 1 if $ok;
+
+  die "$file: extracting failed\n" unless $ok;
+
+  return 1;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 sub get_grub_root
 {
-  my $dir = $_[0];
-  my $file = $_[1];
+  my $file = $_[0];
 
-  my $data = read_file $dir, $file;
+  my $data = read_file $file;
 
   my $root;
 
@@ -1554,20 +1508,21 @@ sub file_magic
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 sub unpack_initrd
 {
-  my $dir = $_[0];
-  my $file = $_[1];
+  my $file = $_[0];
 
-  return undef unless $file;
+  return undef unless is_file($file);
+
+  extract_file $file;
 
   my $tmp_dir = $tmp->dir('initrd');
 
-  my $type = get_archive_type "$dir/$file";
+  my $type = get_archive_type "$iso_dir/$file";
 
   if($type) {
-    unpack_archive $type, "$dir/$file", $tmp_dir;
+    unpack_archive $type, "$iso_dir/$file", $tmp_dir;
   }
   else {
-    die "$dir: initrd unpacking failed\n";
+    die "$iso_dir: initrd unpacking failed\n";
   }
 
   return $tmp_dir;
@@ -1577,8 +1532,7 @@ sub unpack_initrd
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 sub get_root_option_initrd
 {
-  my $iso = $_[0];
-  my $initrd = $_[1];
+  my $initrd = $_[0];
 
   return undef unless $initrd;
 
@@ -1595,12 +1549,9 @@ sub get_root_option_initrd
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 sub get_root_option_bootloader
 {
-  my $iso = $_[0];
-  my $media = $_[1];
+  my $media = $_[0];
 
-  return undef unless $media->{grub_cfg};
-
-  my $grub_cfg = `cat $iso/$media->{grub_cfg}`;
+  my $grub_cfg = read_file $media->{grub_cfg};
 
   return $1 if $grub_cfg =~ /^\s*linux .* root=(\S+)/m;
 
