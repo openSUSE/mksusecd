@@ -149,7 +149,6 @@ sub chk_files_permission;
 sub chk_files_owner;
 sub chk_file_exists;
 sub chk_file_exists_optional;
-sub chk_grub_root_exists;
 sub chk_treeinfo_arch;
 sub chk_treeinfo_files;
 sub chk_bootinfo;
@@ -350,11 +349,13 @@ show_conditional
   "early grub config exists",
   "Early grub config must exist and have non-zero size.";
 
+$media->{grub_earlyboot_cfg_root} = get_grub_root $media->{grub_earlyboot_cfg};
+
 show_conditional
-  $media->{grub_earlyboot_cfg},
-  chk_grub_root_exists($media->{grub_earlyboot_cfg}),
+  $media->{grub_earlyboot_cfg_root},
+  chk_file_exists($media->{grub_earlyboot_cfg_root}),
   "grub early config references correct root file system",
-  "$media->{grub_earlyboot_cfg} searches for a specific file to identify its root file system.\nThis file should exist.";
+  "'$media->{grub_earlyboot_cfg}' searches for '$media->{grub_earlyboot_cfg_root}' to identify its root file system.\nThis file must exist.";
 
 show_conditional
   $media->{grub_cfg},
@@ -362,11 +363,13 @@ show_conditional
   "grub config exists",
   "grub.cfg must exist and have non-zero size.";
 
+$media->{grub_cfg_root} = get_grub_root $media->{grub_cfg};
+
 show_conditional
-  $media->{grub_cfg},
-  chk_grub_root_exists($media->{grub_cfg}),
+  $media->{grub_cfg_root},
+  chk_file_exists($media->{grub_cfg_root}),
   "grub config references correct root file system",
-  "$media->{grub_cfg} searches for a specific file to identify its root file system.\nThis file should exist.";
+  "'$media->{grub_cfg}' searches for '$media->{grub_cfg_root}' to identify its root file system.\nThis file must exist.";
 
 show_conditional
   $media->{efi_grub_cfg},
@@ -374,11 +377,13 @@ show_conditional
   "UEFI grub config exists",
   "UEFI grub.cfg must exist and have non-zero size.";
 
+$media->{efi_grub_cfg_root} = get_grub_root $media->{efi_grub_cfg};
+
 show_conditional
-  $media->{efi_grub_cfg},
-  chk_grub_root_exists($media->{efi_grub_cfg}),
+  $media->{efi_grub_cfg_root},
+  chk_file_exists($media->{efi_grub_cfg_root}),
   "UEFI grub config references correct root file system",
-  "$media->{efi_grub_cfg} searches for a specific file to identify its root file system.\nThis file should exist.";
+  "'$media->{efi_grub_cfg}' searches for '$media->{efi_grub_cfg_root}' to identify its root file system.\nThis file must exist.";
 
 show_conditional
   $media->{efi_loader},
@@ -392,29 +397,26 @@ show_conditional
   "UEFI boot image exists",
   "UEFI boot image should exist and have non-zero size.";
 
-if($media->{variant} eq 'live') {
+$media->{root_option} = get_root_option_bootloader $media;
+
+if(!$media->{root_option} && $media->{variant} eq 'live') {
   $initrd_dir = unpack_initrd $media->{initrd};
+  $media->{root_option} = get_root_option_initrd $initrd_dir;
 }
 
-if($media->{variant} eq 'live') {
-  $media->{root_option_initrd} = get_root_option_initrd $initrd_dir;
-  print "- root option: $media->{root_option_initrd}\n" if $media->{root_option_initrd} && $opt_verbose >= 1;
+print "- root option: $media->{root_option}\n" if $media->{root_option} && $opt_verbose >= 1;
 
-  show
-    $media->{root_option_initrd} && $media->{root_option_initrd} eq "live:LABEL=$iso9660->{volume_id}",
-    "ISO label matches dracut live root option",
-    "ISO label '$iso9660->{volume_id}' must correspond to dracut live root option '$media->{root_option_initrd}'.";
-}
+show_conditional
+  $media->{variant} eq 'live',
+  $media->{root_option} =~ /^live:(?:CD)?LABEL=(.*)/ && $1 eq $iso9660->{volume_id},
+  "ISO label matches dracut live root option",
+  "ISO label '$iso9660->{volume_id}' must correspond to dracut live root option '$media->{root_option}'.";
 
-if($media->{variant} eq 'selfinstall') {
-  $media->{root_option_bootloader} = get_root_option_bootloader $media;
-  print "- root option: $media->{root_option_bootloader}\n" if $media->{root_option_bootloader} && $opt_verbose >= 1;
-
-  show
-    $media->{root_option_bootloader} && $media->{root_option_bootloader} eq "install:CDLABEL=$iso9660->{volume_id}",
-    "ISO label matches kiwi install root option",
-    "ISO label '$iso9660->{volume_id}' must correspond to kiwi install root option '$media->{root_option_bootloader}'.";
-}
+show_conditional
+  $media->{variant} eq 'selfinstall',
+  $media->{root_option} =~ /^install:(?:CD)?LABEL=(.*)/ && $1 eq $iso9660->{volume_id},
+  "ISO label matches kiwi install root option",
+  "ISO label '$iso9660->{volume_id}' must correspond to kiwi install root option '$media->{root_option}'.";
 
 print "- $errors error(s)\n" if $opt_verbose >= 1;
 
@@ -453,24 +455,21 @@ sub show
   my $topic = $_[1];
   my $comment = $_[2];
 
-  if(defined $result) {
-    $result++;
-  }
-  else {
-    $result = 0;
-  }
+  $result += 0;
 
-  $errors++ if $result == 1;
+  $errors++ if $result == 0;
 
-  # values: not checked, bad, ok, not nice
-  my @mark = ( "", "\x{2718}", "\x{2714}", "!" );
+  # values: bad, ok, not nice
+  my @mark = ( "\x{2718}", "\x{2714}", "!" );
+
+  die "show(): oops, result $result out of range" if $result >= @mark;
 
   my $indent = "";
   my $indent_c = "  ";
   
   printf "${indent}[%-1s] %s\n", $mark[$result], $topic;
 
-  if($result == 1 || $result == 3) {
+  if($result == 0 || $result == 2) {
     $comment =~ s/\s+$//g;
     $comment =~ s/^\s*/$indent_c/;
     $comment =~ s/\n\s*/\n$indent_c/g;
@@ -586,25 +585,6 @@ sub chk_file_exists_optional
   $ok = 2 if !$ok;
 
   return $ok;
-}
-
-
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-sub chk_grub_root_exists
-{
-  my $grub_cfg = $_[0];
-
-  my $grub_root = get_grub_root $grub_cfg;
-
-  my $state;
-
-  if($grub_root ne "") {
-    $state = is_file($grub_root) ? 1 : 0;
-  }
-
-  $error_detail = $grub_root if !$state;
-
-  return $state;
 }
 
 
@@ -1553,7 +1533,7 @@ sub get_root_option_bootloader
 
   my $grub_cfg = read_file $media->{grub_cfg};
 
-  return $1 if $grub_cfg =~ /^\s*linux .* root=(\S+)/m;
+  return $1 if $grub_cfg =~ /^\s*\$?linux .* root=(\S+)/m;
 
   return undef;
 }
