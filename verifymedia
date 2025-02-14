@@ -230,6 +230,7 @@ die "$src: not readable\n" unless -r _;
 
 ($src_short = $src) =~ s#^.*/##;
 print "Verifying: $src_short\n";
+print "Check results: [✔] = ok, [✘] = bad, [!] = not ideal\n";
 
 $iso_dir = $tmp->dir('iso');
 
