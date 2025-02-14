@@ -152,6 +152,7 @@ sub chk_file_exists_optional;
 sub chk_treeinfo_arch;
 sub chk_treeinfo_files;
 sub chk_bootinfo;
+sub chk_garbage;
 
 sub susystem;
 sub get_iso9660_info;
@@ -233,6 +234,11 @@ show
   chk_joliet($iso9660),
   "image uses Joliet extension",
   "ISO image must use Joliet extension ('mkisofs -J', 'xorriso -joliet on').";
+
+show
+  $iso9660->{volume_id} ne "",
+  "image has volume id",
+  "ISO image must have a non-empty volume id.";
 
 $iso_ls_plain = iso_ls $src;
 $iso_ls_rockridge = iso_ls $src, "rockridge";
@@ -417,6 +423,11 @@ show_conditional
   $media->{root_option} =~ /^install:(?:CD)?LABEL=(.*)/ && $1 eq $iso9660->{volume_id},
   "ISO label matches kiwi install root option",
   "ISO label '$iso9660->{volume_id}' must correspond to kiwi install root option '$media->{root_option}'.";
+
+show
+  chk_garbage($media),
+  "no garbage files",
+  "These files are not needed and should be removed.";
 
 print "- $errors error(s)\n" if $opt_verbose >= 1;
 
@@ -672,6 +683,21 @@ sub chk_bootinfo
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub chk_garbage
+{
+  my $media = $_[0];
+
+  undef $error_detail;
+
+  for my $f (sort keys %{$media->{garbage_files}}) {
+    $error_detail .= "$f\n" if stat_file $f;
+  }
+
+  return $error_detail ? 2 : 1;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 sub get_iso9660_info
 {
   my $iso = $_[0];
@@ -891,6 +917,11 @@ sub get_expected_media_layout
   return unless $arch;
 
   return unless $media->{style} eq 'suse';
+
+  # files that should not really be there
+  for my $f (qw ( glump ppc/os-chooser )) {
+    $media->{garbage_files}{$f} = 1;
+  }
 
   if($media->{variant} eq 'install') {
     if($arch eq 'aarch64') {
