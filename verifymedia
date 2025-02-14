@@ -126,6 +126,7 @@ use Digest::MD5;
 use Digest::SHA;
 use File::Path 'make_path';
 use Cwd 'abs_path';
+use JSON;
 
 use Data::Dumper;
 $Data::Dumper::Sortkeys = 1;
@@ -449,8 +450,9 @@ show
   "These files are not needed and should be removed.";
 
 my $sig = chk_signature $media;
+$media->{signature} = $sig if $sig;
 
-print Dumper $sig if $opt_verbose >= 2;
+print "- signature data:\n", Dumper($media->{signature}) if $media->{signature} && $opt_verbose >= 2;
 
 show
   $sig->{block_ok},
@@ -486,6 +488,12 @@ show
   "ISO must be signed.";
 
 print "- $errors error(s)\n" if $opt_verbose >= 1;
+
+my $parti = `parti --json $src`;
+$media->{parti} = decode_json($parti) if $parti;
+
+print "- partition data:\n", Dumper($media->{parti}) if $media->{parti} && $opt_verbose >= 2;
+
 
 exit($errors ? 1 : 0);
 
@@ -781,8 +789,6 @@ sub chk_signature
   }
 
   $sig->{block_is_file} = 1 if $sig->{file_start} && $sig->{block_start} && $sig->{block_start} == $sig->{file_start};
-
-  $media->{signature} = $sig if $sig;
 
   return $sig;
 }
