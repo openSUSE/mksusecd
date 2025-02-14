@@ -138,6 +138,17 @@ binmode(STDERR, ":utf8");
 our $VERSION = "0.0";
 our $LIBEXECDIR = "/usr/lib";
 
+use constant {
+  # offset of application specific data (anything goes)
+  ISO9660_APP_DATA_START => 0x8373,
+
+  # application specific data length
+  ISO9660_APP_DATA_LENGTH => 0x200,
+
+  # signature block starts with this string
+  SIGNATURE_MAGIC => "7984fc91-a43f-4e45-bf27-6d3aa08b24cf"
+};
+
 sub usage;
 sub show;
 sub show_and_exit;
@@ -153,11 +164,11 @@ sub chk_treeinfo_arch;
 sub chk_treeinfo_files;
 sub chk_bootinfo;
 sub chk_garbage;
+sub chk_signature;
 
 sub susystem;
 sub get_iso9660_info;
 sub iso_ls;
-sub read_treeinfo;
 sub read_ini;
 sub get_media_style;
 sub get_media_variant;
@@ -166,6 +177,7 @@ sub get_expected_media_layout;
 sub stat_file;
 sub is_dir;
 sub is_file;
+sub read_data;
 sub read_file;
 sub extract_file;
 sub get_grub_root;
@@ -176,6 +188,10 @@ sub file_magic;
 sub unpack_initrd;
 sub get_root_option_initrd;
 sub get_root_option_bootloader;
+sub parse_tag;
+sub get_tag;
+sub set_tag;
+sub read_tags;
 
 my $opt_save_temp;
 my $opt_verbose = 0;
@@ -254,13 +270,15 @@ show
   "all files are owned by root",
   "Files on the ISO image should have uid and gid 0.";
 
-$media->{treeinfo} = read_treeinfo;
+$media->{treeinfo} = read_ini ".treeinfo";
 print "- .treeinfo:\n", Dumper($media->{treeinfo}) if $media->{treeinfo} && $opt_verbose >= 2;
 
 $media->{style} = get_media_style;
 $media->{variant} = get_media_variant;
 $media->{arch} = get_arch;
 get_expected_media_layout $media;
+
+$media->{tags} = read_tags;
 
 print "- media:\n", Dumper($media) if $opt_verbose >= 2;
 die "failed to detect architecture\n" unless $media->{arch};
@@ -289,7 +307,7 @@ show_conditional
   $media->{treeinfo},
   chk_treeinfo_arch($media),
   ".treeinfo architecture matches",
-  "arch entry in general section in .treeinfo must match media architecture.";
+  "'arch' entry in 'general' section in .treeinfo must match media architecture.";
 
 show_conditional
   $media->{treeinfo},
@@ -311,25 +329,25 @@ show_conditional
   $media->{initrd_off},
   chk_file_exists($media->{initrd_off}),
   "initrd.off exists",
-  "initrd.off must exist and have non-zero size.";
+  "'initrd.off' must exist and have non-zero size.";
 
 show_conditional
   $media->{initrd_siz},
   chk_file_exists($media->{initrd_siz}),
   "initrd.siz exists",
-  "initrd.siz must exist and have non-zero size.";
+  "'initrd.siz' must exist and have non-zero size.";
 
 show_conditional
   $media->{cd_ikr},
   chk_file_exists($media->{cd_ikr}),
   "cd.ikr exists",
-  "cd.ikr must exist and have non-zero size.";
+  "'cd.ikr' must exist and have non-zero size.";
 
 show_conditional
   $media->{suse_ins},
   chk_file_exists($media->{suse_ins}),
   "suse.ins exists",
-  "suse.ins must exist and have non-zero size.";
+  "'suse.ins' must exist and have non-zero size.";
 
 show_conditional
   $media->{isolinux_cfg},
@@ -415,19 +433,55 @@ print "- root option: $media->{root_option}\n" if $media->{root_option} && $opt_
 show_conditional
   $media->{variant} eq 'live',
   $media->{root_option} =~ /^live:(?:CD)?LABEL=(.*)/ && $1 eq $iso9660->{volume_id},
-  "ISO label matches dracut live root option",
+  "ISO label matches dracut live 'root' option",
   "ISO label '$iso9660->{volume_id}' must correspond to dracut live root option '$media->{root_option}'.";
 
 show_conditional
   $media->{variant} eq 'selfinstall',
   $media->{root_option} =~ /^install:(?:CD)?LABEL=(.*)/ && $1 eq $iso9660->{volume_id},
-  "ISO label matches kiwi install root option",
+  "ISO label matches kiwi install 'root' option",
   "ISO label '$iso9660->{volume_id}' must correspond to kiwi install root option '$media->{root_option}'.";
 
 show
   chk_garbage($media),
   "no garbage files",
   "These files are not needed and should be removed.";
+
+my $sig = chk_signature $media;
+
+print Dumper $sig if $opt_verbose >= 2;
+
+show
+  $sig->{block_ok},
+  "has tag pointing to signature block",
+  "To be able to sign media, there must be a 'signature' entry in media tag data\n(check with 'tagmedia --show').";
+
+show
+  $sig->{file_ok} ? 1 : 2,
+  "has .signature file",
+  "
+    There should be a '.signature' file to hold the signature.
+    The file (if it exists) must have a size of 2048 bytes and
+    start with the string '${\SIGNATURE_MAGIC}'.
+  ";
+
+show_conditional
+  $sig->{file_ok},
+  $sig->{block_is_file},
+  "signature block and .signature file are identical",
+  "If there is a '.signature' file, the 'signature' tag must point to it.";
+
+my $digest = $sig->{block_digest} || 'sha256';
+
+show
+  $sig->{block_digest} ? $sig->{block_digest} eq 'sha256' ? 1 : 2 : 0,
+  "ISO has $digest digest",
+  "There must be a digest stored in media tag data. Ideally sha256.\n(check with 'tagmedia --show').";
+
+show
+  $sig->{block_signed},
+  "ISO is signed",
+  "ISO must be signed.";
 
 print "- $errors error(s)\n" if $opt_verbose >= 1;
 
@@ -698,6 +752,41 @@ sub chk_garbage
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub chk_signature
+{
+  my $media = $_[0];
+
+  my $sig;
+
+  $sig->{block_digest} = 'md5' if get_tag $media->{tags}, 'md5sum';
+  $sig->{block_digest} = 'sha256' if get_tag $media->{tags}, 'sha256sum';
+
+  my $sig_block = get_tag $media->{tags}, 'signature';
+  if($sig_block) {
+    $sig->{block_start} = $sig_block->{value} * 512;
+    $sig->{block_size} = 2048;
+    $sig->{block_data} = read_data $sig->{block_start}, $sig->{block_size};
+    $sig->{block_ok} = 1 if substr($sig->{block_data}, 0, length(SIGNATURE_MAGIC)) eq SIGNATURE_MAGIC;
+    $sig->{block_signed} = 1 if $sig->{block_data} =~ /PGP SIGNATURE/;
+  }
+
+  my $sig_file = stat_file ".signature";
+  if($sig_file) {
+    $sig->{file_start} = $sig_file->{start} * 2048;
+    $sig->{file_size} = $sig_file->{size};
+    $sig->{file_data} = read_file '.signature';
+    $sig->{file_ok} = 1 if $sig->{file_size} == 2048 && substr($sig->{file_data}, 0, length(SIGNATURE_MAGIC)) eq SIGNATURE_MAGIC;
+  }
+
+  $sig->{block_is_file} = 1 if $sig->{file_start} && $sig->{block_start} && $sig->{block_start} == $sig->{file_start};
+
+  $media->{signature} = $sig if $sig;
+
+  return $sig;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 sub get_iso9660_info
 {
   my $iso = $_[0];
@@ -837,19 +926,6 @@ sub get_media_variant
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-sub read_treeinfo
-{
-  my $ini;
-
-  if(extract_file ".treeinfo") {
-    $ini = read_ini ".treeinfo";
-  }
-
-  return $ini;
-}
-
-
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # read_ini(file)
 #
 # - file: file name
@@ -864,21 +940,19 @@ sub read_ini
   my $ini;
   my $section;
 
-  if(open my $f, "$iso_dir/$file") {
-    while(<$f>) {
-      chomp;
-      s/\s*;.*//;
-      next if /^\s*$/;
-      if(/^\s*\[([^]]+)\]/) {
-        $section = $1;
-        next;
-      }
-      next if !defined $section;
-      if(/^\s*([^=>]+?)\s*+=\s*+(.*?)\s*$/) {
-        $ini->{$section}{$1} = $2;
-      }
+  my $data = read_file $file;
+
+  for (split /\n/, $data) {
+    s/\s*;.*//;
+    next if /^\s*$/;
+    if(/^\s*\[([^]]+)\]/) {
+      $section = $1;
+      next;
     }
-    close $f;
+    next if !defined $section;
+    if(/^\s*([^=>]+?)\s*+=\s*+(.*?)\s*$/) {
+      $ini->{$section}{$1} = $2;
+    }
   }
 
   return $ini;
@@ -1085,20 +1159,17 @@ sub is_file
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # Note: uses global var $src.
 #
-sub read_file
+sub read_data
 {
-  my $file = $_[0];
-
-  my $stat = stat_file $file;
-
-  return undef if !defined($stat) || $stat->{type} ne " ";
+  my $start = $_[0];
+  my $size = $_[1];
 
   my $data;
 
   if(open my $fd, $src) {
-    sysseek($fd, $stat->{start} * 2048, 0) or die "$src: seek to block $stat->{start} failed\n";
-    if($stat->{size}) {
-      sysread($fd, $data, $stat->{size}) == $stat->{size} or die "$src: reading $stat->{size} bytes failed\n";
+    sysseek($fd, $start, 0) or die "$src: seek to $start failed\n";
+    if($size) {
+      sysread($fd, $data, $size) == $size or die "$src: reading $size bytes failed\n";
     }
     else {
       $data = "";
@@ -1107,6 +1178,19 @@ sub read_file
   }
 
   return $data;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub read_file
+{
+  my $file = $_[0];
+
+  my $stat = stat_file $file;
+
+  return undef if !defined($stat) || $stat->{type} ne " ";
+
+  return read_data $stat->{start} * 2048, $stat->{size};
 }
 
 
@@ -1567,4 +1651,101 @@ sub get_root_option_bootloader
   return $1 if $grub_cfg =~ /^\s*\$?linux .* root=(\S+)/m;
 
   return undef;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# tag = parse_tag(string)
+#
+# Parse line ('key=value' format) and return hash ref with key/value elements.
+# value is undef if there's no '='.
+#
+sub parse_tag
+{
+  my ($line) = @_;
+
+  $line =~ s/^\s*|\s*$//g;
+
+  if($line =~ /^([A-Z_\d\s]+?)\s*=\s*+(.*)$/i) {
+    return { key => $1, value => $2 };
+  }
+  else {
+    return { key => $line };
+  }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# tag = get_tag(tags, key)
+#
+# Get tag from tag array with specified key.
+# Returns undef if no tag with such a key exists.
+#
+# tags: array ref with tag hashes
+# key: string
+# tag: tag hash ref ('key', 'value' pair)
+#
+sub get_tag
+{
+  my ($tags, $key) = @_;
+
+  for my $tag (@$tags) {
+    return $tag if $tag->{key} eq $key;
+  }
+
+  # try again, case insensitive
+  for my $tag (@$tags) {
+    return $tag if "\L$tag->{key}" eq "\L$key";
+  }
+
+  return undef;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# set_tag(tags, tag)
+#
+# Set tag in tags array.
+#
+# tags: array ref with tag hashes
+# tag: tag hash ref ('key', 'value' pair)
+#
+sub set_tag
+{
+  my ($tags, $tag) = @_;
+
+  my $old_tag = get_tag $tags, $tag->{key};
+  if($old_tag) {
+    $old_tag->{value} = $tag->{value};
+  }
+  else {
+    push @$tags, $tag;
+  }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# tags = read_tags
+#
+# Read existing tags from image fragment.
+#
+# image: hash with image related data
+# image->{blob}: buffer containing a sufficiently large portion of the image (36 kiB)
+# tags: array ref with tags
+# tags are hashes with key/value pairs - value is undef if there's no '='
+#
+sub read_tags
+{
+  my $data = read_data ISO9660_APP_DATA_START, ISO9660_APP_DATA_LENGTH;
+
+  die "unsupported tag format\n" unless $data  =~ /^[0-9A-Za-z_=,;! \x00]{512}$/;
+  $data =~ s/[\s\x00]*$//;
+
+  my $tags = [];
+
+  for my $line (split /;/, $data) {
+    set_tag $tags, parse_tag($line);
+  }
+
+  return $tags;
 }
