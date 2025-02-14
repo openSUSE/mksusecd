@@ -456,7 +456,8 @@ show
   "has tag pointing to signature block",
   "To be able to sign media, there must be a 'signature' entry in media tag data\n(check with 'tagmedia --show').";
 
-show
+show_conditional
+  $media->{expect_signature_file},
   $sig->{file_ok} ? 1 : 2,
   "has .signature file",
   "
@@ -466,7 +467,7 @@ show
   ";
 
 show_conditional
-  $sig->{file_ok},
+  $media->{expect_signature_file} && $sig->{file_ok},
   $sig->{block_is_file},
   "signature block and .signature file are identical",
   "If there is a '.signature' file, the 'signature' tag must point to it.";
@@ -1039,6 +1040,8 @@ sub get_expected_media_layout
     }
   }
   elsif($media->{variant} eq 'live') {
+    $media->{expect_signature_file} = 1;
+
     if($arch eq 'aarch64') {
       $media->{grub_cfg} = "boot/grub2/grub.cfg";
       $media->{initrd} = "boot/aarch64/loader/initrd";
@@ -1078,6 +1081,8 @@ sub get_expected_media_layout
     }
   }
   elsif($media->{variant} eq 'selfinstall') {
+    $media->{expect_signature_file} = 1;
+
     if($arch eq 'aarch64') {
       $media->{grub_cfg} = "boot/grub2/grub.cfg";
       $media->{initrd} = "boot/aarch64/loader/initrd";
