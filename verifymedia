@@ -132,6 +132,7 @@ use Data::Dumper;
 $Data::Dumper::Sortkeys = 1;
 $Data::Dumper::Terse = 1;
 $Data::Dumper::Indent = 1;
+$Data::Dumper::Deepcopy = 1;
 
 binmode(STDOUT, ":utf8");
 binmode(STDERR, ":utf8");
@@ -166,6 +167,8 @@ sub chk_treeinfo_files;
 sub chk_bootinfo;
 sub chk_garbage;
 sub chk_signature;
+sub chk_hybrid_chrp;
+sub chk_hybrid_efi;
 
 sub susystem;
 sub get_iso9660_info;
@@ -449,6 +452,66 @@ show
   "no garbage files",
   "These files are not needed and should be removed.";
 
+if($media->{hybrid_mode}) {
+  my $parti = `parti --json $src`;
+  $media->{parti} = decode_json($parti) if $parti;
+
+  print "- partition data:\n", Dumper($media->{parti}) if $media->{parti} && $opt_verbose >= 2;
+
+  my $hybrid;
+
+  $hybrid = chk_hybrid_chrp($media) if $media->{hybrid_mode} eq 'chrp';
+  $hybrid = chk_hybrid_efi($media) if $media->{hybrid_mode} eq 'efi';
+  $media->{hybrid} = $hybrid if $hybrid;
+
+  print "- hybrid data:\n", Dumper($media->{hybrid}) if $media->{hybrid} && $opt_verbose >= 2;
+
+  if($media->{hybrid_mode} eq 'efi') {
+    show
+      $hybrid && !$hybrid->{apple} && ($hybrid->{mbr} || $hybrid->{gpt}),
+      "has MBR or GPT partition table",
+      "To be bootable as disk image, there must be an MBR or GPT partition table.";
+
+    show
+      $hybrid && $hybrid->{efi_partition},
+      "has EFI System Partition with VFAT file system",
+      "To be UEFI bootable, there must be an EFI System Partition.";
+
+    show
+      $hybrid && $hybrid->{data_partition},
+      "has partition pointing to ISO image data",
+      "There must be a data partition pointing to the same file system you get\nwhen acessing the entire ISO image.";
+
+    show
+      $hybrid && !$hybrid->{invalid_partition},
+      "no invalid partition entries",
+      "Other partition table entries must have valid data or be completely empty.";
+  }
+
+  if($media->{hybrid_mode} eq 'chrp') {
+    show
+      $hybrid && $hybrid->{mbr} && !$hybrid->{gpt},
+      "has MBR partition table",
+      "To be bootable as disk image, there must be an MBR partition table.\nA GPT does not work.";
+
+    show
+      $hybrid && !$hybrid->{apple},
+      "has no Apple partition table",
+      "In the past we had (in addition to MBR) an Apple partition table; this is not\nneeded anymore (no PPC Macs) and leads to problems.";
+
+    show
+      $hybrid && $hybrid->{chrp_partition},
+      "has CHRP partition starting at block 0",
+      "To be bootable, the 1st partition must have type 0x96 and start at block 0.";
+
+    show
+      $hybrid && !$hybrid->{invalid_partition},
+      "no invalid partition entries",
+      "Other partition table entries must have valid data or be completely empty.";
+  }
+
+}
+
 my $sig = chk_signature $media;
 $media->{signature} = $sig if $sig;
 
@@ -488,11 +551,6 @@ show
   "ISO must be signed.";
 
 print "- $errors error(s)\n" if $opt_verbose >= 1;
-
-my $parti = `parti --json $src`;
-$media->{parti} = decode_json($parti) if $parti;
-
-print "- partition data:\n", Dumper($media->{parti}) if $media->{parti} && $opt_verbose >= 2;
 
 
 exit($errors ? 1 : 0);
@@ -795,6 +853,79 @@ sub chk_signature
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub chk_hybrid_chrp
+{
+  my $media = $_[0];
+  my $hybrid;
+
+  my $parti = $media->{parti};
+
+  return unless $parti;
+
+  $hybrid->{apple} = 1 if $parti->{apple};
+  $hybrid->{gpt} = 1 if $parti->{gpt};
+
+  if($parti->{mbr}) {
+    $hybrid->{mbr} = 1;
+    for my $p (@{$parti->{mbr}{partitions}}) {
+      $hybrid->{invalid_partition} = 1, next if !$p->{attributes}{valid};
+      $hybrid->{chrp_partition} = 1 if $p->{index} == 0 && $p->{first_lba} == 0 && $p->{type_id} eq 0x96;
+    }
+  }
+
+  return $hybrid;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub chk_hybrid_efi
+{
+  my $media = $_[0];
+  my $hybrid;
+
+  my $parti = $media->{parti};
+
+  return unless $parti;
+
+  my $uuid = $parti->{filesystem}{uuid} if $parti->{filesystem};
+  my $label = $parti->{filesystem}{label} if $parti->{filesystem};
+
+  $hybrid->{apple} = 1 if $parti->{apple};
+
+  my $partitions;
+
+  if($parti->{gpt_primary}) {
+    $hybrid->{gpt} = 1;
+    $partitions = $parti->{gpt_primary}{partitions};
+  }
+  elsif($parti->{mbr}) {
+    $hybrid->{mbr} = 1;
+    $partitions = $parti->{mbr}{partitions};
+  }
+
+  if($partitions) {
+    for my $p (@$partitions) {
+      $hybrid->{invalid_partition} = 1, next if $hybrid->{mbr} && !$p->{attributes}{valid};
+      $hybrid->{efi_partition} = 1 if
+        $p->{first_lba} != 0 &&
+        ($p->{type_name} eq "efi" || $p->{type_name} eq "efi system") &&
+        $p->{filesystem} &&
+        $p->{filesystem}{type} eq 'vfat';
+      $hybrid->{data_partition} = 1 if
+        $p->{first_lba} != 0 &&
+        $p->{filesystem} &&
+        $p->{filesystem}{type} eq 'iso9660' && (
+          ($p->{filesystem}{uuid} && $p->{filesystem}{uuid} eq $uuid) ||
+          ($p->{filesystem}{label} && $p->{filesystem}{label} eq $label)
+        );
+    }
+  }
+
+  return $hybrid;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 sub get_iso9660_info
 {
   my $iso = $_[0];
@@ -1011,6 +1142,7 @@ sub get_expected_media_layout
       $media->{kernel} = "boot/aarch64/linux";
       $media->{efi_loader} = "EFI/BOOT/bootaa64.efi";
       $media->{efi_grub_cfg} = "EFI/BOOT/grub.cfg";
+      $media->{hybrid_mode} = 'efi';
     }
     elsif($arch eq 'i386') {
       $media->{isolinux_cfg} = "boot/i386/loader/isolinux.cfg";
@@ -1020,6 +1152,7 @@ sub get_expected_media_layout
       $media->{efi_image} = "boot/i386/efi";
       $media->{efi_loader} = "EFI/BOOT/bootia32.efi";
       $media->{efi_grub_cfg} = "EFI/BOOT/grub.cfg";
+      $media->{hybrid_mode} = 'efi';
     }
     elsif($arch eq 'ppc64le') {
       $media->{initrd} = "boot/ppc64le/initrd";
@@ -1027,6 +1160,7 @@ sub get_expected_media_layout
       $media->{bootinfo_txt} = "ppc/bootinfo.txt";
       $media->{grub_cfg} = "boot/grub2/grub.cfg";
       $media->{grub_earlyboot_cfg} = "boot/ppc64le/grub2-ieee1275/grub.cfg";
+      $media->{hybrid_mode} = 'chrp';
     }
     elsif($arch eq 's390x') {
       $media->{initrd} = "boot/s390x/initrd";
@@ -1044,6 +1178,7 @@ sub get_expected_media_layout
       $media->{efi_image} = "boot/x86_64/efi";
       $media->{efi_loader} = "EFI/BOOT/bootx64.efi";
       $media->{efi_grub_cfg} = "EFI/BOOT/grub.cfg";
+      $media->{hybrid_mode} = 'efi';
     }
   }
   elsif($media->{variant} eq 'live') {
@@ -1058,6 +1193,7 @@ sub get_expected_media_layout
       $media->{efi_grub_cfg} = "EFI/BOOT/grub.cfg";
       chomp(my $id = read_file "boot/mbrid");
       $media->{grub_search_id} = "/boot/$id" if is_file "boot/$id";
+      $media->{hybrid_mode} = 'efi';
     }
     elsif($arch eq 'ppc64le') {
       $media->{initrd} = "boot/ppc64le/initrd";
@@ -1065,6 +1201,7 @@ sub get_expected_media_layout
       $media->{bootinfo_txt} = "ppc/bootinfo.txt";
       $media->{grub_cfg} = "boot/grub2/grub.cfg";
       $media->{grub_earlyboot_cfg} = "boot/grub2/powerpc-ieee1275/grub.cfg";
+      $media->{hybrid_mode} = 'chrp';
     }
     elsif($arch eq 's390x') {
       $media->{initrd} = "boot/s390x/initrd";
@@ -1085,6 +1222,7 @@ sub get_expected_media_layout
       $media->{efi_grub_cfg} = "EFI/BOOT/grub.cfg";
       chomp(my $id = read_file "boot/mbrid");
       $media->{grub_search_id} = "/boot/$id" if is_file "boot/$id";
+      $media->{hybrid_mode} = 'efi';
     }
   }
   elsif($media->{variant} eq 'selfinstall') {
@@ -1099,6 +1237,7 @@ sub get_expected_media_layout
       $media->{efi_grub_cfg} = "EFI/BOOT/grub.cfg";
       chomp(my $id = read_file "boot/mbrid");
       $media->{grub_search_id} = "/boot/$id" if is_file "boot/$id";
+      $media->{hybrid_mode} = 'efi';
     }
     elsif($arch eq 'ppc64le') {
       $media->{initrd} = "boot/ppc64le/loader/initrd";
@@ -1106,6 +1245,7 @@ sub get_expected_media_layout
       $media->{bootinfo_txt} = "ppc/bootinfo.txt";
       $media->{grub_cfg} = "boot/grub2/grub.cfg";
       $media->{grub_earlyboot_cfg} = "boot/grub2/powerpc-ieee1275/grub.cfg";
+      $media->{hybrid_mode} = 'chrp';
     }
     elsif($arch eq 's390x') {
       $media->{initrd} = "boot/s390x/initrd";
@@ -1126,6 +1266,7 @@ sub get_expected_media_layout
       $media->{efi_grub_cfg} = "EFI/BOOT/grub.cfg";
       chomp(my $id = read_file "boot/mbrid");
       $media->{grub_search_id} = "/boot/$id" if is_file "boot/$id";
+      $media->{hybrid_mode} = 'efi';
     }
   }
 }
