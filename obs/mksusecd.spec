@@ -48,6 +48,9 @@ Requires:       gpg2
 Requires:       mtools
 Requires:       squashfs
 Requires:       xz
+BuildRequires:  pkgconfig(blkid)
+BuildRequires:  pkgconfig(uuid)
+BuildRequires:  pkgconfig(json-c)
 BuildRoot:      %{_tmppath}/%{name}-%{version}-build
 
 %description

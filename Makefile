@@ -10,10 +10,13 @@ PREFIX	:= mksusecd-$(VERSION)
 BINDIR	 = /usr/bin
 LIBDIR	 = /usr/lib
 
-all: changelog isohybrid
+all: changelog isohybrid parti
 
 isohybrid:
 	@make -C tools/isohybrid
+
+parti:
+	@make -C tools/parti
 
 archive: changelog
 	@if [ ! -d .git ] ; then echo no git repo ; false ; fi
@@ -25,7 +28,7 @@ archive: changelog
 changelog: $(GITDEPS)
 	$(GIT2LOG) --changelog changelog
 
-install: isohybrid doc
+install: isohybrid parti doc
 	@cp mksusecd mksusecd.tmp
 	@perl -pi -e 's/0\.0/$(VERSION)/ if /VERSION = /' mksusecd.tmp
 	@perl -pi -e 's#"(.*)"#"$(LIBDIR)"# if /LIBEXECDIR = /' mksusecd.tmp
@@ -38,6 +41,7 @@ install: isohybrid doc
 	install -m 755 -D verifymedia.tmp $(DESTDIR)$(BINDIR)/verifymedia
 	install -m 755 -D isozipl.tmp $(DESTDIR)$(BINDIR)/isozipl
 	install -m 755 -D tools/isohybrid/isohybrid $(DESTDIR)$(LIBDIR)/mksusecd/isohybrid
+	install -m 755 -D tools/parti/parti $(DESTDIR)$(LIBDIR)/mksusecd/parti
 	@rm -f mksusecd.tmp verifymedia.tmp isozipl.tmp
 
 doc:
@@ -53,5 +57,6 @@ doc:
 
 clean:
 	@make -C tools/isohybrid clean
+	@make -C tools/parti clean
 	@rm -f *.o *~ *.tmp */*~ mksusecd{.1,_man.xml,_man.pdf} verifymedia{.1,_man.xml,_man.pdf}
 	@rm -rf package
