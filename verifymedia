@@ -161,7 +161,6 @@ sub ckh_rockridge;
 sub chk_files_permission;
 sub chk_files_owner;
 sub chk_file_exists;
-sub chk_file_exists_optional;
 sub chk_treeinfo_arch;
 sub chk_treeinfo_files;
 sub chk_bootinfo;
@@ -169,6 +168,7 @@ sub chk_garbage;
 sub chk_signature;
 sub chk_hybrid_chrp;
 sub chk_hybrid_efi;
+sub chk_eltorito;
 
 sub susystem;
 sub get_iso9660_info;
@@ -199,6 +199,12 @@ sub read_tags;
 
 my $opt_save_temp;
 my $opt_verbose = 0;
+my $opt_ignore;
+my $opt_ignore_list = [
+  "UEFI boot image exists",
+  "ISO digest is md5",
+  "boot partition is EFI System Partition"
+];
 
 my $tmp;
 my $media;
@@ -215,17 +221,20 @@ my $initrd_dir;
 Getopt::Long::Configure("gnu_compat");
 
 GetOptions(
+  'ignore=s{1,}'     => \@$opt_ignore_list,
   'save-temp'        => \$opt_save_temp,
   'verbose|v'        => sub { $opt_verbose++ },
   'version'          => sub { print "$VERSION\n"; exit 0 },
   'help'             => sub { usage 0 },
 ) || usage 1;
 
-$ENV{PATH} = "/usr/bin:/bin:/usr/sbin:/sbin";
+$ENV{PATH} = "$LIBEXECDIR/mksusecd:/usr/bin:/bin:/usr/sbin:/sbin";
 
 $tmp = Tmp::new($opt_save_temp);
 
 usage 1 unless @ARGV == 1;
+
+$opt_ignore->{$_} = 1 for @$opt_ignore_list;
 
 $src = shift;
 
@@ -422,7 +431,7 @@ show_conditional
 
 show_conditional
   $media->{efi_image},
-  chk_file_exists_optional($media->{efi_image}),
+  chk_file_exists($media->{efi_image}),
   "UEFI boot image exists",
   "UEFI boot image should exist and have non-zero size.";
 
@@ -438,13 +447,13 @@ print "- root option: $media->{root_option}\n" if $media->{root_option} && $opt_
 show_conditional
   $media->{variant} eq 'live',
   $media->{root_option} =~ /^live:(?:CD)?LABEL=(.*)/ && $1 eq $iso9660->{volume_id},
-  "ISO label matches dracut live 'root' option",
+  "ISO label matches dracut live root option",
   "ISO label '$iso9660->{volume_id}' must correspond to dracut live root option '$media->{root_option}'.";
 
 show_conditional
   $media->{variant} eq 'selfinstall',
   $media->{root_option} =~ /^install:(?:CD)?LABEL=(.*)/ && $1 eq $iso9660->{volume_id},
-  "ISO label matches kiwi install 'root' option",
+  "ISO label matches kiwi install root option",
   "ISO label '$iso9660->{volume_id}' must correspond to kiwi install root option '$media->{root_option}'.";
 
 show
@@ -452,19 +461,18 @@ show
   "no garbage files",
   "These files are not needed and should be removed.";
 
+my $parti = `parti --json $src`;
+$media->{parti} = decode_json($parti) if $parti;
+
+print "- partition data:\n", Dumper($media->{parti}) if $media->{parti} && $opt_verbose >= 2;
+
 if($media->{hybrid_mode}) {
-  my $parti = `parti --json $src`;
-  $media->{parti} = decode_json($parti) if $parti;
-
-  print "- partition data:\n", Dumper($media->{parti}) if $media->{parti} && $opt_verbose >= 2;
-
   my $hybrid;
 
   $hybrid = chk_hybrid_chrp($media) if $media->{hybrid_mode} eq 'chrp';
   $hybrid = chk_hybrid_efi($media) if $media->{hybrid_mode} eq 'efi';
-  $media->{hybrid} = $hybrid if $hybrid;
 
-  print "- hybrid data:\n", Dumper($media->{hybrid}) if $media->{hybrid} && $opt_verbose >= 2;
+  print "- hybrid data:\n", Dumper($hybrid) if $hybrid && $opt_verbose >= 2;
 
   if($media->{hybrid_mode} eq 'efi') {
     show
@@ -474,8 +482,14 @@ if($media->{hybrid_mode}) {
 
     show
       $hybrid && $hybrid->{efi_partition},
-      "has EFI System Partition with VFAT file system",
-      "To be UEFI bootable, there must be an EFI System Partition.";
+      "has boot partition with VFAT file system",
+      "To be UEFI bootable, there must be a VFAT boot partition.";
+
+    show_conditional
+      $hybrid && $hybrid->{efi_partition},
+      $hybrid->{efi_partition_is_esp},
+      "boot partition is EFI System Partition",
+      "The boot partition type should be EFI System Partition.";
 
     show
       $hybrid && $hybrid->{data_partition},
@@ -509,8 +523,28 @@ if($media->{hybrid_mode}) {
       "no invalid partition entries",
       "Other partition table entries must have valid data or be completely empty.";
   }
-
 }
+
+my $eltorito = chk_eltorito($media);
+print "- el torito data:\n", Dumper($eltorito) if $eltorito && $opt_verbose >= 2;
+
+show_conditional
+  $media->{eltorito_legacy},
+  $eltorito->{legacy},
+  "El Torito legacy bootable",
+  "ISO boot catalog must have El Torito entry for legacy boot (pointing to grub or isolinux).";
+
+show_conditional
+  $media->{eltorito_efi},
+  $eltorito->{efi},
+  "El Torito UEFI bootable",
+  "ISO boot catalog must have El Torito entry for an EFI System Partition image.";
+
+show_conditional
+  $media->{eltorito_s390x},
+  $eltorito->{s390x},
+  "El Torito S390X bootable",
+  "ISO boot catalog must have El Torito entry for an S390X IKR image.";
 
 my $sig = chk_signature $media;
 $media->{signature} = $sig if $sig;
@@ -520,11 +554,11 @@ print "- signature data:\n", Dumper($media->{signature}) if $media->{signature} 
 show
   $sig->{block_ok},
   "has tag pointing to signature block",
-  "To be able to sign media, there must be a 'signature' entry in media tag data\n(check with 'tagmedia --show').";
+  "To be able to sign media, there must be a 'signature' entry in media tag data\n(check settings with 'tagmedia --show').";
 
 show_conditional
   $media->{expect_signature_file},
-  $sig->{file_ok} ? 1 : 2,
+  $sig->{file_ok},
   "has .signature file",
   "
     There should be a '.signature' file to hold the signature.
@@ -538,12 +572,16 @@ show_conditional
   "signature block and .signature file are identical",
   "If there is a '.signature' file, the 'signature' tag must point to it.";
 
-my $digest = $sig->{block_digest} || 'sha256';
-
 show
-  $sig->{block_digest} ? $sig->{block_digest} eq 'sha256' ? 1 : 2 : 0,
-  "ISO has $digest digest",
-  "There must be a digest stored in media tag data. Ideally sha256.\n(check with 'tagmedia --show').";
+  $sig->{block_digest},
+  "ISO has digest",
+  "There must be a digest stored in media tag data. Ideally sha256 or sha512.\n(check settings with 'tagmedia --show').";
+
+show_conditional
+  $sig->{block_digest},
+  $sig->{block_digest} eq 'sha256' || $sig->{block_digest} eq 'sha512',
+  "ISO digest is $sig->{block_digest}",
+  "Prefer a secure digest like sha256 or sha512.\n(check settings with 'tagmedia --show').";
 
 show
   $sig->{block_signed},
@@ -565,14 +603,16 @@ sub usage
 {
   print <<"= = = = = = = =";
 Usage: verifymedia ISO
-Verfiy bootable media.
+Verify SUSE installation media.
 
-General options:
-
-      --verbose                   Show more detailed messages. Can be repeated to log even more.
+      --ignore TOPIC_LIST         Ignore specific test results. The test is still run but any failures
+                                  are not counted.
+      --verbose                   Increase log level.
       --version                   Show verifymedia version.
       --save-temp                 Keep temporary files.
       --help                      Write this help text.
+
+Program exit code is 0 if no errors were found and != 0 in case of errors.
 
 More information is available in the verifymedia(1) manual page.
 = = = = = = = =
@@ -588,7 +628,7 @@ sub show
   my $topic = $_[1];
   my $comment = $_[2];
 
-  $result += 0;
+  $result = $result ? 1 : $opt_ignore->{$topic} ? 2 : 0;
 
   $errors++ if $result == 0;
 
@@ -705,17 +745,6 @@ sub chk_file_exists
   my $ok = $stat && $stat->{size} > 0 ? 1 : 0;
 
   $error_detail = $file if !$ok;
-
-  return $ok;
-}
-
-
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-sub chk_file_exists_optional
-{
-  my $ok = chk_file_exists @_;
-
-  $ok = 2 if !$ok;
 
   return $ok;
 }
@@ -906,11 +935,10 @@ sub chk_hybrid_efi
   if($partitions) {
     for my $p (@$partitions) {
       $hybrid->{invalid_partition} = 1, next if $hybrid->{mbr} && !$p->{attributes}{valid};
-      $hybrid->{efi_partition} = 1 if
-        $p->{first_lba} != 0 &&
-        ($p->{type_name} eq "efi" || $p->{type_name} eq "efi system") &&
-        $p->{filesystem} &&
-        $p->{filesystem}{type} eq 'vfat';
+      if($p->{first_lba} != 0 && $p->{filesystem} && $p->{filesystem}{type} eq 'vfat') {
+        $hybrid->{efi_partition} = 1;
+        $hybrid->{efi_partition_is_esp} = 1 if $p->{type_name} eq "efi" || $p->{type_name} eq "efi system";
+      }
       $hybrid->{data_partition} = 1 if
         $p->{first_lba} != 0 &&
         $p->{filesystem} &&
@@ -922,6 +950,29 @@ sub chk_hybrid_efi
   }
 
   return $hybrid;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub chk_eltorito
+{
+  my $media = $_[0];
+  my $eltorito;
+
+  my $parti = $media->{parti};
+
+  return unless $parti;
+
+  if($parti->{eltorito}) {
+    for my $c (@{$parti->{eltorito}{catalog}}) {
+      next if $c->{media_type} ne 'no emulation';
+      $eltorito->{legacy} = 1, next if $c->{boot_info_table};
+      $eltorito->{efi} = 1, next if $c->{filesystem} && $c->{filesystem}{type} eq 'vfat';
+      $eltorito->{s390x} = 1 if $c->{s390x_parm} || $c->{file_name} =~ /\.ikr$/;
+    }
+  }
+
+  return $eltorito;
 }
 
 
@@ -1143,6 +1194,7 @@ sub get_expected_media_layout
       $media->{efi_loader} = "EFI/BOOT/bootaa64.efi";
       $media->{efi_grub_cfg} = "EFI/BOOT/grub.cfg";
       $media->{hybrid_mode} = 'efi';
+      $media->{eltorito_efi} = 1;
     }
     elsif($arch eq 'i386') {
       $media->{isolinux_cfg} = "boot/i386/loader/isolinux.cfg";
@@ -1153,6 +1205,8 @@ sub get_expected_media_layout
       $media->{efi_loader} = "EFI/BOOT/bootia32.efi";
       $media->{efi_grub_cfg} = "EFI/BOOT/grub.cfg";
       $media->{hybrid_mode} = 'efi';
+      $media->{eltorito_legacy} = 1;
+      $media->{eltorito_efi} = 1;
     }
     elsif($arch eq 'ppc64le') {
       $media->{initrd} = "boot/ppc64le/initrd";
@@ -1169,6 +1223,8 @@ sub get_expected_media_layout
       $media->{kernel} = "boot/s390x/linux";
       $media->{cd_ikr} = "boot/s390x/cd.ikr";
       $media->{suse_ins} = "boot/s390x/suse.ins";
+      $media->{eltorito_legacy} = 1;
+      $media->{eltorito_s390x} = 1;
     }
     elsif($arch eq 'x86_64') {
       $media->{isolinux_cfg} = "boot/x86_64/loader/isolinux.cfg";
@@ -1179,6 +1235,8 @@ sub get_expected_media_layout
       $media->{efi_loader} = "EFI/BOOT/bootx64.efi";
       $media->{efi_grub_cfg} = "EFI/BOOT/grub.cfg";
       $media->{hybrid_mode} = 'efi';
+      $media->{eltorito_legacy} = 1;
+      $media->{eltorito_efi} = 1;
     }
   }
   elsif($media->{variant} eq 'live') {
@@ -1194,6 +1252,7 @@ sub get_expected_media_layout
       chomp(my $id = read_file "boot/mbrid");
       $media->{grub_search_id} = "/boot/$id" if is_file "boot/$id";
       $media->{hybrid_mode} = 'efi';
+      $media->{eltorito_efi} = 1;
     }
     elsif($arch eq 'ppc64le') {
       $media->{initrd} = "boot/ppc64le/initrd";
@@ -1210,6 +1269,7 @@ sub get_expected_media_layout
       $media->{kernel} = "boot/s390x/linux";
       $media->{cd_ikr} = "boot/s390x/cd.ikr";
       $media->{suse_ins} = "boot/s390x/suse.ins";
+      $media->{eltorito_s390x} = 1;
     }
     elsif($arch eq 'x86_64') {
       $media->{grub_cfg} = "boot/grub2/grub.cfg";
@@ -1223,6 +1283,8 @@ sub get_expected_media_layout
       chomp(my $id = read_file "boot/mbrid");
       $media->{grub_search_id} = "/boot/$id" if is_file "boot/$id";
       $media->{hybrid_mode} = 'efi';
+      $media->{eltorito_legacy} = 1;
+      $media->{eltorito_efi} = 1;
     }
   }
   elsif($media->{variant} eq 'selfinstall') {
@@ -1238,6 +1300,7 @@ sub get_expected_media_layout
       chomp(my $id = read_file "boot/mbrid");
       $media->{grub_search_id} = "/boot/$id" if is_file "boot/$id";
       $media->{hybrid_mode} = 'efi';
+      $media->{eltorito_efi} = 1;
     }
     elsif($arch eq 'ppc64le') {
       $media->{initrd} = "boot/ppc64le/loader/initrd";
@@ -1254,6 +1317,7 @@ sub get_expected_media_layout
       $media->{kernel} = "boot/s390x/linux";
       $media->{cd_ikr} = "boot/s390x/cd.ikr";
       $media->{suse_ins} = "boot/s390x/suse.ins";
+      $media->{eltorito_s390x} = 1;
     }
     elsif($arch eq 'x86_64') {
       $media->{grub_cfg} = "boot/grub2/grub.cfg";
@@ -1267,6 +1331,8 @@ sub get_expected_media_layout
       chomp(my $id = read_file "boot/mbrid");
       $media->{grub_search_id} = "/boot/$id" if is_file "boot/$id";
       $media->{hybrid_mode} = 'efi';
+      $media->{eltorito_legacy} = 1;
+      $media->{eltorito_efi} = 1;
     }
   }
 }

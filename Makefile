@@ -45,12 +45,14 @@ install: isohybrid doc
 doc:
 	@if [ -x /usr/bin/asciidoctor ] ; then \
 	  asciidoctor -b manpage -a version=$(VERSION) mksusecd_man.adoc ;\
+	  asciidoctor -b manpage -a version=$(VERSION) verifymedia_man.adoc ;\
 	else \
 	  a2x -f manpage -a version=$(VERSION) mksusecd_man.adoc ;\
+	  a2x -f manpage -a version=$(VERSION) verifymedia_man.adoc ;\
 	fi
 # a2x -f docbook -a version=$(VERSION) mksusecd_man.adoc
 # dblatex mksusecd_man.xml
 
 clean:
-	@rm -f *.o isohybrid *~ */*~ mksusecd{.1,_man.xml,_man.pdf}
+	@rm -f *.o isohybrid *~ */*~ mksusecd{.1,_man.xml,_man.pdf} verifymedia{.1,_man.xml,_man.pdf}
 	@rm -rf package
