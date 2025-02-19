@@ -1,0 +1,56 @@
+= verifymedia(1)
+:doctype: manpage
+:manmanual: User Commands
+:mansource: verifymedia {version}
+
+== Name
+
+verifymedia - Verfiy SUSE installation or Live ISO images.
+
+
+== Synopsis
+
+*verifymedia* _ISO_
+
+
+== Description
+
+verifymedia checks SUSE bootable installation or Live media for technical correctness.
+
+
+=== General Options
+
+*--ignore*=_TOPIC_LIST_::
+Ignore specific test results. The test is still run but any failures are not counted.
+TOPIC_LIST are a list of test topics as shown in the test report.
+
+*--verbose*::
+Show more detailed messages. Can be repeated to log even more.
+
+*--version*::
+Show mksusecd version.
+
+*--save-temp*::
+Keep temporary files.
+
+*--help*::
+Show this help text.
+
+=== Default list of ignored tests
+
+The result of some tests is ignored by default - making them optional checks:
+
+- "UEFI boot image exists",
+-  "ISO digest is md5",
+- "boot partition is EFI System Partition"
+
+== See Also
+
+*mksusecd*(1), *checkmedia*(1), *tagmedia*(1).
+
+== Links
+
+- more documentation: `/usr/share/doc/packages/mksusecd` +
+- get latest version: https://github.com/openSUSE/mksusecd?tab=readme-ov-file#downloads +
+- mksusecd web site: https://github.com/openSUSE/mksusecd +
+- openSUSE Build Service: https://build.opensuse.org
