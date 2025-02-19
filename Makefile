@@ -12,14 +12,8 @@ LIBDIR	 = /usr/lib
 
 all: changelog isohybrid
 
-isohdpfx.o: isohdpfx.c
-	$(CC) $(CFLAGS) -c $<
-
-isohybrid.o: isohybrid.c isohybrid.h
-	$(CC) $(CFLAGS) $<
-
-isohybrid: isohybrid.o isohdpfx.o
-	$(CC) $^ $(LDFLAGS) -o $@
+isohybrid:
+	@make -C tools/isohybrid
 
 archive: changelog
 	@if [ ! -d .git ] ; then echo no git repo ; false ; fi
@@ -43,7 +37,7 @@ install: isohybrid doc
 	install -m 755 -D mksusecd.tmp $(DESTDIR)$(BINDIR)/mksusecd
 	install -m 755 -D verifymedia.tmp $(DESTDIR)$(BINDIR)/verifymedia
 	install -m 755 -D isozipl.tmp $(DESTDIR)$(BINDIR)/isozipl
-	install -m 755 -D isohybrid $(DESTDIR)$(LIBDIR)/mksusecd/isohybrid
+	install -m 755 -D tools/isohybrid/isohybrid $(DESTDIR)$(LIBDIR)/mksusecd/isohybrid
 	@rm -f mksusecd.tmp verifymedia.tmp isozipl.tmp
 
 doc:
@@ -58,5 +52,6 @@ doc:
 # dblatex mksusecd_man.xml
 
 clean:
-	@rm -f *.o isohybrid *~ */*~ mksusecd{.1,_man.xml,_man.pdf} verifymedia{.1,_man.xml,_man.pdf}
+	@make -C tools/isohybrid clean
+	@rm -f *.o *~ *.tmp */*~ mksusecd{.1,_man.xml,_man.pdf} verifymedia{.1,_man.xml,_man.pdf}
 	@rm -rf package
