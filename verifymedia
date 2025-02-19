@@ -552,9 +552,15 @@ $media->{signature} = $sig if $sig;
 print "- signature data:\n", Dumper($media->{signature}) if $media->{signature} && $opt_verbose >= 2;
 
 show
-  $sig->{block_ok},
-  "has tag pointing to signature block",
-  "To be able to sign media, there must be a 'signature' entry in media tag data\n(check settings with 'tagmedia --show').";
+  $sig->{block_digest},
+  "ISO has digest",
+  "There must be a digest stored in media tag data. Ideally sha256 or sha512.\n(check settings with 'tagmedia --show').";
+
+show_conditional
+  $sig->{block_digest},
+  $sig->{block_digest} eq 'sha256' || $sig->{block_digest} eq 'sha512',
+  "ISO digest is $sig->{block_digest}",
+  "Prefer a secure digest like sha256 or sha512.\n(check settings with 'tagmedia --show').";
 
 show_conditional
   $media->{expect_signature_file},
@@ -573,15 +579,9 @@ show_conditional
   "If there is a '.signature' file, the 'signature' tag must point to it.";
 
 show
-  $sig->{block_digest},
-  "ISO has digest",
-  "There must be a digest stored in media tag data. Ideally sha256 or sha512.\n(check settings with 'tagmedia --show').";
-
-show_conditional
-  $sig->{block_digest},
-  $sig->{block_digest} eq 'sha256' || $sig->{block_digest} eq 'sha512',
-  "ISO digest is $sig->{block_digest}",
-  "Prefer a secure digest like sha256 or sha512.\n(check settings with 'tagmedia --show').";
+  $sig->{block_ok},
+  "ISO is ready to be signed",
+  "To be able to sign media, there must be a 'signature' entry in media tag data\npointing to a signature block (check settings with 'tagmedia --show').";
 
 show
   $sig->{block_signed},
