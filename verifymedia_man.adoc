@@ -20,9 +20,10 @@ verifymedia checks SUSE bootable installation or Live media for technical correc
 
 === General Options
 
-*--ignore*=_TOPIC_LIST_::
-Ignore specific test results. The test is still run but any failures are not counted.
-TOPIC_LIST are a list of test topics as shown in the test report.
+*--ignore*=_TOPIC_::
+Ignore specific test result. The test is still run but any failures are not counted.
+TOPIC is the test topic as shown in the test report.
+The option can be repeated to exclude several tests.
 
 *--verbose*::
 Show more detailed messages. Can be repeated to log even more.
