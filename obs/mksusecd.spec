@@ -48,6 +48,7 @@ Requires:       gpg2
 Requires:       mtools
 Requires:       squashfs
 Requires:       xz
+Requires:       perl-JSON
 BuildRequires:  pkgconfig(blkid)
 BuildRequires:  pkgconfig(uuid)
 BuildRequires:  pkgconfig(json-c)

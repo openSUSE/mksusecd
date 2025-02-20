@@ -221,7 +221,7 @@ my $initrd_dir;
 Getopt::Long::Configure("gnu_compat");
 
 GetOptions(
-  'ignore=s{1,}'     => \@$opt_ignore_list,
+  'ignore=s'         => \@$opt_ignore_list,
   'save-temp'        => \$opt_save_temp,
   'verbose|v'        => sub { $opt_verbose++ },
   'version'          => sub { print "$VERSION\n"; exit 0 },
@@ -552,9 +552,15 @@ $media->{signature} = $sig if $sig;
 print "- signature data:\n", Dumper($media->{signature}) if $media->{signature} && $opt_verbose >= 2;
 
 show
-  $sig->{block_ok},
-  "has tag pointing to signature block",
-  "To be able to sign media, there must be a 'signature' entry in media tag data\n(check settings with 'tagmedia --show').";
+  $sig->{block_digest},
+  "ISO has digest",
+  "There must be a digest stored in media tag data. Ideally sha256 or sha512.\n(check settings with 'tagmedia --show').";
+
+show_conditional
+  $sig->{block_digest},
+  $sig->{block_digest} eq 'sha256' || $sig->{block_digest} eq 'sha512',
+  "ISO digest is $sig->{block_digest}",
+  "Prefer a secure digest like sha256 or sha512.\n(check settings with 'tagmedia --show').";
 
 show_conditional
   $media->{expect_signature_file},
@@ -573,15 +579,9 @@ show_conditional
   "If there is a '.signature' file, the 'signature' tag must point to it.";
 
 show
-  $sig->{block_digest},
-  "ISO has digest",
-  "There must be a digest stored in media tag data. Ideally sha256 or sha512.\n(check settings with 'tagmedia --show').";
-
-show_conditional
-  $sig->{block_digest},
-  $sig->{block_digest} eq 'sha256' || $sig->{block_digest} eq 'sha512',
-  "ISO digest is $sig->{block_digest}",
-  "Prefer a secure digest like sha256 or sha512.\n(check settings with 'tagmedia --show').";
+  $sig->{block_ok},
+  "ISO is ready to be signed",
+  "To be able to sign media, there must be a 'signature' entry in media tag data\npointing to a signature block (check settings with 'tagmedia --show').";
 
 show
   $sig->{block_signed},
@@ -605,8 +605,8 @@ sub usage
 Usage: verifymedia ISO
 Verify SUSE installation media.
 
-      --ignore TOPIC_LIST         Ignore specific test results. The test is still run but any failures
-                                  are not counted.
+      --ignore TOPIC              Ignore specific test results. The test is still run but any failures
+                                  are not counted. The option can be repeated to exclude several tests.
       --verbose                   Increase log level.
       --version                   Show verifymedia version.
       --save-temp                 Keep temporary files.
