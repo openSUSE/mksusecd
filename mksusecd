@@ -407,7 +407,7 @@ if(@opt_kernel_modules && !@opt_kernel_rpms) {
 
 die "no password\n" if $opt_crypto && $opt_crypto_password eq "";
 
-$ENV{PATH} = "/usr/bin:/bin:/usr/sbin:/sbin";
+$ENV{PATH} = "$LIBEXECDIR/mksusecd:/usr/bin:/bin:/usr/sbin:/sbin";
 
 if($>) {
   if($opt_rebuild_initrd == 2) {
@@ -1871,7 +1871,7 @@ sub run_isohybrid
   $opt .= " --mbr-file $hybrid_mbr_code" if $hybrid_mbr_code;
   $opt .= " --grub" if $hybrid_grub;
 
-  my $cmd = "$LIBEXECDIR/mksusecd/isohybrid $opt '$iso_file'";
+  my $cmd = "isohybrid $opt '$iso_file'";
 
   print "running:\n$cmd\n" if $opt_verbose >= 1;
 
