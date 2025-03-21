@@ -136,7 +136,7 @@ See *Kernel update notes* below.
 *--instsys*=_DIR_|_RPM_::
 Add content of _DIR_ or _RPM_ to installation system or root file system for Live media (can be repeated).
 
-*--live.root*=_DIR_|_RPM_::
+*--live-root*=_DIR_|_RPM_::
 Alias for *--instsys*.
 
 *--rescue*=_DIR_|_RPM_::
@@ -565,8 +565,8 @@ Note that any new *--no-compression* setting replaces the old setting entirely.
 For example, *--no-compression=modules* will not additionally turn off compression for
 kernel modules but means only kernel modules are uncompressed.
 
-Note also that you almost certainly want to use *--no-compression* together
-with *--rebuild-initrd*.
+Note also that you almost certainly do not want to use *--no-compression* together
+with *--no-rebuild-initrd*.
 
 === Add-on notes
 
