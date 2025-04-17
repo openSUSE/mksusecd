@@ -178,6 +178,8 @@ sub get_media_style;
 sub get_media_variant;
 sub get_arch;
 sub get_expected_media_layout;
+sub get_expected_suse_media_layout;
+sub get_expected_rh_media_layout;
 sub stat_file;
 sub is_dir;
 sub is_file;
@@ -204,7 +206,7 @@ my $opt_ignore;
 my $opt_ignore_list = [
   "UEFI boot image exists",
   "ISO digest is md5",
-  "boot partition is EFI System Partition"
+  "boot partition type is EFI System Partition"
 ];
 
 my $tmp;
@@ -353,16 +355,22 @@ show_conditional
   "'initrd.siz' must exist and have non-zero size.";
 
 show_conditional
+  $media->{initrd_addrsize},
+  chk_file_exists($media->{initrd_addrsize}),
+  "initrd.addrsize exists",
+  "'initrd.addrsize' must exist and have non-zero size.";
+
+show_conditional
   $media->{cd_ikr},
   chk_file_exists($media->{cd_ikr}),
-  "cd.ikr exists",
-  "'cd.ikr' must exist and have non-zero size.";
+  "boot image exists",
+  "'$media->{cd_ikr}' must exist and have non-zero size.";
 
 show_conditional
   $media->{suse_ins},
   chk_file_exists($media->{suse_ins}),
-  "suse.ins exists",
-  "'suse.ins' must exist and have non-zero size.";
+  "ins file exists",
+  "'$media->{suse_ins}' must exist and have non-zero size.";
 
 show_conditional
   $media->{isolinux_cfg},
@@ -467,40 +475,61 @@ $media->{parti} = decode_json($parti) if $parti;
 
 print "- partition data:\n", Dumper($media->{parti}) if $media->{parti} && $opt_verbose >= 2;
 
-if($media->{hybrid_mode}) {
-  my $hybrid;
+my $hybrid;
 
+my $has_partitions;
+
+if($media->{hybrid_mode}) {
   $hybrid = chk_hybrid_chrp($media) if $media->{hybrid_mode} eq 'chrp';
   $hybrid = chk_hybrid_efi($media) if $media->{hybrid_mode} eq 'efi';
 
   print "- hybrid data:\n", Dumper($hybrid) if $hybrid && $opt_verbose >= 2;
 
   if($media->{hybrid_mode} eq 'efi') {
+    $has_partitions = $hybrid && !$hybrid->{apple} && ($hybrid->{mbr} || $hybrid->{gpt});
+
     show
-      $hybrid && !$hybrid->{apple} && ($hybrid->{mbr} || $hybrid->{gpt}),
+      $has_partitions,
       "has MBR or GPT partition table",
       "To be bootable as disk image, there must be an MBR or GPT partition table.";
 
-    show
-      $hybrid && $hybrid->{efi_partition},
-      "has boot partition with VFAT file system",
-      "To be UEFI bootable, there must be a VFAT boot partition.";
+    if($has_partitions) {
+      show
+        $hybrid && $hybrid->{efi_partition},
+        "has boot partition with VFAT file system",
+        "To be UEFI bootable as disk, there must be a VFAT boot partition.";
 
-    show_conditional
-      $hybrid && $hybrid->{efi_partition},
-      $hybrid->{efi_partition_is_esp},
-      "boot partition is EFI System Partition",
-      "The boot partition type should be EFI System Partition.";
+      show_conditional
+        $hybrid && $hybrid->{efi_partition},
+        $hybrid && $hybrid->{efi_partition_is_esp},
+        "boot partition type is EFI System Partition",
+        "The boot partition type should be EFI System Partition.";
 
-    show
-      $hybrid && $hybrid->{data_partition},
-      "has partition pointing to ISO image data",
-      "There must be a data partition pointing to the same file system you get\nwhen acessing the entire ISO image.";
+      if($hybrid && $hybrid->{efi_partition}) {
+        my $stat = stat_file $media->{efi_image};
 
-    show
-      $hybrid && !$hybrid->{invalid_partition},
-      "no invalid partition entries",
-      "Other partition table entries must have valid data or be completely empty.";
+        show_conditional
+          $stat,
+          $stat && $stat->{start} * 4 == $hybrid->{efi_partition_start} && $stat->{size} == $hybrid->{efi_partition_size} * 512,
+          "boot partition refers to UEFI boot image file",
+          "There is a UEFI boot image file but it is not used as UEFI boot partition.";
+      }
+
+      show
+        $hybrid && $hybrid->{data_partition},
+        "has data partition pointing to ISO image",
+        "There must be a data partition pointing to the same file system you get\nwhen acessing the entire ISO image.";
+
+      show
+        $hybrid && !$hybrid->{data_partition_at_0},
+        "ISO data partition has non-zero offset",
+        "ISO data partition should not start at block 0 as this breaks partitioning tools.";
+
+      show
+        $hybrid && !$hybrid->{invalid_partition},
+        "no invalid partition entries",
+        "All partition table entries must have either valid data or be completely empty.";
+    }
   }
 
   if($media->{hybrid_mode} eq 'chrp') {
@@ -532,14 +561,20 @@ print "- el torito data:\n", Dumper($eltorito) if $eltorito && $opt_verbose >= 2
 show_conditional
   $media->{eltorito_legacy},
   $eltorito->{legacy},
-  "El Torito legacy bootable",
-  "ISO boot catalog must have El Torito entry for legacy boot (pointing to grub or isolinux).";
+  "El Torito x86 legacy bootable",
+  "ISO boot catalog must have an El Torito entry for x86 legacy boot (pointing to grub or isolinux).";
 
 show_conditional
   $media->{eltorito_efi},
   $eltorito->{efi},
   "El Torito UEFI bootable",
   "ISO boot catalog must have El Torito entry for an EFI System Partition image.";
+
+show_conditional
+  $media->{eltorito_efi} && $hybrid && $hybrid->{efi_partition} && $has_partitions,
+  $hybrid && $eltorito->{efi_start} == $hybrid->{efi_partition_start} && $eltorito->{efi_size} == $hybrid->{efi_partition_size},
+  "El Torito UEFI entry points to boot partition",
+  "El Torito UEFI image should be the same as the UEFI boot partition.";
 
 show_conditional
   $media->{eltorito_s390x},
@@ -806,8 +841,9 @@ sub chk_bootinfo
 
   my $grub;
 
-  if($data =~ /,([^,]+)<\/boot-script>/) {
+  if($data =~ /:([^:]+)<\/boot-script>/) {
     $grub = $1;
+    $grub =~ s/^1,//;
     $grub =~ tr#\\#/#;
     $grub =~ s#^/##;
   }
@@ -825,9 +861,11 @@ sub chk_bootinfo
   my $cfg = $grub;
   $cfg =~ s#[^/]*$#grub.cfg#;
 
-  if($cfg ne $media->{grub_cfg} && $cfg ne $media->{grub_earlyboot_cfg} ) {
-    $error_detail = "expecting grub config $cfg for $grub";
-    return 0;
+  if($media->{grub_earlyboot_cfg}) {
+    if($cfg ne $media->{grub_cfg} && $cfg ne $media->{grub_earlyboot_cfg} ) {
+      $error_detail = "expecting grub config $cfg for $grub";
+      return 0;
+    }
   }
 
   return 1;
@@ -845,7 +883,7 @@ sub chk_garbage
     $error_detail .= "$f\n" if stat_file $f;
   }
 
-  return $error_detail ? 2 : 1;
+  return $error_detail ? 0 : 1;
 }
 
 
@@ -856,7 +894,7 @@ sub chk_signature
 
   my $sig;
 
-  $sig->{block_digest} = 'md5' if get_tag $media->{tags}, 'md5sum';
+  $sig->{block_digest} = 'md5' if get_tag($media->{tags}, 'md5sum') || get_tag($media->{tags}, 'iso md5sum');
   $sig->{block_digest} = 'sha256' if get_tag $media->{tags}, 'sha256sum';
 
   my $sig_block = get_tag $media->{tags}, 'signature';
@@ -938,15 +976,20 @@ sub chk_hybrid_efi
       $hybrid->{invalid_partition} = 1, next if $hybrid->{mbr} && !$p->{attributes}{valid};
       if($p->{first_lba} != 0 && $p->{filesystem} && $p->{filesystem}{type} eq 'vfat') {
         $hybrid->{efi_partition} = 1;
+        $hybrid->{efi_partition_start} = $p->{first_lba};
+        $hybrid->{efi_partition_size} = $p->{size};
         $hybrid->{efi_partition_is_esp} = 1 if $p->{type_name} eq "efi" || $p->{type_name} eq "efi system";
       }
-      $hybrid->{data_partition} = 1 if
-        $p->{first_lba} != 0 &&
+      if(
         $p->{filesystem} &&
         $p->{filesystem}{type} eq 'iso9660' && (
           ($p->{filesystem}{uuid} && $p->{filesystem}{uuid} eq $uuid) ||
           ($p->{filesystem}{label} && $p->{filesystem}{label} eq $label)
-        );
+        )
+      ) {
+        $hybrid->{data_partition} = 1;
+        $hybrid->{data_partition_at_0} = 1 if $p->{first_lba} == 0;
+      }
     }
   }
 
@@ -968,7 +1011,12 @@ sub chk_eltorito
     for my $c (@{$parti->{eltorito}{catalog}}) {
       next if $c->{media_type} ne 'no emulation';
       $eltorito->{legacy} = 1, next if $c->{boot_info_table};
-      $eltorito->{efi} = 1, next if $c->{filesystem} && $c->{filesystem}{type} eq 'vfat';
+      if($c->{filesystem} && $c->{filesystem}{type} eq 'vfat') {
+        $eltorito->{efi} = 1;
+        $eltorito->{efi_start} = $c->{first_lba};
+        $eltorito->{efi_size} = $c->{size};
+        next;
+      }
       $eltorito->{s390x} = 1 if $c->{s390x_parm} || $c->{file_name} =~ /\.ikr$/;
     }
   }
@@ -1086,12 +1134,10 @@ sub iso_ls
 #
 sub get_media_style
 {
-  if(is_dir "isolinux" || is_file ".discinfo" || is_dir 'Packages') {
-    return 'rh';
-  }
+  return 'rh' if is_file(".discinfo") || is_file("Fedora-Legal-README.txt");
 
-  for my $stream ('BaseOS', 'AppStream') {
-    return 'rh' if is_dir "$stream/Packages";
+  for my $dir ("isolinux", "Packages", "BaseOS/Packages", "AppStream/Packages") {
+    return 'rh' if is_dir $dir;
   }
 
   return 'suse';
@@ -1168,25 +1214,47 @@ sub get_arch
   return 'aarch64' if is_file "EFI/BOOT/BOOTAA64.EFI";
   return 'aarch64' if is_file "EFI/BOOT/bootaa64.efi";
 
+  return 'ppc64le' if is_file "ppc/bootinfo.txt";
+
+  return 's390x' if is_file "generic.ins";
+
   return $arch;
 }
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# Note: uses global var $iso_ls_rockridge.
+#
 sub get_expected_media_layout
+{
+  my $media = $_[0];
+
+  # files that should not really be there
+  for my $f (qw ( glump ppc/os-chooser )) {
+    $media->{garbage_files}{$f} = 1;
+  }
+
+  for my $f (keys %{$iso_ls_rockridge->{by_name}}) {
+    $media->{garbage_files}{$f} = 1 if $f =~ /(^|\/)TRANS\.TBL$/;
+  }
+
+  if($media->{style} eq 'suse') {
+    get_expected_suse_media_layout $media;
+  }
+  elsif($media->{style} eq 'rh') {
+    get_expected_rh_media_layout $media;
+  }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub get_expected_suse_media_layout
 {
   my $media = $_[0];
 
   my $arch = $media->{arch};
 
   return unless $arch;
-
-  return unless $media->{style} eq 'suse';
-
-  # files that should not really be there
-  for my $f (qw ( glump ppc/os-chooser )) {
-    $media->{garbage_files}{$f} = 1;
-  }
 
   if($media->{variant} eq 'install') {
     if($arch eq 'aarch64') {
@@ -1331,6 +1399,106 @@ sub get_expected_media_layout
       $media->{efi_grub_cfg} = "EFI/BOOT/grub.cfg";
       chomp(my $id = read_file "boot/mbrid");
       $media->{grub_search_id} = "/boot/$id" if is_file "boot/$id";
+      $media->{hybrid_mode} = 'efi';
+      $media->{eltorito_legacy} = 1;
+      $media->{eltorito_efi} = 1;
+    }
+  }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub get_expected_rh_media_layout
+{
+  my $media = $_[0];
+
+  my $arch = $media->{arch};
+
+  return unless $arch;
+
+  if($media->{variant} eq 'install') {
+    if($arch eq 'aarch64') {
+      $media->{initrd} = "images/pxeboot/initrd.img";
+      $media->{kernel} = "images/pxeboot/vmlinuz";
+      $media->{efi_image} = "images/efiboot.img";
+      $media->{efi_loader} = "EFI/BOOT/BOOTAA64.EFI";
+      $media->{efi_grub_cfg} = "EFI/BOOT/grub.cfg";
+      $media->{hybrid_mode} = 'efi';
+      $media->{eltorito_efi} = 1;
+    }
+    elsif($arch eq 'i386') {
+      $media->{el_torito_image} = "images/eltorito.img";
+      $media->{initrd} = "images/pxeboot/initrd.img";
+      $media->{kernel} = "images/pxeboot/vmlinuz";
+      $media->{efi_image} = "images/efiboot.img";
+      $media->{efi_loader} = "EFI/BOOT/BOOTIA32.EFI";
+      $media->{efi_grub_cfg} = "EFI/BOOT/grub.cfg";
+      $media->{hybrid_mode} = 'efi';
+      $media->{eltorito_legacy} = 1;
+      $media->{eltorito_efi} = 1;
+    }
+    elsif($arch eq 'ppc64le') {
+      $media->{initrd} = "ppc/ppc64/initrd.img";
+      $media->{kernel} = "ppc/ppc64/vmlinuz";
+      $media->{bootinfo_txt} = "ppc/bootinfo.txt";
+      $media->{grub_cfg} = "boot/grub/grub.cfg";
+      $media->{hybrid_mode} = 'chrp';
+    }
+    elsif($arch eq 's390x') {
+      $media->{initrd} = "images/initrd.img";
+      $media->{initrd_addrsize} = "images/initrd.addrsize";
+      $media->{kernel} = "images/kernel.img";
+      $media->{cd_ikr} = "images/cdboot.img";
+      $media->{suse_ins} = "generic.ins";
+      $media->{eltorito_s390x} = 1;
+    }
+    elsif($arch eq 'x86_64') {
+      $media->{el_torito_image} = "images/eltorito.img";
+      $media->{initrd} = "images/pxeboot/initrd.img";
+      $media->{kernel} = "images/pxeboot/vmlinuz";
+      $media->{efi_image} = "images/efiboot.img";
+      $media->{efi_loader} = "EFI/BOOT/BOOTX64.EFI";
+      $media->{efi_grub_cfg} = "EFI/BOOT/grub.cfg";
+      $media->{hybrid_mode} = 'efi';
+      $media->{eltorito_legacy} = 1;
+      $media->{eltorito_efi} = 1;
+    }
+  }
+  elsif($media->{variant} eq 'live') {
+    $media->{expect_signature_file} = 1;
+
+    if($arch eq 'aarch64') {
+      $media->{initrd} = "images/pxeboot/initrd.img";
+      $media->{kernel} = "images/pxeboot/vmlinuz";
+      $media->{efi_image} = "images/efiboot.img";
+      $media->{efi_loader} = "EFI/BOOT/BOOTAA64.EFI";
+      $media->{efi_grub_cfg} = "EFI/BOOT/grub.cfg";
+      $media->{hybrid_mode} = 'efi';
+      $media->{eltorito_efi} = 1;
+    }
+    elsif($arch eq 'ppc64le') {
+      $media->{initrd} = "ppc/ppc64/initrd.img";
+      $media->{kernel} = "ppc/ppc64/vmlinuz";
+      $media->{bootinfo_txt} = "ppc/bootinfo.txt";
+      $media->{grub_cfg} = "boot/grub/grub.cfg";
+      $media->{hybrid_mode} = 'chrp';
+    }
+    elsif($arch eq 's390x') {
+      $media->{initrd} = "images/initrd.img";
+      $media->{initrd_addrsize} = "images/initrd.addrsize";
+      $media->{kernel} = "images/kernel.img";
+      $media->{cd_ikr} = "images/cdboot.img";
+      $media->{suse_ins} = "generic.ins";
+      $media->{eltorito_s390x} = 1;
+    }
+    elsif($arch eq 'x86_64') {
+      $media->{grub_cfg} = "boot/grub2/grub.cfg";
+      $media->{el_torito_image} = "images/eltorito.img";
+      $media->{initrd} = "images/pxeboot/initrd.img";
+      $media->{kernel} = "images/pxeboot/vmlinuz";
+      $media->{efi_image} = "images/efiboot.img";
+      $media->{efi_loader} = "EFI/BOOT/BOOTX64.EFI";
+      $media->{efi_grub_cfg} = "EFI/BOOT/grub.cfg";
       $media->{hybrid_mode} = 'efi';
       $media->{eltorito_legacy} = 1;
       $media->{eltorito_efi} = 1;
@@ -1939,7 +2107,7 @@ sub unpack_archive
     }
 
     for (reverse split /\./, $sub_type) {
-      if(/^(gz|xz|zst|rpm)$/) {
+      if(/^(bz2|gz|xz|zst|rpm)$/) {
         my $c;
         if($1 eq 'gz') {
           $c = 'gzip --quiet -dc';
@@ -2047,7 +2215,7 @@ sub unpack_initrd
 {
   my $file = $_[0];
 
-  return undef unless is_file($file);
+  return undef unless is_file $file;
 
   extract_file $file;
 
@@ -2088,7 +2256,7 @@ sub get_root_option_bootloader
 {
   my $media = $_[0];
 
-  my $grub_cfg = read_file $media->{grub_cfg};
+  my $grub_cfg = read_file($media->{grub_cfg} || $media->{efi_grub_cfg});
 
   return $1 if $grub_cfg =~ /^\s*\$?linux .* root=(\S+)/m;
 

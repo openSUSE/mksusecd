@@ -4670,7 +4670,7 @@ sub unpack_archive
     }
 
     for (reverse split /\./, $sub_type) {
-      if(/^(gz|xz|zst|rpm)$/) {
+      if(/^(bz2|gz|xz|zst|rpm)$/) {
         my $c;
         if($1 eq 'gz') {
           $c = 'gzip --quiet -dc';

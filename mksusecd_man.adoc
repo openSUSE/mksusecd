@@ -774,6 +774,10 @@ Find more usage examples here: https://github.com/openSUSE/mksusecd/blob/master/
 
 == See Also
 
+*verifymedia*(1), *checkmedia*(1), *tagmedia*(1).
+
+== Links
+
 - more documentation: `/usr/share/doc/packages/mksusecd` +
 - get latest version: https://github.com/openSUSE/mksusecd?tab=readme-ov-file#downloads +
 - mksusecd web site: https://github.com/openSUSE/mksusecd +
