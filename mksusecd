@@ -251,7 +251,7 @@ my $opt_no_mbr_code;
 my $opt_no_mbr_chs;
 my $opt_zipl;
 my $opt_check;
-my $opt_digest = 'sha256';
+my $opt_digest;
 my @opt_initrds;
 my @opt_instsys;
 my @opt_rescue;
@@ -313,7 +313,7 @@ GetOptions(
   'check'            => \$opt_check,
   'no-check'         => sub { $opt_check = 0 },
   'digest=s'         => \$opt_digest,
-  'no-digest'        => sub { $opt_digest = undef },
+  'no-digest'        => sub { $opt_digest = "" },
   'sign'             => \$opt_sign,
   'no-sign'          => sub { $opt_sign = 0 },
   'sign-image'       => \$opt_sign_image,
@@ -390,7 +390,7 @@ GetOptions(
 
 usage 1 unless $opt_create || $opt_list_repos;
 usage 1 if $opt_hybrid_fs !~ '^(|iso|fat)$';
-usage 1 if defined($opt_digest) && $opt_digest !~ '^(md5|sha1|sha224|sha256|sha384|sha512)$';
+usage 1 if defined($opt_digest) && $opt_digest !~ '^(|md5|sha1|sha224|sha256|sha384|sha512)$';
 usage 1 if defined($opt_enable_repos) && $opt_enable_repos !~ /^(0|1|no|yes|auto|ask)$/i;
 
 for (keys %$opt_no_compression) {
@@ -633,7 +633,7 @@ if($opt_create || $opt_list_repos) {
   $media_style = get_media_style \@sources;
   $media_variant = get_media_variant \@sources;
 
-  print "media style $media_style, variant $media_variant\n" if $opt_verbose >= 1;
+  print "media style $media_style, variant $media_variant\n";
 
   analyze_products \@sources;
   build_filelist \@sources;
@@ -786,18 +786,26 @@ if($opt_create || $opt_list_repos) {
 
   wipe_iso if $opt_no_iso;
 
-  if(defined $opt_digest) {
+  if(!defined $opt_digest) {
+    $opt_digest = $media_style eq 'rh' ? 'md5' : 'sha256';
+  }
+
+  if($opt_digest ne "") {
     my $chk = $opt_check ? "--check" : "";
     my $digest = $opt_digest;
     my $pad = "";
+    my $style = $media_style;
     if($media_style eq 'suse') {
       $pad = "--pad 150";
     }
     else {
-      $digest = "md5";
-    };
+      if($opt_digest ne 'md5') {
+        $style = 'suse';
+        print "Warning: embedding $opt_digest digest in SUSE format.\n";
+      }
+    }
     print "calculating $digest...";
-    system "tagmedia --style $media_style $chk $pad --digest '$digest' '$iso_file' >/dev/null";
+    system "tagmedia --style $style $chk $pad --digest '$digest' '$iso_file' >/dev/null";
     print "\n";
     if($opt_sign && $sign_key_dir && $opt_sign_image) {
       my $tmp_dir = $tmp->dir();
@@ -1233,7 +1241,7 @@ sub analyze_boot
       next if $boot->{$arch}{bl} && $boot->{$arch}{bl}{efi};
       next unless $arch eq 'x86_64' || $arch eq 'i386' || $arch eq 'aarch64';
       next unless -d fname("boot/$arch");
-      if($media_variant eq 'live') {
+      if($media_variant ne 'install') {
         next unless -d fname("boot/$arch/loader");
         $boot->{$arch}{bl}{efi} = { base => "boot/$arch/loader/efiboot.img", arch => $arch };
         if(-f fname("boot/$arch/loader/boot_hybrid.img")) {
@@ -3659,7 +3667,7 @@ sub add_to_content_file
 #
 sub update_content_or_checksums
 {
-  return 0 if $media_style eq 'rh' || $media_variant eq 'live';
+  return 0 unless $media_style eq 'suse' && $media_variant eq 'install';
   return $has_content ? update_content : update_checksums;
 }
 
@@ -4679,7 +4687,7 @@ sub unpack_archive
           $c = 'xz --quiet -dc';
         }
         elsif($1 eq 'zst') {
-          $c = 'zstd --quiet -dc';
+          $c = 'zstd --quiet --force -dc';
         }
         elsif($1 eq 'bz2') {
           $c = 'bzip2 --quiet -dc';
@@ -5739,11 +5747,11 @@ sub get_media_style
   my $style = 'suse';
 
   for my $s (@$src) {
-    if(-d "$s->{dir}/isolinux" || -f "$s->{dir}/.discinfo") {
+    if(-f "$s->{dir}/.discinfo" || -f "$s->{dir}/Fedora-Legal-README.txt" ) {
       $style = 'rh';
       last;
     }
-    for my $r (glob "$s->{dir}/*/Packages") {
+    for my $r (glob "$s->{dir}/*/Packages $s->{dir}/Packages $s->{dir}/isolinux") {
       if(-d $r) {
         $style = 'rh';
         last;
@@ -5760,7 +5768,7 @@ sub get_media_style
 #
 # - sources: array_ref containing a list of directories
 #
-# Look at sources and determine media variant (install vs. live).
+# Look at sources and determine media variant (install, selfinstall, or live).
 #
 # Assume a Live medium if there's an '/LiveOS' dir.
 #
@@ -5772,6 +5780,10 @@ sub get_media_variant
   for my $s (@$src) {
     if(-d "$s->{dir}/LiveOS") {
       $variant = 'live';
+      last;
+    }
+    if(-f "$s->{dir}/config.isoclient") {
+      $variant = 'selfinstall';
       last;
     }
   }
@@ -5896,7 +5908,7 @@ sub analyze_products
 
   exit 0 if $opt_list_repos;
 
-  return if $media_style eq 'rh' || $media_variant eq 'live';
+  return unless $media_style eq 'suse' && $media_variant eq 'install';
 
   # don't merge repos if the user doesn't want to
   return if !$opt_merge_repos;
@@ -6000,7 +6012,7 @@ sub check_product
 
   open $f, "gzip --quiet -dc $xml[0] |" if $xml[0] =~ /\.gz$/;
   open $f, "xz --quiet -dc $xml[0] |" if $xml[0] =~ /\.xz$/;
-  open $f, "zstd --quiet -dc $xml[0] |" if $xml[0] =~ /\.zst$/;
+  open $f, "zstd --quiet --force -dc $xml[0] |" if $xml[0] =~ /\.zst$/;
 
   if(defined $f) {
     while(my $l = <$f>) {

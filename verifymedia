@@ -205,7 +205,7 @@ my $opt_verbose = 0;
 my $opt_ignore;
 my $opt_ignore_list = [
   "UEFI boot image exists",
-  "ISO digest is md5",
+  "ISO digest is sha256 or better",
   "boot partition type is EFI System Partition"
 ];
 
@@ -592,11 +592,14 @@ show
   "ISO has digest",
   "There must be a digest stored in media tag data. Ideally sha256 or sha512.\n(check settings with 'tagmedia --show').";
 
-show_conditional
-  $sig->{block_digest},
-  $sig->{block_digest} eq 'sha256' || $sig->{block_digest} eq 'sha512',
-  "ISO digest is $sig->{block_digest}",
-  "Prefer a secure digest like sha256 or sha512.\n(check settings with 'tagmedia --show').";
+if($sig->{block_digest}) {
+  my $digest_ok = $sig->{block_digest} =~ /sha(256|384|512)/;
+  $error_detail = "Digest is $sig->{block_digest}." if ! $digest_ok;
+  show
+    $digest_ok,
+    "ISO digest is sha256 or better",
+    "Prefer a secure digest like sha256, sha384, or sha512.\n(check settings with 'tagmedia --show').";
+}
 
 show_conditional
   $media->{expect_signature_file},
@@ -896,6 +899,8 @@ sub chk_signature
 
   $sig->{block_digest} = 'md5' if get_tag($media->{tags}, 'md5sum') || get_tag($media->{tags}, 'iso md5sum');
   $sig->{block_digest} = 'sha256' if get_tag $media->{tags}, 'sha256sum';
+  $sig->{block_digest} = 'sha384' if get_tag $media->{tags}, 'sha384sum';
+  $sig->{block_digest} = 'sha512' if get_tag $media->{tags}, 'sha512sum';
 
   my $sig_block = get_tag $media->{tags}, 'signature';
   if($sig_block) {
@@ -2116,7 +2121,7 @@ sub unpack_archive
           $c = 'xz --quiet -dc';
         }
         elsif($1 eq 'zst') {
-          $c = 'zstd --quiet -dc';
+          $c = 'zstd --quiet --force -dc';
         }
         elsif($1 eq 'bz2') {
           $c = 'bzip2 --quiet -dc';
