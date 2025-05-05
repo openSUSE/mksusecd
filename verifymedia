@@ -208,6 +208,11 @@ my $opt_ignore_list = [
   "ISO digest is sha256 or better",
   "boot partition type is EFI System Partition"
 ];
+my $opt_ignore_list_extra_rh = [
+  "ISO data partition has non-zero offset",
+  "ISO is ready to be signed",
+  "ISO is signed"
+];
 
 my $tmp;
 my $media;
@@ -299,6 +304,10 @@ $media->{tags} = read_tags;
 
 print "- media:\n", Dumper($media) if $opt_verbose >= 2;
 die "failed to detect architecture\n" unless $media->{arch};
+
+if($media->{style} eq 'rh') {
+  $opt_ignore->{$_} = 1 for @$opt_ignore_list_extra_rh;
+}
 
 show
   $media->{style} ne "",

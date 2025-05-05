@@ -242,8 +242,8 @@ my $opt_dst;
 my $opt_joliet = 1;
 my $opt_verbose = 0;
 my $opt_efi = 1;
-my $opt_hybrid = 1;
-my $opt_hybrid_fs = 'iso';
+my $opt_hybrid;
+my $opt_hybrid_fs;
 my $opt_hybrid_gpt;
 my $opt_hybrid_mbr;
 my $opt_no_prot_mbr;
@@ -529,13 +529,6 @@ if($opt_sign_pass_file) {
 }
 
 if($opt_create || $opt_list_repos) {
-#  if(@opt_kernel_rpms) {
-#    die "Sorry, you must run mksusecd as root to replace kernel modules." if $>;
-#  }
-
-  # we might need two mkisofs runs...
-  $two_runs = ($opt_hybrid && $opt_hybrid_fs) || $opt_crypto;
-
   $iso_file = $opt_dst;
 
   die "$iso_file: block device not allowed\n" if -b $iso_file;
@@ -584,6 +577,7 @@ if($opt_create || $opt_list_repos) {
         if(`find $d -xdev \\! -readable`) {
           die "Some files in $_ are not user-readable; you need root privileges.\n";
         }
+        # fixme: does not reliably work: with gpt+mbr, 'file' does not report a gpt
         if($iso_cnt == 1 && $t =~ /GPT partition table/) {
           if(!defined $opt_hybrid_gpt && !defined $opt_hybrid_mbr) {
             $opt_hybrid = 1;
@@ -634,6 +628,22 @@ if($opt_create || $opt_list_repos) {
   $media_variant = get_media_variant \@sources;
 
   print "media style $media_style, variant $media_variant\n";
+
+  # default hybrid settings
+  if($media_style eq 'suse') {
+    $opt_hybrid = 1 if !defined($opt_hybrid);
+    $opt_hybrid_mbr = 1 if !defined($opt_hybrid_mbr) && !defined($opt_hybrid_gpt);
+    $opt_hybrid_fs = 'iso' if !defined($opt_hybrid_fs);
+  }
+  else {
+    # rh
+    $opt_hybrid = 1 if !defined($opt_hybrid);
+    $opt_hybrid_mbr = $opt_hybrid_gpt = 1 if !defined($opt_hybrid_mbr) && !defined($opt_hybrid_gpt);
+    $opt_hybrid_fs = '' if !defined($opt_hybrid_fs);
+  }
+
+  # we might need two mkisofs runs...
+  $two_runs = ($opt_hybrid && $opt_hybrid_fs) || $opt_crypto;
 
   analyze_products \@sources;
   build_filelist \@sources;
