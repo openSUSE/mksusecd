@@ -218,6 +218,7 @@ sub replace_kernel_mods;
 sub new_products_xml;
 sub prepare_addon;
 sub check_mksquashfs_comp;
+sub check_tagmedia_signature_tag;
 sub eval_size;
 sub add_linuxrc_option;
 sub wipe_iso;
@@ -483,6 +484,7 @@ my $kernel;
 my $warned;
 my $read_write;
 my $mksquashfs_has_comp;
+my $tagmedia_has_signature_tag;
 my $image_size;
 my $syslinux_config;
 my $linuxrc_options;
@@ -504,6 +506,7 @@ $mkisofs->{command} = "/usr/bin/genisoimage" if ! -x $mkisofs->{command};
 die "mkisofs: command not found\n" if ! -x $mkisofs->{command};
 
 $mksquashfs_has_comp = check_mksquashfs_comp;
+$tagmedia_has_signature_tag = check_tagmedia_signature_tag;
 
 if(defined $opt_size) {
   $image_size = eval_size $opt_size;
@@ -705,7 +708,7 @@ if($opt_create || $opt_list_repos) {
   if($opt_sign && (
       # we are going to change '/content' resp. '/CHECKSUMS' in one way or another
       @opt_initrds || @opt_instsys || @opt_rescue || @opt_kernel_rpms || $opt_boot_options ||
-      $opt_new_boot_entry || $opt_include_repos || update_content_or_checksums
+      $opt_new_boot_entry || $opt_include_repos || update_content_or_checksums || $opt_sign_image
     )
   ) {
     extract_installkeys;
@@ -732,6 +735,7 @@ if($opt_create || $opt_list_repos) {
 
   prepare_addon;
 
+  # FIXME: suse also has it...
   if($media_style eq 'rh') {
     update_treeinfo;
   }
@@ -820,7 +824,11 @@ if($opt_create || $opt_list_repos) {
       }
     }
     print "calculating $digest...";
-    system "tagmedia --style $style $chk $pad --digest '$digest' '$iso_file' >/dev/null";
+    my $tag_sig_opt = "";
+    if($tagmedia_has_signature_tag) {
+      $tag_sig_opt = "--signature-tag" if $opt_sign_image;
+    }
+    system "tagmedia --style $style $chk $pad $tag_sig_opt --digest '$digest' '$iso_file' >/dev/null";
     print "\n";
     if($opt_sign && $sign_key_dir && $opt_sign_image) {
       my $tmp_dir = $tmp->dir();
@@ -5644,6 +5652,28 @@ sub check_mksquashfs_comp
   print "mksquashfs has '-comp': $comp_ok\n" if $opt_verbose >= 2;
 
   return $comp_ok;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# check_tagmedia_signature_tag()
+#
+# Return 1 if tagmedia supports '--signature-tag' option, else 0.
+#
+sub check_tagmedia_signature_tag
+{
+  my $sig_ok = 0;
+
+  if(open my $f, "tagmedia --help 2>&1 |") {
+    while(<$f>) {
+      $sig_ok = 1, last if /^\s*--signature-tag\s/;
+    }
+    close $f;
+  }
+
+  print "tagmedia has '--signature-tag': $sig_ok\n" if $opt_verbose >= 2;
+
+  return $sig_ok;
 }
 
 
