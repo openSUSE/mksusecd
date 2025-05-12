@@ -298,6 +298,7 @@ my $opt_signature_file;
 my $opt_no_compression;
 my $opt_instsys_size;
 my $opt_mount_iso;
+my $opt_hide_efi_image;
 
 Getopt::Long::Configure("gnu_compat");
 
@@ -310,6 +311,10 @@ GetOptions(
   'no-efi'           => sub { $opt_efi = 0 },
   'uefi'             => \$opt_efi,
   'no-uefi'          => sub { $opt_efi = 0 },
+  'efi-image'        => sub { $opt_hide_efi_image = 0 },
+  'no-efi-image'     => \$opt_hide_efi_image,
+  'uefi-image'       => sub { $opt_hide_efi_image = 0 },
+  'no-uefi-image'    => \$opt_hide_efi_image,
   'check'            => \$opt_check,
   'no-check'         => sub { $opt_check = 0 },
   'digest=s'         => \$opt_digest,
@@ -923,6 +928,8 @@ General image layout related options:
 
       --uefi                      Make ISO UEFI bootable (default).
       --no-uefi                   Don't make ISO UEFI bootable.
+      --uefi-image                Make UEFI boot image visible in ISO9660 file system (default if it exists).
+      --no-uefi-image             Hide UEFI boot image in ISO9660 file system (default if it does not exist).
       --zipl                      Make image zIPL bootable (default on s390x).
       --no-zipl                   Don't make image zIPL bootable (default if not on s390x).
       --gpt                       Add GPT when in isohybrid mode.
@@ -1494,8 +1501,15 @@ sub prepare_mkisofs
     }
     elsif($opt_efi && $t eq 'efi') {
       $has_efi = 1;
-      my $f = fname($_->{$t}{base});
-      if(!$f || ! -s $f || rebuild_efi_image($_->{$t}{base})) {
+      my $efi_file = $_->{$t}{base};
+      my $f = fname($efi_file);
+
+      my $hide = $opt_hide_efi_image;
+      $hide = !defined($f) if !defined($hide);
+
+      printf "UEFI image: %s%s\n", $efi_file, $hide ? " (hidden)" : "";
+
+      if(!$f || ! -s $f || rebuild_efi_image($efi_file)) {
         create_efi_image $_->{$t}{base};
         $f = fname($_->{$t}{base});
       }
@@ -1505,6 +1519,11 @@ sub prepare_mkisofs
       push @{$mkisofs->{sort}}, "$f 1000001";
       $mkisofs->{options} .=
         " -eltorito-alt-boot -no-emul-boot -boot-load-size $s -b $_->{$t}{base}";
+      if($hide) {
+        # First line is not sufficient - why?
+        $mkisofs->{options} .= " -hide $efi_file -hide-joliet $efi_file";
+        $mkisofs->{options} .= " -hide $f -hide-joliet $f";
+      }
       print "El-Torito UEFI bootable ($_->{$t}{arch})\n";
       push @$iso_catalog, "UEFI ($_->{$t}{arch})";
       $mkisofs->{fix_catalog} = $iso_catalog;

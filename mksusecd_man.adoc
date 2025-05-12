@@ -236,6 +236,14 @@ See *UEFI boot notes* below.
 Don't make ISO UEFI bootable. +
 See *UEFI boot notes* below.
 
+*--uefi-image*::
+Make UEFI boot image visible in ISO9660 file system (default if it exists). +
+See *UEFI boot notes* below.
+
+*--no-uefi-image*::
+Hide UEFI boot image in ISO9660 file system (default if it does not exist). +
+See *UEFI boot notes* below.
+
 *--zipl*::
 Make image zIPL bootable (default on s390x).
 
@@ -685,9 +693,11 @@ The *--uefi* option refers to method 2.
 Note that this FAT file system image might not be visible on the medium (e.g. KIWI produced media hide the file).
 If it is visible, it has names like '/boot/x86_64/efi', '/boot/x86_64/loader/efiboot.img', '/images/efiboot.img', or similar.
 
-If this FAT file system image is missing or files in the '/EFI' directory (on the medium) have changed,
+You can control the visibility of this image with option *--uefi-image* (to make it visible) or *--no-uefi-image* (to hide it).
+If this option is not given, mksusecd will try to keep the visibility as it was on the source medium.
+
+If this FAT file system image is missing (or hidden) or files in the '/EFI' directory (on the medium) have changed,
 mksusecd will create a new FAT file system image based on the updated '/EFI' directory content.
-This generated FAT file system image will always be visible on the medium.
 
 === Crypto notes
 
