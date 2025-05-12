@@ -2270,9 +2270,9 @@ sub get_root_option_bootloader
 {
   my $media = $_[0];
 
-  my $grub_cfg = read_file($media->{grub_cfg} || $media->{efi_grub_cfg});
+  my $grub_cfg = read_file($media->{grub_cfg}) || read_file($media->{efi_grub_cfg});
 
-  return $1 if $grub_cfg =~ /^\s*\$?linux .* root=(\S+)/m;
+  return $1 if $grub_cfg =~ /^\s*\$?linux(?:efi)? .* root=(\S+)/m;
 
   return undef;
 }
