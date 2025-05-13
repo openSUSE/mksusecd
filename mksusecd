@@ -218,6 +218,7 @@ sub replace_kernel_mods;
 sub new_products_xml;
 sub prepare_addon;
 sub check_mksquashfs_comp;
+sub check_tagmedia_signature_tag;
 sub eval_size;
 sub add_linuxrc_option;
 sub wipe_iso;
@@ -242,8 +243,8 @@ my $opt_dst;
 my $opt_joliet = 1;
 my $opt_verbose = 0;
 my $opt_efi = 1;
-my $opt_hybrid = 1;
-my $opt_hybrid_fs = 'iso';
+my $opt_hybrid;
+my $opt_hybrid_fs;
 my $opt_hybrid_gpt;
 my $opt_hybrid_mbr;
 my $opt_no_prot_mbr;
@@ -251,7 +252,7 @@ my $opt_no_mbr_code;
 my $opt_no_mbr_chs;
 my $opt_zipl;
 my $opt_check;
-my $opt_digest = 'sha256';
+my $opt_digest;
 my @opt_initrds;
 my @opt_instsys;
 my @opt_rescue;
@@ -298,6 +299,7 @@ my $opt_signature_file;
 my $opt_no_compression;
 my $opt_instsys_size;
 my $opt_mount_iso;
+my $opt_hide_efi_image;
 
 Getopt::Long::Configure("gnu_compat");
 
@@ -310,10 +312,14 @@ GetOptions(
   'no-efi'           => sub { $opt_efi = 0 },
   'uefi'             => \$opt_efi,
   'no-uefi'          => sub { $opt_efi = 0 },
+  'efi-image'        => sub { $opt_hide_efi_image = 0 },
+  'no-efi-image'     => \$opt_hide_efi_image,
+  'uefi-image'       => sub { $opt_hide_efi_image = 0 },
+  'no-uefi-image'    => \$opt_hide_efi_image,
   'check'            => \$opt_check,
   'no-check'         => sub { $opt_check = 0 },
   'digest=s'         => \$opt_digest,
-  'no-digest'        => sub { $opt_digest = undef },
+  'no-digest'        => sub { $opt_digest = "" },
   'sign'             => \$opt_sign,
   'no-sign'          => sub { $opt_sign = 0 },
   'sign-image'       => \$opt_sign_image,
@@ -390,7 +396,7 @@ GetOptions(
 
 usage 1 unless $opt_create || $opt_list_repos;
 usage 1 if $opt_hybrid_fs !~ '^(|iso|fat)$';
-usage 1 if defined($opt_digest) && $opt_digest !~ '^(md5|sha1|sha224|sha256|sha384|sha512)$';
+usage 1 if defined($opt_digest) && $opt_digest !~ '^(|md5|sha1|sha224|sha256|sha384|sha512)$';
 usage 1 if defined($opt_enable_repos) && $opt_enable_repos !~ /^(0|1|no|yes|auto|ask)$/i;
 
 for (keys %$opt_no_compression) {
@@ -478,6 +484,7 @@ my $kernel;
 my $warned;
 my $read_write;
 my $mksquashfs_has_comp;
+my $tagmedia_has_signature_tag;
 my $image_size;
 my $syslinux_config;
 my $linuxrc_options;
@@ -499,6 +506,7 @@ $mkisofs->{command} = "/usr/bin/genisoimage" if ! -x $mkisofs->{command};
 die "mkisofs: command not found\n" if ! -x $mkisofs->{command};
 
 $mksquashfs_has_comp = check_mksquashfs_comp;
+$tagmedia_has_signature_tag = check_tagmedia_signature_tag;
 
 if(defined $opt_size) {
   $image_size = eval_size $opt_size;
@@ -529,13 +537,6 @@ if($opt_sign_pass_file) {
 }
 
 if($opt_create || $opt_list_repos) {
-#  if(@opt_kernel_rpms) {
-#    die "Sorry, you must run mksusecd as root to replace kernel modules." if $>;
-#  }
-
-  # we might need two mkisofs runs...
-  $two_runs = ($opt_hybrid && $opt_hybrid_fs) || $opt_crypto;
-
   $iso_file = $opt_dst;
 
   die "$iso_file: block device not allowed\n" if -b $iso_file;
@@ -584,6 +585,7 @@ if($opt_create || $opt_list_repos) {
         if(`find $d -xdev \\! -readable`) {
           die "Some files in $_ are not user-readable; you need root privileges.\n";
         }
+        # fixme: does not reliably work: with gpt+mbr, 'file' does not report a gpt
         if($iso_cnt == 1 && $t =~ /GPT partition table/) {
           if(!defined $opt_hybrid_gpt && !defined $opt_hybrid_mbr) {
             $opt_hybrid = 1;
@@ -633,7 +635,23 @@ if($opt_create || $opt_list_repos) {
   $media_style = get_media_style \@sources;
   $media_variant = get_media_variant \@sources;
 
-  print "media style $media_style, variant $media_variant\n" if $opt_verbose >= 1;
+  print "media style $media_style, variant $media_variant\n";
+
+  # default hybrid settings
+  if($media_style eq 'suse') {
+    $opt_hybrid = 1 if !defined($opt_hybrid);
+    $opt_hybrid_mbr = 1 if !defined($opt_hybrid_mbr) && !defined($opt_hybrid_gpt);
+    $opt_hybrid_fs = 'iso' if !defined($opt_hybrid_fs);
+  }
+  else {
+    # rh
+    $opt_hybrid = 1 if !defined($opt_hybrid);
+    $opt_hybrid_mbr = $opt_hybrid_gpt = 1 if !defined($opt_hybrid_mbr) && !defined($opt_hybrid_gpt);
+    $opt_hybrid_fs = '' if !defined($opt_hybrid_fs);
+  }
+
+  # we might need two mkisofs runs...
+  $two_runs = ($opt_hybrid && $opt_hybrid_fs) || $opt_crypto;
 
   analyze_products \@sources;
   build_filelist \@sources;
@@ -690,7 +708,7 @@ if($opt_create || $opt_list_repos) {
   if($opt_sign && (
       # we are going to change '/content' resp. '/CHECKSUMS' in one way or another
       @opt_initrds || @opt_instsys || @opt_rescue || @opt_kernel_rpms || $opt_boot_options ||
-      $opt_new_boot_entry || $opt_include_repos || update_content_or_checksums
+      $opt_new_boot_entry || $opt_include_repos || update_content_or_checksums || $opt_sign_image
     )
   ) {
     extract_installkeys;
@@ -717,6 +735,7 @@ if($opt_create || $opt_list_repos) {
 
   prepare_addon;
 
+  # FIXME: suse also has it...
   if($media_style eq 'rh') {
     update_treeinfo;
   }
@@ -786,18 +805,30 @@ if($opt_create || $opt_list_repos) {
 
   wipe_iso if $opt_no_iso;
 
-  if(defined $opt_digest) {
+  if(!defined $opt_digest) {
+    $opt_digest = $media_style eq 'rh' ? 'md5' : 'sha256';
+  }
+
+  if($opt_digest ne "") {
     my $chk = $opt_check ? "--check" : "";
     my $digest = $opt_digest;
     my $pad = "";
+    my $style = $media_style;
     if($media_style eq 'suse') {
       $pad = "--pad 150";
     }
     else {
-      $digest = "md5";
-    };
+      if($opt_digest ne 'md5') {
+        $style = 'suse';
+        print "Warning: embedding $opt_digest digest in SUSE format.\n";
+      }
+    }
     print "calculating $digest...";
-    system "tagmedia --style $media_style $chk $pad --digest '$digest' '$iso_file' >/dev/null";
+    my $tag_sig_opt = "";
+    if($tagmedia_has_signature_tag) {
+      $tag_sig_opt = "--signature-tag" if $opt_sign_image;
+    }
+    system "tagmedia --style $style $chk $pad $tag_sig_opt --digest '$digest' '$iso_file' >/dev/null";
     print "\n";
     if($opt_sign && $sign_key_dir && $opt_sign_image) {
       my $tmp_dir = $tmp->dir();
@@ -905,6 +936,8 @@ General image layout related options:
 
       --uefi                      Make ISO UEFI bootable (default).
       --no-uefi                   Don't make ISO UEFI bootable.
+      --uefi-image                Make UEFI boot image visible in ISO9660 file system (default if it exists).
+      --no-uefi-image             Hide UEFI boot image in ISO9660 file system (default if it does not exist).
       --zipl                      Make image zIPL bootable (default on s390x).
       --no-zipl                   Don't make image zIPL bootable (default if not on s390x).
       --gpt                       Add GPT when in isohybrid mode.
@@ -1233,7 +1266,7 @@ sub analyze_boot
       next if $boot->{$arch}{bl} && $boot->{$arch}{bl}{efi};
       next unless $arch eq 'x86_64' || $arch eq 'i386' || $arch eq 'aarch64';
       next unless -d fname("boot/$arch");
-      if($media_variant eq 'live') {
+      if($media_variant ne 'install') {
         next unless -d fname("boot/$arch/loader");
         $boot->{$arch}{bl}{efi} = { base => "boot/$arch/loader/efiboot.img", arch => $arch };
         if(-f fname("boot/$arch/loader/boot_hybrid.img")) {
@@ -1476,8 +1509,15 @@ sub prepare_mkisofs
     }
     elsif($opt_efi && $t eq 'efi') {
       $has_efi = 1;
-      my $f = fname($_->{$t}{base});
-      if(!$f || ! -s $f || rebuild_efi_image($_->{$t}{base})) {
+      my $efi_file = $_->{$t}{base};
+      my $f = fname($efi_file);
+
+      my $hide = $opt_hide_efi_image;
+      $hide = !defined($f) if !defined($hide);
+
+      printf "UEFI image: %s%s\n", $efi_file, $hide ? " (hidden)" : "";
+
+      if(!$f || ! -s $f || rebuild_efi_image($efi_file)) {
         create_efi_image $_->{$t}{base};
         $f = fname($_->{$t}{base});
       }
@@ -1487,6 +1527,11 @@ sub prepare_mkisofs
       push @{$mkisofs->{sort}}, "$f 1000001";
       $mkisofs->{options} .=
         " -eltorito-alt-boot -no-emul-boot -boot-load-size $s -b $_->{$t}{base}";
+      if($hide) {
+        # First line is not sufficient - why?
+        $mkisofs->{options} .= " -hide $efi_file -hide-joliet $efi_file";
+        $mkisofs->{options} .= " -hide $f -hide-joliet $f";
+      }
       print "El-Torito UEFI bootable ($_->{$t}{arch})\n";
       push @$iso_catalog, "UEFI ($_->{$t}{arch})";
       $mkisofs->{fix_catalog} = $iso_catalog;
@@ -3659,7 +3704,7 @@ sub add_to_content_file
 #
 sub update_content_or_checksums
 {
-  return 0 if $media_style eq 'rh' || $media_variant eq 'live';
+  return 0 unless $media_style eq 'suse' && $media_variant eq 'install';
   return $has_content ? update_content : update_checksums;
 }
 
@@ -4679,7 +4724,7 @@ sub unpack_archive
           $c = 'xz --quiet -dc';
         }
         elsif($1 eq 'zst') {
-          $c = 'zstd --quiet -dc';
+          $c = 'zstd --quiet --force -dc';
         }
         elsif($1 eq 'bz2') {
           $c = 'bzip2 --quiet -dc';
@@ -5611,6 +5656,28 @@ sub check_mksquashfs_comp
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# check_tagmedia_signature_tag()
+#
+# Return 1 if tagmedia supports '--signature-tag' option, else 0.
+#
+sub check_tagmedia_signature_tag
+{
+  my $sig_ok = 0;
+
+  if(open my $f, "tagmedia --help 2>&1 |") {
+    while(<$f>) {
+      $sig_ok = 1, last if /^\s*--signature-tag\s/;
+    }
+    close $f;
+  }
+
+  print "tagmedia has '--signature-tag': $sig_ok\n" if $opt_verbose >= 2;
+
+  return $sig_ok;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # eval_size(size_string)
 #
 # Interpret size_string and return size in (512 byte)-blocks.
@@ -5739,11 +5806,11 @@ sub get_media_style
   my $style = 'suse';
 
   for my $s (@$src) {
-    if(-d "$s->{dir}/isolinux" || -f "$s->{dir}/.discinfo") {
+    if(-f "$s->{dir}/.discinfo" || -f "$s->{dir}/Fedora-Legal-README.txt" ) {
       $style = 'rh';
       last;
     }
-    for my $r (glob "$s->{dir}/*/Packages") {
+    for my $r (glob "$s->{dir}/*/Packages $s->{dir}/Packages $s->{dir}/isolinux") {
       if(-d $r) {
         $style = 'rh';
         last;
@@ -5760,7 +5827,7 @@ sub get_media_style
 #
 # - sources: array_ref containing a list of directories
 #
-# Look at sources and determine media variant (install vs. live).
+# Look at sources and determine media variant (install, selfinstall, or live).
 #
 # Assume a Live medium if there's an '/LiveOS' dir.
 #
@@ -5772,6 +5839,10 @@ sub get_media_variant
   for my $s (@$src) {
     if(-d "$s->{dir}/LiveOS") {
       $variant = 'live';
+      last;
+    }
+    if(-f "$s->{dir}/config.isoclient") {
+      $variant = 'selfinstall';
       last;
     }
   }
@@ -5896,7 +5967,7 @@ sub analyze_products
 
   exit 0 if $opt_list_repos;
 
-  return if $media_style eq 'rh' || $media_variant eq 'live';
+  return unless $media_style eq 'suse' && $media_variant eq 'install';
 
   # don't merge repos if the user doesn't want to
   return if !$opt_merge_repos;
@@ -6000,7 +6071,7 @@ sub check_product
 
   open $f, "gzip --quiet -dc $xml[0] |" if $xml[0] =~ /\.gz$/;
   open $f, "xz --quiet -dc $xml[0] |" if $xml[0] =~ /\.xz$/;
-  open $f, "zstd --quiet -dc $xml[0] |" if $xml[0] =~ /\.zst$/;
+  open $f, "zstd --quiet --force -dc $xml[0] |" if $xml[0] =~ /\.zst$/;
 
   if(defined $f) {
     while(my $l = <$f>) {

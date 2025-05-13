@@ -236,6 +236,14 @@ See *UEFI boot notes* below.
 Don't make ISO UEFI bootable. +
 See *UEFI boot notes* below.
 
+*--uefi-image*::
+Make UEFI boot image visible in ISO9660 file system (default if it exists). +
+See *UEFI boot notes* below.
+
+*--no-uefi-image*::
+Hide UEFI boot image in ISO9660 file system (default if it does not exist). +
+See *UEFI boot notes* below.
+
 *--zipl*::
 Make image zIPL bootable (default on s390x).
 
@@ -413,29 +421,45 @@ willl extract the relevant parts to update the installer on the medium.
 
 Hybrid mode means the image can be used both as an ISO for a DVD or
 directly as a disk image. In other words, there is a partition table
-written on the ISO image, either GPT or MBR.
+added to the ISO image, either GPT or MBR or both.
 
-If you need UEFI support you will get two paritions: one for the UEFI
-image, one for the entire DVD. If not, you get just one partition covering
-all files.
+If you need UEFI support, you will get two paritions: one for the UEFI
+image (the EFI System Partition), one for the entire DVD.
+Without UEFI support, you get only one partition covering all files.
 
 There are two variants this script supports:
 
 1. Partition 1 is the data partition starting at offset 0 and covering
-the entire ISO, partition 2 is the UEFI system partition pointing
-somwhere inside the first partition. This produces an obviously
-inconsistent partition table and partitioning tools really don't like it.
+the entire ISO. +
+With UEFI support, partition 2 is the EFI System Partition pointing
+somwhere inside the first partition to the UEFI boot image file.
+This produces an obviously inconsistent partition table and partitioning
+tools really don't like it.
 
-2. Partition 1 is a data partition *not* starting at offset 0 but still
-holding all data files. When you mount it, you see either an ISO9660 or
-a FAT filesystem. If you need UEFI support this partition becomes
-partition 2 and partition 1 points to the UEFI image. Partition 1 and 2
+2. Without UEFI support, partition 1 is a data partition *not* starting
+at offset 0 but still holding all data files. When you mount it, you see
+either an ISO9660 or a FAT filesystem. +
+With UEFI support, partition 1 is the EFI System Partition and points to
+the UEFI boot image. Partition 2 is the data partition. Partition 1 and 2
 don't overlap. In this variant a consistent partition table is written.
 
-Normally the file system of the entire image and the file system of the main partition
+Normally the file system of the whole image and the file system of the main partition
 have identical data and meta data. If you need to have separate labels (volume ids) for
 both file system variants you can use the **--volume1** option to set a different label
-to be used for the entire image.
+to be used for the whole image.
+
+For a detailed technical description of the ISO image layout in hybrid mode,
+see https://github.com/openSUSE/mksusecd/blob/master/layout.md.
+
+There are several options to control the hybrid mode layout:
+
+- partition table type: +
+  use *--gpt* for a GPT, or *--mbr* for a MBR, or use both *--gpt --mbr* to get
+  a combined GPT and MBR
+- *--hybrid-fs=* to get a partition at offset 0 (as described in point 1. above)
+- *--hybrid-fs=iso* to get non-overlapping partitions (as described in point 2. above)
+- *--no-hybrid* to get a regular ISO, not suitable to boot as disk image
+- *--no-iso* to get a plain disk image, not usable as DVD image
 
 === Signing notes
 
@@ -639,11 +663,13 @@ you need with *--include-repos*.
 Not all options apply to media with Fedora/RHEL layout. It doesn't make
 sense to add a SUSE driver update to a RHEL iso, for example.
 
-mksusecd will by default create media with a SUSE-like hybrid mode (MBR
-partition table with non-overlapping partitions). You can change that to
-create the Fedora/RHEL hybrid mode (hybrid GPT+MBR, partition starting at offset 0)
-by adding these options: +
-*--gpt --mbr --hybrid-fs ""*.
+mksusecd will by default create media with a Fedora/RHEL hybrid mode
+(hybrid GPT+MBR, data partition starting at offset 0).
+You can change that to create a SUSE-like hybrid mode
+(partition table with non-overlapping partitions)
+by adding option *--hybrid-fs=iso*.
+
+See *Hybrid mode notes* above for more details.
 
 Notes
 
@@ -652,7 +678,7 @@ signature can be verified with checkmedia. checkisomd5 can only verify the
 embedded MD5 sums.
 
 - You can use other digests instead of MD5 using *--digest DIGEST* but
-checkisomd5 cannot verify these images.
+checkisomd5 cannot verify these images. You will have to use checkmedia instead.
 
 === UEFI boot notes
 
@@ -667,9 +693,11 @@ The *--uefi* option refers to method 2.
 Note that this FAT file system image might not be visible on the medium (e.g. KIWI produced media hide the file).
 If it is visible, it has names like '/boot/x86_64/efi', '/boot/x86_64/loader/efiboot.img', '/images/efiboot.img', or similar.
 
-If this FAT file system image is missing or files in the '/EFI' directory (on the medium) have changed,
+You can control the visibility of this image with option *--uefi-image* (to make it visible) or *--no-uefi-image* (to hide it).
+If this option is not given, mksusecd will try to keep the visibility as it was on the source medium.
+
+If this FAT file system image is missing (or hidden) or files in the '/EFI' directory (on the medium) have changed,
 mksusecd will create a new FAT file system image based on the updated '/EFI' directory content.
-This generated FAT file system image will always be visible on the medium.
 
 === Crypto notes
 
