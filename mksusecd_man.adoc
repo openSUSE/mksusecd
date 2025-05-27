@@ -375,6 +375,10 @@ See *Crypto notes* below.
 *--password*=_PASSWORD_::
 Use _PASSWORD_ for encrypting the disk image.
 
+*--luks*=_OPTIONS_::
+Pass _OPTIONS_ to the *cryptsetup luksFormat* command when creating the encrypted volume.
+For example, *--luks="--iter-time 1000"*.
+
 *--title*=_TITLE_::
 The password query screen uses _TITLE_ as title (default: openSUSE).
 

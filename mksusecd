@@ -302,6 +302,7 @@ my $opt_mount_iso;
 my $opt_hide_efi_image;
 my $opt_grub_dir;
 my $opt_grub_efi_dir;
+my $opt_luks;
 
 Getopt::Long::Configure("gnu_compat");
 
@@ -338,6 +339,7 @@ GetOptions(
   'fat'              => sub { $opt_hybrid = 1; $opt_hybrid_fs = 'fat'; $opt_efi = 0; $opt_no_iso = 1 },
   'crypto'           => sub { $opt_crypto = 1; $opt_hybrid = 0; },
   'password=s'       => \$opt_crypto_password,
+  'luks=s'           => \$opt_luks,
   'title=s'          => \$opt_crypto_title,
   'top-dir=s'        => \$opt_crypto_top_dir,
   'filesystem=s'     => \$opt_crypto_fs,
@@ -984,6 +986,7 @@ Image encryption related options:
 
       --crypto                    If set, an encrypted disk image is created.
       --password PASSWORD         Use PASSWORD for encrypting the disk image.
+      --luks OPTIONS              Pass OPTIONS to 'cryptsetup luksFormat'.
       --title TITLE               The password query screen uses TITLE as title (default: openSUSE).
       --top-dir DIR               The installation files are placed into subdir DIR.
       --filesystem FS             Use file system FS for the encrypted image (default: ext4).
@@ -6211,7 +6214,7 @@ sub run_crypto_disk
   if(!$image_size) {
     my $size = (-s $iso_file) >> 20;
     # increase size slightly to ensure we have enough space
-    $size = $size * 1.2;
+    $size = $size * 1.3;
     $size += $esp_size_mb + $esp_start_mb + 8;
     $image_size = int($size) << 11;
   }
@@ -6256,7 +6259,7 @@ sub run_crypto_disk
   show_progress 10;
 
   # create luks container
-  susystem "cryptsetup --batch-mode --force-password --key-file=$crypt_pw luksFormat --type luks1 $crypt_loop";
+  susystem "cryptsetup --batch-mode --force-password --key-file=$crypt_pw luksFormat --type luks1 $opt_luks $crypt_loop";
   susystem "cryptsetup --key-file=$crypt_pw open $crypt_loop $crypt_vol";
 
   # add filesystem
@@ -6333,6 +6336,11 @@ sub run_crypto_disk
   # This is the initial grub config - just ask for password and mount
   # the luks volume.
   # The real grub config with the install menu is inside the luks volume.
+  (my $load_init_cfg = <<"  = = = = = = = =") =~ s/^ +//mg;
+    search --no-floppy --file /EFI/BOOT/grub.cfg --set
+    configfile (\$root)/EFI/BOOT/grub.cfg
+  = = = = = = = =
+
   (my $load_cfg = <<"  = = = = = = = =") =~ s/^ +//mg;
     locale_dir=\$prefix/locale
     lang=en_US
@@ -6340,9 +6348,7 @@ sub run_crypto_disk
     echo
     echo "$title_centered"
     echo
-    echo "                                   -- BIOS --"
-    echo
-    while ! cryptomount -u $grub_uuid ; do
+    while ! cryptomount -u "$grub_uuid" ; do
       echo
       echo Incorrect passphrase.
       echo
@@ -6363,7 +6369,7 @@ sub run_crypto_disk
   = = = = = = = =
 
   open $fh, ">$tmp_dir/load.cfg";
-  print $fh $load_cfg;
+  print $fh $load_init_cfg;
   close $fh;
 
   # The default grub password dialog looks dead ugly; (ab)use
@@ -6405,7 +6411,7 @@ sub run_crypto_disk
   }
 
   # adjust the startup message to indicate we've booted via efi
-  $load_cfg =~ s/BIOS/UEFI/g;
+  # $load_cfg =~ s/BIOS/UEFI/g;
 
   # we have to explicitly load the final grub config (in the legacy case it
   # is done automatically)
