@@ -177,6 +177,7 @@ sub add_instsys_suse;
 sub add_instsys_classic;
 sub add_instsys_live;
 sub prepare_new_instsys_files;
+sub new_ki_name;
 sub get_kernel_initrd;
 sub update_kernel_initrd;
 sub get_initrd_format;
@@ -2750,6 +2751,26 @@ sub prepare_new_instsys_files
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# new_kernel_initrd_name(name)
+#
+# Calculate new file name for a copy of 'name', if one should be needed.
+#
+# It essentially adds "_%02d" to the file name ensuring the new file does not yet exists.
+#
+sub new_ki_name
+{
+  my $name = $_[0];
+  my $idx = $_[1];
+
+  my $ext = ($name =~ s/(\.[^.\/]+)$//) ? $1 : "";
+
+  my $new = sprintf "%s%d%s", $name, $idx, $ext;
+
+  return !fname($new) ? $new : undef;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # get_kernel_initrd()
 #
 # Return hash with kernel/initrd pair used for booting.
@@ -2785,10 +2806,12 @@ sub get_kernel_initrd
   # look for potential initrd & kernel names
   if($x && $opt_new_boot_entry) {
     for (my $i = 1; $i < 100; $i++) {
-      my $ext = sprintf "_%02d", $i;
-      if(!fname("$x->{kernel}$ext") && !fname("$x->{initrd}$ext")) {
-        $x->{kernel_ext} = $ext;
-        $x->{initrd_ext} = $ext;
+      # FIXME: mybe also check initrd_alt + kernel_alt
+      my $n_k = new_ki_name($x->{kernel}, $i);
+      my $n_i = new_ki_name($x->{initrd}, $i);
+      if(!fname($n_k) && !fname($n_i)) {
+        $x->{kernel_copy} = $n_k;
+        $x->{initrd_copy} = $n_i;
         last;
       }
     }
@@ -2810,16 +2833,16 @@ sub update_kernel_initrd
   return if !$x;
 
   if($add_initrd) {
-    my $n = copy_file $x->{initrd};
+    if($x->{initrd_copy}) {
+      my $old = fname $x->{initrd};
+      my $new = new_file $x->{initrd_copy};
 
-    if(my $ext = $x->{initrd_ext}) {
-      my $n = fname $x->{initrd};
-      if($n) {
-        system "cp '$n' '$n$ext'";
-        $files->{"$x->{initrd}$ext"} = $files->{$x->{initrd}};
-        $x->{initrd} .= $ext;
-        delete $x->{initrd_ext};
-      }
+      system "cp '$old' '$new'";
+      $x->{initrd} = $x->{initrd_copy};
+      delete $x->{initrd_copy};
+    }
+    else {
+      copy_file $x->{initrd};
     }
 
     if(my $n = fname $x->{initrd}) {
@@ -2832,9 +2855,10 @@ sub update_kernel_initrd
     }
   }
   else {
-    delete $x->{initrd_ext};
+    delete $x->{initrd_copy};
   }
 
+  # FIXME: maybe also duplicate initrd_alt when a copy is required?
   if($x->{initrd_alt}) {
     my $i_copy = copy_file $x->{initrd_alt};
     my $i_orig = copy_file $x->{initrd};
@@ -2847,16 +2871,16 @@ sub update_kernel_initrd
   }
 
   if($add_kernel) {
-    copy_file $x->{kernel};
+    if($x->{kernel_copy}) {
+      my $old = fname $x->{kernel};
+      my $new = new_file $x->{kernel_copy};
 
-    if(my $ext = $x->{kernel_ext}) {
-      my $n = fname $x->{kernel};
-      if($n) {
-        system "cp '$n' '$n$ext'";
-        $files->{"$x->{kernel}$ext"} = $files->{$x->{kernel}};
-        $x->{kernel} .= $ext;
-        delete $x->{kernel_ext};
-      }
+      system "cp '$old' '$new'";
+      $x->{kernel} = $x->{kernel_copy};
+      delete $x->{kernel_copy};
+    }
+    else {
+      copy_file $x->{kernel};
     }
 
     if(my $n = fname $x->{kernel}) {
@@ -2864,9 +2888,10 @@ sub update_kernel_initrd
     }
   }
   else {
-    delete $x->{kernel_ext};
+    delete $x->{kernel_copy};
   }
 
+  # FIXME: maybe also duplicate kernel_alt when a copy is required?
   if($x->{kernel_alt}) {
     my $k_copy = copy_file $x->{kernel_alt};
     my $k_orig = copy_file $x->{kernel};
@@ -3128,7 +3153,7 @@ sub merge_options
     $opts = join ' ', @opts;
   }
 
-  print "boot options update:\n  \"$_[0]\"\n+ \"$_[1]\"\n= \"$opts\"\n" if $opt_verbose >= 2;
+  print "boot options update:\n  \"$_[0]\"\n+ \"$_[1]\"\n= \"$opts\"\n" if $opt_verbose >= 3;
 
   return $opts;
 }
@@ -3149,6 +3174,8 @@ sub isolinux_add_option
     my @f = <$f>;
     close $f;
 
+    print "updating isolinux config file: $n\n" if $opt_verbose >= 2;
+
     # if we should add a new entry, base it loosely on the 'linux' entry
     if($opt_new_boot_entry) {
       my %label;
@@ -3164,20 +3191,29 @@ sub isolinux_add_option
       my $ent;
       # and insert a new entry after the 'linux' entry
       for (@f) {
-        if($ent && /^\s*$/) {
+        if($ent) {
+          $ent .= $_;
+          next if !/^\s*$/;
+
+          if($ent !~ s/^(\s*menu label\s.*)/$1 - $opt_new_boot_entry/m) {
+            $ent =~ s/^(\s*label.*)/$1\n  menu label Installation - $opt_new_boot_entry/m;
+          }
+
+          my $k = $kernel->{current}{kernel};
+          $k =~ s#.*/##;
+          $ent =~ s/^(\s*kernel\s).*/$1$k/m;
+
+          my $i = $kernel->{current}{initrd};
+          $i =~ s#.*/##;
+          $ent =~ s/^(\s*append\s)(.*)/$1 . merge_options($2, "initrd=$i $b")/em;
+
           $_ .= $ent;
+          print "added isolinux config entry:\n$ent" if $opt_verbose >= 2;
           last;
         }
         elsif(/^\s*label\s+linux/i) {
-          $ent = "# install - $opt_new_boot_entry\nlabel linux$ext\n  menu label Installation - $opt_new_boot_entry\n";
-          my $k = $kernel->{current}{kernel};
-          $k =~ s#.*/##;
-          $ent .= "  kernel $k\n";
-          my $i = $kernel->{current}{initrd};
-          $i =~ s#.*/##;
-          $b = " $b" if $b;
-          $ent .= "  append initrd=$i splash=silent showopts$b\n\n";
-          $comment = "  linux" . sprintf("%-4s", $ext) . " - Installation - $opt_new_boot_entry";
+          $ent = "label linux$ext\n";
+          $comment = "  linux" . sprintf("%-5s", $ext) . " - Installation - $opt_new_boot_entry";
         }
       }
 
@@ -3218,6 +3254,9 @@ sub grub2_add_option
   my $n = shift;
   my $b = shift;
 
+ # that's what an 'install' entry must look like
+  my $inst_regexp = '(?i)([\'|"])([^\'"]*(?:install|live)[^\'"]*)\\1';
+
   if(open my $f, $n) {
     my @f = <$f>;
     close $f;
@@ -3226,24 +3265,23 @@ sub grub2_add_option
 
     # if we should add a new entry, base it loosely on the 'Installation' entry
     if($opt_new_boot_entry) {
+
       my $ent;
-      # insert a new entry after the 'Installation' entry
+      # insert a new entry after the 'install' entry
       for (@f) {
         if($ent) {
-          if(!/^\s*$/) {
-            $ent .= $_;
-            next;
-          }
-          $b = " $b" if $b;
-          $ent =~ s/'Installation'/'Installation - $opt_new_boot_entry'/;
+          $ent .= $_;
+          next if !/^\s*\}?\s*$/;
+          $ent =~ s/$inst_regexp/$1$2 - $opt_new_boot_entry$1/;
           my $k = $kernel->{current}{kernel};
-          $ent =~ s#(\slinux(efi)?\s+)(\S+)(.*?)\n#$1/$k$4$b\n#;
+          $ent =~ s#(\slinux(efi)?\s+)(\S+)(.*?)\n#"$1/$k " . merge_options($4, $b) . "\n"#e;
           my $i = $kernel->{current}{initrd};
           $ent =~ s#(\sinitrd(efi)?\s+)(\S+)#$1/$i#;
           $_ .= $ent;
+          print "added grub2 config entry:\n$ent" if $opt_verbose >= 2;
           last;
         }
-        elsif(/^\s*menuentry\s+'Installation'/) {
+        elsif(/^\s*menuentry\s+$inst_regexp/) {
           $ent .= $_;
         }
       }
