@@ -6511,7 +6511,7 @@ sub run_crypto_disk
   # find the initrd
   my $initrd_file = "$crypt_mount/${top_dir}boot/x86_64/loader/initrd";
   $initrd_file = "$crypt_mount/${top_dir}boot/x86_64/initrd" unless -f $initrd_file;
-  die "\nsorry, no initrd found\n" unless -f $initrd_file;
+  die "\nsorry, no initrd found\n" unless -f $initrd_file || $opt_type eq 'pico';
 
   File::Path::make_path "$tmp_dir/initrd/etc/linuxrc.d";
 
