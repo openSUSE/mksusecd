@@ -60,15 +60,19 @@ See *Sources* below for more details.
 === Media type related options
 
 *--micro*::
-Create image with just enough files to run the installer.
-But you can't actually install as all packages have been removed. +
-*Note*: this is only useful for testing.
+Create image with just enough files to run the installer. +
+*Note*: this gives a network installation image which uses the installer from the medium (the typical SLE online media).
+For this to work, either the installation is registration-based or the location of the installation repository must be explicitly set
+using the *--defaultrepo* option.
 
 *--nano*::
-Create image with just enough files for a network based installation.
+Create image with just enough files for a network based installation. +
+*Note*: this gives a small network installation image which has to load even the installer via network.
+For this to work, the location of the installation repository must be explicitly set
+using the *--defaultrepo* option..
 
 *--pico*::
-Even less than --nano, keep just the bootloader (for testing).
+Even less than --nano, keep just the boot loader (for testing).
 
 === Media integrity related options
 
@@ -132,6 +136,11 @@ See *Kernel update notes* below.
 Append changes to the initrd instead of rebuilding. +
 This makes the initrd larger but does not require to run mksusecd with root permissions. +
 See *Kernel update notes* below.
+
+*--initrd-config*=_KEY_=_VALUE_::
+Add config option to initrd intended for linuxrc, YaST, dracut, or Agama (can be repeated). +
+The config option is stored in '/etc/linuxrc.d/60_mksusecd' (for linuxrc-based media) or
+'/etc/cmdline.d/60-mksusecd.conf' (dracut-based media).
 
 *--instsys*=_DIR_|_RPM_::
 Add content of _DIR_ or _RPM_ to installation system or root file system for Live media (can be repeated).
