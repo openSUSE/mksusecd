@@ -4897,7 +4897,7 @@ sub unpack_archive
         }
         else {
           my $t = $tmp->file();
-          $cmd .=  " > '$t' ; cd '$dir' ; unrar x -idq '$abs_file'";
+          $cmd .=  " > '$t' ; cd '$dir' ; unrar x -idq '$t'";
         }
         last;
       }
