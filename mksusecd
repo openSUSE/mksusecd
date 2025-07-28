@@ -3727,6 +3727,8 @@ sub set_mkisofs_metadata
 
   $vol_id = trim_volume_id $vol_id;
 
+  print "volume id: $vol_id\n" if $vol_id && $opt_verbose >= 1;
+
   my $vol_id_from_config;
 
   if(open my $f, "<", fname("boot/grub2/grub.cfg")) {
@@ -3749,12 +3751,35 @@ sub set_mkisofs_metadata
     close $f;
   }
 
+  print "volume id (boot config): $vol_id_from_config\n" if $vol_id_from_config && $opt_verbose >= 1;
+
+  my $vol_id_from_initrd;
+
+  if($media_style eq 'suse' && $media_variant eq 'live') {
+    unpack_orig_initrd if !$orig_initrd;
+    die "initrd unpacking failed\n" if !$orig_initrd;
+
+    if(-d "$orig_initrd/etc/cmdline.d") {
+      my $config = `cat $orig_initrd/etc/cmdline.d/*.conf`;
+      $vol_id_from_initrd = $1 if $config =~ /^root=live:(?:CD)?LABEL=(\S+)/m;
+    }
+  }
+
+  print "volume id (initrd): $vol_id_from_initrd\n" if $vol_id_from_initrd && $opt_verbose >= 1;
+
   $vol_id ||= $vol_id_from_config;
+  $vol_id ||= $vol_id_from_initrd;
 
   if($vol_id_from_config && $vol_id ne $vol_id_from_config) {
     print "Warning: volume id \"$vol_id\" does not match expected volume id from boot config \"$vol_id_from_config\".\n";
     $vol_id = $opt_volume ? $vol_id : $vol_id_from_config;
-    print "Choosing \"$vol_id\".\n";
+    print "Using volume id \"$vol_id\".\n";
+  }
+
+  if($vol_id_from_initrd && $vol_id ne $vol_id_from_initrd) {
+    print "Warning: volume id \"$vol_id\" does not match expected volume id from initrd \"$vol_id_from_initrd\".\n";
+    $vol_id = $opt_volume ? $vol_id : $vol_id_from_initrd;
+    print "Using volume id \"$vol_id\".\n";
   }
 
   $opt_volume = $vol_id;
