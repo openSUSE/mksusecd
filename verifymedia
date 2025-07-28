@@ -527,7 +527,8 @@ if($media->{hybrid_mode}) {
       show
         $hybrid && $hybrid->{data_partition},
         "has data partition pointing to ISO image",
-        "There must be a data partition pointing to the same file system you get\nwhen acessing the entire ISO image.";
+        "There must be a data partition pointing to the same file system you get\nwhen acessing the entire ISO image." .
+        ($iso9660->{volume_id} eq "" ? "\nThe data partition must have a non-empty volume id" : "");
 
       show
         $hybrid && !$hybrid->{data_partition_at_0},
