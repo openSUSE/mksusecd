@@ -97,7 +97,7 @@ Don't embed signature for entire image. (default) +
 See *Image signing notes* below.
 
 *--signature-file*=FILE::
-Store embedded signature in FILE (default: /.signature). +
+Store embedded signature in FILE (default: /.signature for SUSE-style media, no signature file for RH-style media). +
 See *Image signing notes* below.
 
 *--sign*::
@@ -510,8 +510,12 @@ This can be used by the *checkmedia* tool to verify the integrity of the
 image.
 
 The signature is stored in a special file that can be set with the *--signature-file*
-option. The default is '/.signature'. If you set the file name to '' (empty string)
-the file is still created but not visible (the default on many SUSE installation media).
+option. The default for SUSE-style media is '/.signature'. If you set the file name to '' (empty string)
+the file is still created but not visible in the file system (this is the default on older SUSE media).
+
+For RH-style media, no signature file is used by default. Instead, if signing is requested,
+a signature block is created outside the data area of the ISO image. This way signing does not
+interfere with integrity checks by checkisomd5.
 
 You can use *tagmedia* to display the embedded meta data.
 

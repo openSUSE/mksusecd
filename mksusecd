@@ -507,6 +507,7 @@ my $media_variant = 'install';
 my $detected_signature_file;
 my $orig_initrd_00_lib;
 my $instsys_size;
+my $signature_file_used;
 
 my $progress_start = 0;
 my $progress_end = 100;
@@ -691,8 +692,9 @@ if($opt_create || $opt_list_repos) {
   # note: analyze_products may set $detected_signature_file
   if(!defined $opt_signature_file) {
     $opt_signature_file = $detected_signature_file;
-    $opt_signature_file = ".signature" if !defined $opt_signature_file;
+    $opt_signature_file = ".signature" if !defined $opt_signature_file && $media_style eq 'suse';
   }
+  $signature_file_used = defined $opt_signature_file;
   $opt_signature_file = "glumps" if $opt_signature_file eq "";
   my $x = copy_or_new_file $opt_signature_file;
 
@@ -874,11 +876,18 @@ if($opt_create || $opt_list_repos) {
     print "\n";
     if($opt_sign && $sign_key_dir && $opt_sign_image) {
       my $tmp_dir = $tmp->dir();
-      system "tagmedia --export-tags $tmp_dir/tags $iso_file >/dev/null 2>&1";
-      if(-s "$tmp_dir/tags") {
-        print "signing $iso_file\n" if $opt_verbose >= 1;
-        system "gpg --homedir=$sign_key_dir --local-user '$sign_key_id' --batch --yes --armor --detach-sign $sign_passwd_option $tmp_dir/tags";
-        system "tagmedia --import-signature $tmp_dir/tags.asc $iso_file";
+      # For rh media with signature outside iso data area, --digest will never add a SIGNATURE tag.
+      # But --import-signature below will.
+      # Simply repeat the process in this case, so the correct meta data block is signed.
+      my $cnt = 1;
+      $cnt++ if `tagmedia '$iso_file'` !~ /^signature\s*=\s*\d+/mi;
+      while($cnt--) {
+        system "tagmedia --export-tags $tmp_dir/tags $iso_file >/dev/null 2>&1";
+        if(-s "$tmp_dir/tags") {
+          print "signing $iso_file\n" if $opt_verbose >= 1 && $cnt == 0;
+          system "gpg --homedir=$sign_key_dir --local-user '$sign_key_id' --batch --yes --armor --detach-sign $sign_passwd_option $tmp_dir/tags";
+          system "tagmedia --import-signature $tmp_dir/tags.asc $iso_file";
+        }
       }
     }
   }
@@ -924,7 +933,8 @@ Media integrity related options:
       --no-digest                 Don't embed any digest to verify ISO integrity.
       --sign-image                Embed signature for entire image.
       --no-sign-image             Don't embed signature for entire image. (default)
-      --signature-file FILE       Store embedded signature in FILE. (default: /.signature)
+      --signature-file FILE       Store embedded signature in FILE (default: /.signature for SUSE-style media,
+                                  no signature file for RH-style media).
       --sign                      Re-sign '/CHECKSUMS' if it has changed (default).
       --no-sign                   Don't re-sign '/CHECKSUMS'.
       --sign-key KEY_FILE         Use this key file instead of generating a transient key.
@@ -1633,9 +1643,16 @@ sub prepare_mkisofs
 
   my $sf = fname $opt_signature_file;
 
-  if(open my $fh, ">", $sf) {
-    print $fh $magic_sig_id, "\x00" x (0x800 - length $magic_sig_id);
-    close $fh;
+  if($signature_file_used) {
+    print "signature file used\n" if $opt_verbose >= 1;
+    if(open my $fh, ">", $sf) {
+      print $fh $magic_sig_id, "\x00" x (0x800 - length $magic_sig_id);
+      close $fh;
+    }
+  }
+  else {
+    print "signature file not used\n" if $opt_verbose >= 1;
+    push @{$mkisofs->{exclude}}, $sf if $sf;
   }
 
   push @{$mkisofs->{sort}}, "$sf 999999";
