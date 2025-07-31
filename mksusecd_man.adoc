@@ -26,10 +26,13 @@ The main purpose is to adjust existing media. For example
 - change boot options
 - add boot menu entries
 - update the installer
-- update software used by the installer (including the kernel)
+- update software used by the installer (including kernel and modules)
 - integrate driver updates
 - integrate add-on repositories
-- create a small network boot medium
+- create small network / online boot media
+
+_SOURCES_ can be directories, existing ISO image files, or RPMs. They are all combined to produce a single ISO. +
+See *Sources* below for more details.
 
 === General Options
 
@@ -54,14 +57,12 @@ List all available repositories in _SOURCES_.
 
 *-c, --create*=_FILE_::
 Create ISO or disk image _FILE_ from _SOURCES_. +
-_SOURCES_ can be directories, existing ISO image files, or RPMs. They are all combined to produce a single ISO. +
-See *Sources* below for more details.
 
 === Media type related options
 
 *--micro*::
 Create image with just enough files to run the installer. +
-*Note*: this gives a network installation image which uses the installer from the medium (the typical SLE online media).
+*Note*: this gives a network installation image which uses the installer from the medium (the typical online media).
 For this to work, either the installation is registration-based or the location of the installation repository must be explicitly set
 using the *--defaultrepo* option.
 
@@ -138,9 +139,10 @@ This makes the initrd larger but does not require to run mksusecd with root perm
 See *Kernel update notes* below.
 
 *--initrd-config*=_KEY_=_VALUE_::
-Add config option to initrd intended for linuxrc, YaST, dracut, or Agama (can be repeated). +
+Add config option to initrd intended for linuxrc, YaST, dracut, Agama, or Anaconda (option can be repeated). +
 The config option is stored in '/etc/linuxrc.d/60_mksusecd' (for linuxrc-based media) or
-'/etc/cmdline.d/60-mksusecd.conf' (dracut-based media).
+'/etc/cmdline.d/60-mksusecd.conf' (dracut-based media). +
+See *Boot option and initrd config option notes* below.
 
 *--instsys*=_DIR_|_RPM_::
 Add content of _DIR_ or _RPM_ to installation system or root file system for Live media (can be repeated).
@@ -362,11 +364,13 @@ See *Repository notes* below.
 *--defaultrepo*=_URL_LIST_::
 List of comma (',') separated URLs. The installer will try each URL
 in turn to check for an installation repository.
+See *Repository notes* below.
 
 === Boot menu related options
 
 *--boot*=_OPTIONS_::
-Add _OPTIONS_ to default boot options.
+Add _OPTIONS_ to default boot options. +
+See *Boot option and initrd config option notes* below.
 
 *--add-entry*=_BOOT_ENTRY_::
 Instead of modifying the default boot files, create a new
@@ -420,7 +424,8 @@ Sources can be
 - tftpboot-installation-<PRODUCT> packages
 - directories with additional or modified files that should be added/merged into the image
 
-either as image/RPM file or unpacked into a directory.
+Sources can be used either as ISO image or RPM file directly, or they can be
+unpacked into a directory.
 
 The order of sources is important. Files from later sources will replace
 the same files in previous sources.
@@ -428,7 +433,7 @@ the same files in previous sources.
 If you pass a skelcd-installer-<PRODUCT> or tftpboot-installation-<PRODUCT>
 RPM (or a directory with the same layout) - mksusecd will handle these
 specially. These packaged contain the complete installation system and mksusecd
-willl extract the relevant parts to update the installer on the medium.
+will extract the relevant parts to update the installer on the medium.
 
 === Hybrid mode notes
 
@@ -525,6 +530,35 @@ https://raw.githubusercontent.com/openSUSE/checkmedia/master/README.adoc
 Note that this special signature file is always prepared. But actually signing
 the image is not the default and you have to explicitly request it with *--sign-image*.
 You can also add a signature later using *tagmedia*.
+
+=== Boot option and initrd config option notes
+
+The argument to *--boot* is a space-separated list of boot options, e.g. *--boot="foo=1 bar zap=2"*.
+If an option is already used in the existng boot
+config, the option is modified in place. If it is a new option, it is appended to the
+list of boot options. You can also remove options by prefixing them with a minus sign, for example
+*--boot="-foo -bar zap=123"* would remove options *foo* and *bar* and add/modify opion *zap*.
+
+Boot options are often options intended for the installation program. For
+example, passing an AutoYaST profile. In some situations this might add up to
+quite a lot of lengthy options.
+
+It is, however, possible to place these options not in the boot loader config but
+put them in config files in the initrd. This gives you a pre-configured initrd that
+can be used in various places without having to worry about getting all the boot
+options right.
+
+Instead of *--boot foo=123* you can use *--initrd-config foo=123*. But watch out for the different
+syntax if you set more than one option:
+*--boot "foo=123 bar=abc"* vs. *--initrd-config foo=123 --initrd-config bar=abc*.
+
+Be aware that boot options always take precedence over initrd config options (so the user can
+always override settings at the boot prompt). This means that if you intend to move an existing setting
+from boot config to initrd config, make sure you remove the option from the boot config.
+
+For example, Fedora media set inst.stage2 (the installer root file system location) as boot option. To move it to
+the initrd, unset it there: *--boot=-inst.stage2* *--initrd-config inst.stage2=http://example.com/foo*.
+
 
 === Kernel update notes
 
@@ -630,7 +664,22 @@ driver updates (50).
 
 === Repository notes
 
-The installer supports two types of repositories:
+mksusecd supports media with three different installers:
+
+1. YaST (SLE-15, Leap-15, Tumbleweed)
+2. Agama (SLE-16, Leap-16, Tumbleweed)
+3. Anaconda (Multi-Linux, Fedora, RHEL)
+
+Starting an installation is a three-stage process: (a) kernel and initrd are loaded,
+then (b) a program in the initrd (dracut or linuxrc) loads the installation system and
+starts the installer and then (c) the installer runs an installation using a software repository.
+
+Each of the three installation programs has its own way of setting the installation system and
+software repository locations.
+
+==== 1. Repository notes (YaST)
+
+YaST supports two types of repositories:
 
 1. The 'classical' (old) variant which has a '/content' file with product meta data and file checksums at the
 repo location and package meta data in a sub-directory 'suse/setup/descr'.
@@ -660,7 +709,39 @@ tried in turn. You can change it using the *--defaultrepo* option. For example,
 *--defaultrepo=cd:/,http://foo/bar* means to check the local dvd drive first and
 then try via network at http://foo/bar.
 
+SLE-15 uses a registration server, it does not use the *--defaultrepo* setting to locate
+the installation repository.
+
 The *--net* option is just a short hand for *--defaultrepo=cd:/,hd:/,<NET_URL>*.
+
+==== 2. Repository notes (Agama)
+
+Use the *root=live:<URL>* setting to point to the installation system. The installation system is a
+squashfs file system image (ususally 'LiveOS/squashfs.img') found on the installation media.
+
+The default setting loads it from the local disk or dvd you booted from. You can place it on a server and
+load it via network if you want.
+
+Use either *--boot root=live:...* or *--initrd-config root=live:...* to set this option.
+
+The software repository location can be changed using *inst.install_url=<URL>*. Set it either via *--boot* or *--initrd-config*.
+
+==== 3. Repository notes (Anaconda)
+
+Use the *inst.stage2=<URL>* setting to point to an unpacked installation medium. The installation system
+is a squashfs file system image (usually 'images/install.img') that is located automatically in the unpacked
+installation medium tree.
+
+The default setting loads it from the local disk or dvd you booted from. You can place it on a server and
+load it via network if you want.
+
+Use either *--boot root=live:...* or *--initrd-config root=live:...* to set this option.
+
+Note that *inst.stage2* is typically set as boot option. You must remove it from the boot options if you want to set it via *--initrd-config*.
+
+See *Boot option and initrd config option notes*.
+
+The software repository location can be changed using *inst.repo=<URL>*. Set it either via *--boot* or *--initrd-config*.
 
 === Product module notes
 
@@ -677,12 +758,9 @@ you need with *--include-repos*.
 
 === Fedora/RHEL notes
 
-Not all options apply to media with Fedora/RHEL layout. It doesn't make
-sense to add a SUSE driver update to a RHEL iso, for example.
-
-mksusecd will by default create media with a Fedora/RHEL hybrid mode
+mksusecd will by default create media with a Fedora/RHEL-style hybrid mode
 (hybrid GPT+MBR, data partition starting at offset 0).
-You can change that to create a SUSE-like hybrid mode
+You can change that to create a SUSE-style hybrid mode
 (partition table with non-overlapping partitions)
 by adding option *--hybrid-fs=iso*.
 
@@ -823,6 +901,10 @@ Find more usage examples here: https://github.com/openSUSE/mksusecd/blob/master/
 
 == Links
 
+- YaST, linuxrc options: https://en.opensuse.org/SDB:Linuxrc (linuxrc, YaST)
+- dracut options: https://github.com/dracutdevs/dracut/blob/master/man/dracut.cmdline.7.asc
+- Agama options: https://agama-project.github.io/docs/user/boot_options
+- Anaconda options: https://anaconda-installer.readthedocs.io/en/latest/boot-options.html
 - more documentation: `/usr/share/doc/packages/mksusecd` +
 - get latest version: https://github.com/openSUSE/mksusecd?tab=readme-ov-file#downloads +
 - mksusecd web site: https://github.com/openSUSE/mksusecd +
