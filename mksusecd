@@ -3230,15 +3230,21 @@ sub merge_options
         $opt .= "=$new_opts{$k}" if defined $new_opts{$k};
         delete $new_opts{$k};
       }
-      push @opts, $opt;
+      if(exists $new_opts{"-$k"}) {
+        $opt = undef;
+        delete $new_opts{$k};
+      }
+      push @opts, $opt if defined $opt;
     }
 
     for my $opt (@new_opts_order) {
       my $k = $opt;
       if(exists $new_opts{$opt}) {
-        $opt .= "=$new_opts{$opt}" if defined $new_opts{$opt};
-        delete $new_opts{$k};
-        push @opts, $opt;
+        if($opt !~ /^-/) {
+          $opt .= "=$new_opts{$opt}" if defined $new_opts{$opt};
+          delete $new_opts{$k};
+          push @opts, $opt;
+        }
       }
     }
 
