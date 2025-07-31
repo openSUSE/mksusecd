@@ -673,7 +673,7 @@ if($opt_create || $opt_list_repos) {
     if($opt_defaultrepo) {
       $opt_instsys_in_repo = 0;
     }
-    else {
+    elsif($media_style eq 'suse') {
       $opt_create_repo = 1;
     }
   }
@@ -682,6 +682,7 @@ if($opt_create || $opt_list_repos) {
   my $num_products = @{$product_db->{list}};
 
   if(
+    $media_style eq 'suse' &&
     $media_variant eq 'install' &&
     (($opt_type eq "micro" && $num_products <= 1) || $opt_type eq "nano") &&
     !$opt_defaultrepo
@@ -785,7 +786,7 @@ if($opt_create || $opt_list_repos) {
   prepare_addon;
 
   # FIXME: suse also has it...
-  if($media_style eq 'rh') {
+  if($media_style eq 'rh' && $opt_type !~ /^(micro|nano|pico)$/) {
     update_treeinfo;
   }
 
@@ -3593,7 +3594,6 @@ sub prepare_micro
     "ChangeLog",
     "updates",
     "linux",
-    "images",
     "autorun.inf",
     ".*\\.ico",
     ".*\\.exe",
@@ -3601,6 +3601,10 @@ sub prepare_micro
     "Product-.*",
     "repodata",
     "install",
+    "AppStream",
+    "BaseOS",
+    "Packages",
+    ".treeinfo",
   ];
 }
 
@@ -3638,7 +3642,7 @@ sub prepare_nano
     "suse",
     "(aarch64|ppc64le|s390x|x86_64)",
     "repodata",
-    "images/isntall.img",
+    "images/install.img",
     # keep LiveOS dir, so we still know this is a Live medium
     "LiveOS/squashfs.img",
   ];
