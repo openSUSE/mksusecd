@@ -1420,9 +1420,17 @@ sub build_todo
       $opt_zipl = 1 if !defined $opt_zipl;
       if($opt_boot_options) {
         my $f = copy_or_new_file "boot/s390x/parmfile";
-        if(open my $f, ">$f") {
-          print $f "$opt_boot_options\n";
-          close $f;
+        my $boot_opts;
+        if(open my $fd, $f) {
+          local $/;
+          $boot_opts = <$fd>;
+          close $fd;
+        }
+        $boot_opts =~ s/\s*$//;
+        $opt_boot_options = merge_options $boot_opts, $opt_boot_options;
+        if(open my $fd, ">", $f) {
+          print $fd "$opt_boot_options\n";
+          close $fd;
         }
       }
       if($opt_zipl) {
