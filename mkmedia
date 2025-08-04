@@ -423,18 +423,21 @@ if(@opt_kernel_modules && !@opt_kernel_rpms) {
 
 die "no password\n" if $opt_crypto && $opt_crypto_password eq "";
 
-$ENV{PATH} = "$LIBEXECDIR/mksusecd:/usr/bin:/bin:/usr/sbin:/sbin";
+$ENV{PATH} = "$LIBEXECDIR/mkmedia:/usr/bin:/bin:/usr/sbin:/sbin";
 
 if($>) {
   if($opt_rebuild_initrd == 2) {
-    die "mksusecd must be run with root permissions when --rebuild-initrd is used\n"
+    die "mkmedia must be run with root permissions when --rebuild-initrd is used\n"
   }
   if($opt_rebuild_initrd == 1) {
-    die "mksusecd must be run with root permissions to update kernel config.\nOr use --no-rebuild-initrd.\n"
+    die "mkmedia must be run with root permissions to update kernel config.\nOr use --no-rebuild-initrd.\n"
   }
 }
 
-if(open my $f, "$ENV{HOME}/.mksusecdrc") {
+my $basic_config = "$ENV{HOME}/.mkmediarc";
+$basic_config = "$ENV{HOME}/.mksuserc" unless -f $basic_config;
+
+if(open my $f, $basic_config) {
   while(<$f>) {
     next if /^\s*#/;
     if(/^\s*(\S+?)\s*=\s*(.*?)\s*$/) {
@@ -445,6 +448,8 @@ if(open my $f, "$ENV{HOME}/.mksusecdrc") {
     }
   }
   close $f;
+
+  print Dumper \%config;
 }
 
 if($config{sudo}) {
@@ -902,13 +907,13 @@ if($opt_create || $opt_list_repos) {
 sub usage
 {
   print <<"= = = = = = = =";
-Usage: mksusecd [OPTIONS] [SOURCES]
+Usage: mkmedia [OPTIONS] [SOURCES]
 Create and modify bootable media.
 
 General options:
 
       --verbose                   Show more detailed messages. Can be repeated to log even more.
-      --version                   Show mksusecd version.
+      --version                   Show mkmedia version.
       --save-temp                 Keep temporary files.
       --help                      Write this help text.
 
@@ -963,7 +968,7 @@ Kernel/module update related options:
       --kernel RPM_LIST           Replace kernel, kernel modules, and kernel firmware used for booting.
                                   RPM_LIST is a list of kernel or firmware packages.
                                   Note: this option expects a variable number of arguments.
-                                  Note also: implies --rebuild-initrd since mksusecd 3.0.
+                                  Note also: implies --rebuild-initrd since mkmedia 3.0.
       --modules MODULE_LIST       A list of modules to be added to the initrd.
                                   To be used together with --kernel.
                                   Note: this option expects a variable number of arguments.
@@ -1044,7 +1049,7 @@ Debug options:
       --mount-iso                 Mount ISO images to access them (default if run as root).
       --no-mount-iso              Unpack ISO images to access them (default if run as normal user).
 
-More information is available in the mksusecd(1) manual page.
+More information is available in the mkmedia(1) manual page.
 = = = = = = = =
 
   exit shift;
@@ -1678,7 +1683,7 @@ sub prepare_mkisofs
     $mkisofs->{options} .= " -exclude-list '$tmp_exclude'";
   }
 
-  # pass source locations via separate file to mksusecd, not as command line options
+  # pass source locations via separate file to mkmedia, not as command line options
   $mkisofs->{filelist} = [ (map { $_->{dir} } grep { !$_->{skip} } @sources), $tmp_new ];
 
   # add relocated directory trees (graft points in mkisofs speak)
@@ -1757,7 +1762,7 @@ sub run_mkisofs
       "\n" .
       "Joliet file names are limited to 103 chars.\n" .
       "Some file names were longer.\n\n" .
-      "Run mksusecd with the --no-joliet option to avoid this error.\n";
+      "Run mkmedia with the --no-joliet option to avoid this error.\n";
   }
 
   print $log if $opt_verbose >= 3 || (!$ok && (!$joliet_msg || $opt_verbose >= 1));
@@ -3820,8 +3825,8 @@ sub set_mkisofs_metadata
   $opt_volume = $vol_id;
 
   # if nothing worked, put in some defaults
-  $opt_vendor = "mksusecd $VERSION" if !defined $opt_vendor;
-  $opt_preparer = "mksusecd $VERSION" if !defined $opt_preparer;
+  $opt_vendor = "mkmedia $VERSION" if !defined $opt_vendor;
+  $opt_preparer = "mkmedia $VERSION" if !defined $opt_preparer;
 }
 
 
@@ -4266,10 +4271,10 @@ my $c = <<"= = = = = = = =";
 %transient-key
 Key-Type: RSA
 Key-Length: 2048
-Name-Real: mksusecd Signing Key
+Name-Real: mkmedia Signing Key
 Name-Comment: transient key
-%pubring mksusecd.pub
-%secring mksusecd.sec
+%pubring mkmedia.pub
+%secring mkmedia.sec
 %commit
 = = = = = = = =
 
@@ -4323,9 +4328,9 @@ Name-Comment: transient key
       print $p $c;
       close $p;
     }
-    $key = "$gpg_dir/mksusecd.sec";
+    $key = "$gpg_dir/mkmedia.sec";
     if(!-f $key) {
-      $key = "$gpg_dir/mksusecd.pub";
+      $key = "$gpg_dir/mkmedia.pub";
       $is_gpg21 = 1;
     }
   }
@@ -4376,7 +4381,7 @@ Name-Comment: transient key
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # add_sign_key()
 #
-# Add public part of mksusecd sign key to image so it's used by the installer.
+# Add public part of mkmedia sign key to image so it's used by the installer.
 #
 sub add_sign_key
 {
@@ -5914,7 +5919,7 @@ sub eval_size
 # - key: option name
 # - value: option value
 #
-# Options are stored in /etc/linuxrc.d/60_mksusecd (linuxrc) or /etc/cmdline.d/60-mksusecd.conf (dracut) in the initrd.
+# Options are stored in /etc/linuxrc.d/61_mkmedia (linuxrc) or /etc/cmdline.d/61-mkmedia.conf (dracut) in the initrd.
 #
 sub add_initrd_option
 {
@@ -5922,7 +5927,7 @@ sub add_initrd_option
 
   my $use_linuxrc = $media_style eq 'suse' && $media_variant eq 'install';
 
-  my $initrd_cfg = $use_linuxrc ? "etc/linuxrc.d/60_mksusecd" : "etc/cmdline.d/60-mksusecd.conf";
+  my $initrd_cfg = $use_linuxrc ? "etc/linuxrc.d/61_mkmedia" : "etc/cmdline.d/61-mkmedia.conf";
 
   unpack_orig_initrd if !$orig_initrd;
 

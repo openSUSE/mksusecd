@@ -236,7 +236,7 @@ GetOptions(
   'help'             => sub { usage 0 },
 ) || usage 1;
 
-$ENV{PATH} = "$LIBEXECDIR/mksusecd:/usr/bin:/bin:/usr/sbin:/sbin";
+$ENV{PATH} = "$LIBEXECDIR/mkmedia:/usr/bin:/bin:/usr/sbin:/sbin";
 
 $tmp = Tmp::new($opt_save_temp);
 

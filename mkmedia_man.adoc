@@ -1,24 +1,24 @@
-= mksusecd(1)
+= mkmedia(1)
 :doctype: manpage
 :manmanual: User Commands
-:mansource: mksusecd {version}
+:mansource: mkmedia {version}
 
 == Name
 
-mksusecd - create and modify bootable media.
+mkmedia, mksusecd - create and modify bootable media.
 
 
 == Synopsis
 
-*mksusecd* [_OPTIONS_]... _SOURCES_...
+*mkmedia* [_OPTIONS_]... _SOURCES_... +
 
 
 == Description
 
-mksusecd can modify or create bootable installation or Live media. They can be
+mkmedia (formerly named mksusecd) can modify or create bootable installation or Live media. They can be
 either ISO images or disk images (to be used on USB sticks, for example).
 
-mksusecd supports media in both openSUSE/SLES and Fedora/RHEL layout.
+mkmedia supports media in both openSUSE/SLES and Fedora/RHEL layout.
 See Fedora/RHEL notes for details.
 
 The main purpose is to adjust existing media. For example
@@ -40,7 +40,7 @@ See *Sources* below for more details.
 Show more detailed messages. Can be repeated to log even more.
 
 *--version*::
-Show mksusecd version.
+Show mkmedia version.
 
 *--save-temp*::
 Keep temporary files.
@@ -130,18 +130,18 @@ Add content of _DIR_, _RPM_, or _DUD_ to initrd (can be repeated).
 
 *--rebuild-initrd*::
 Rebuild the entire initrd instead of appending changes. +
-This makes the initrd smaller but requires to run mksusecd with root permissions. +
+This makes the initrd smaller but requires to run mkmedia with root permissions. +
 See *Kernel update notes* below.
 
 *--no-rebuild-initrd*::
 Append changes to the initrd instead of rebuilding. +
-This makes the initrd larger but does not require to run mksusecd with root permissions. +
+This makes the initrd larger but does not require to run mkmedia with root permissions. +
 See *Kernel update notes* below.
 
 *--initrd-config*=_KEY_=_VALUE_::
 Add config option to initrd intended for linuxrc, YaST, dracut, Agama, or Anaconda (option can be repeated). +
-The config option is stored in '/etc/linuxrc.d/60_mksusecd' (for linuxrc-based media) or
-'/etc/cmdline.d/60-mksusecd.conf' (dracut-based media). +
+The config option is stored in '/etc/linuxrc.d/61_mkmedia' (for linuxrc-based media) or
+'/etc/cmdline.d/61-mkmedia.conf' (dracut-based media). +
 See *Boot option and initrd config option notes* below.
 
 *--instsys*=_DIR_|_RPM_::
@@ -175,7 +175,7 @@ Replace kernel, kernel modules, and kernel firmware used for booting. _RPM_LIST_
 a list of kernel or firmware packages. +
 *Note*: this option takes a variable number of arguments. So
 it may be necessary to terminate the arg list with an explicit '--'. +
-*Note also*: since mksusecd 3.0 this option automatically implies *--rebuild-initrd*. Use *--no-rebuild-inintrd* to revert this. +
+*Note also*: since mkmedia 3.0 this option automatically implies *--rebuild-initrd*. Use *--no-rebuild-inintrd* to revert this. +
 See *Kernel update notes* below.
 
 *--modules*=_MODULE_LIST_::
@@ -322,7 +322,7 @@ which casee the size of the device is used.
 === Media repository related options
 
 *--merge-repos*::
-When mksusecd detects repositories in _SOURCES_ it will try to make
+When mkmedia detects repositories in _SOURCES_ it will try to make
 them all available and create a common media.1/products file (default). +
 See *Product module notes* below.
 
@@ -431,8 +431,8 @@ The order of sources is important. Files from later sources will replace
 the same files in previous sources.
 
 If you pass a skelcd-installer-<PRODUCT> or tftpboot-installation-<PRODUCT>
-RPM (or a directory with the same layout) - mksusecd will handle these
-specially. These packaged contain the complete installation system and mksusecd
+RPM (or a directory with the same layout) - mkmedia will handle these
+specially. These packaged contain the complete installation system and mkmedia
 will extract the relevant parts to update the installer on the medium.
 
 === Hybrid mode notes
@@ -489,7 +489,7 @@ environment.
 If you modify any file mentioned there (e.g. replacing it or implicitly
 as a result of the *--initrd* or *--boot* options) '/CHECKSUMS' is updated and
 must be re-signed. Otherwise the installer will complain when it starts
-up. For this, mksusecd will re-sign the file and add the public part of
+up. For this, mkmedia will re-sign the file and add the public part of
 the signing key to the initrd.
 
 You can specify the key to use with either the *--sign-key* or *--sign-key-id*
@@ -510,7 +510,7 @@ The key file is named 'gpg-pubkey-xxxxxxxx-xxxxxxxx.asc'.
 
 === Image signing notes
 
-mksusecd can also embed a signature of the checksum metadata into the image.
+mkmedia can also embed a signature of the checksum metadata into the image.
 This can be used by the *checkmedia* tool to verify the integrity of the
 image.
 
@@ -574,8 +574,8 @@ As a special case if there are no kernel firmware packages
 specified in *--kernel*, then the old kernel firmware files are kept (kernel firmware is typically not
 kernel version dependent).
 
-The initrd typically uses a limited set of kernel modules. mksusecd will try to keep the exact list
-of modules but that may not be possible due to kernel package changes. mksusecd output will
+The initrd typically uses a limited set of kernel modules. mkmedia will try to keep the exact list
+of modules but that may not be possible due to kernel package changes. mkmedia output will
 display the differences.
 
 If you have to adjust the kernel module list, use the *--modules* option. Kernel module
@@ -585,7 +585,7 @@ Note that there may be not just a single package containing kernel modules (e.g.
 but several others (e.g. kernel-default-extra, kernel-default-optional) or even kmp packages with
 individual modules. If you see missing modules, you might need some of these packages as well.
 
-mksusecd will not add all kernel firmware files to the initrd but only those that are required by
+mkmedia will not add all kernel firmware files to the initrd but only those that are required by
 the kernel modules used in the initrd.
 
 For Live media, kernel modules and firmware are also present in the Live root file system. Kernel modules
@@ -593,7 +593,7 @@ and firmware are also updated there but the complete packages are used.
 
 There are two cases: 1. the 'normal' case (*--rebuild-initrd* is active) and 2. *--no-rebuild-initrd* is active.
 
-Note that since mksusecd 3.0 *--rebuild-initrd* is automatically acivated if *--kernel* is used.
+Note that since mkmedia 3.0 *--rebuild-initrd* is automatically acivated if *--kernel* is used.
 
 1. Old kernel modules / firmware files are removed and only files from packages specified
 in *--kernel* are used. This makes initrd and Live root smaller and exactly reproduces the original
@@ -611,7 +611,7 @@ file system size as needed.
 
 Note on usrmerge kernels: kernel packages (and kernel firmware packages) come in two variants: older packages
 with files stored in '/lib' and (typically) newer packages with files stored in '/usr/lib'.
-mksusecd will accept both and adjust the package layout to the one expected in initrd and Live root.
+mkmedia will accept both and adjust the package layout to the one expected in initrd and Live root.
 
 === Kernel compression notes
 
@@ -664,7 +664,7 @@ driver updates (50).
 
 === Repository notes
 
-mksusecd supports media with three different installers:
+mkmedia supports media with three different installers:
 
 1. YaST (SLE-15, Leap-15, Tumbleweed)
 2. Agama (SLE-16, Leap-16, Tumbleweed)
@@ -694,7 +694,7 @@ can simply be loaded from the repository.
 But if it is just a plain repository without the installation system the
 installer has to be loaded from somewhere else.
 
-Use the *--no-instsys-in-repo* option to tell mksusecd that it can be loaded
+Use the *--no-instsys-in-repo* option to tell mkmedia that it can be loaded
 from a local disk or dvd. It will be searched for on any mountable local
 device at startup.
 
@@ -750,7 +750,7 @@ In SLE 15 the product is split into several repositories called 'modules'
 over several media or in separate directories on a network installation
 server.
 
-mksusecd lets you combine the installation medium together with the
+mkmedia lets you combine the installation medium together with the
 modules you need into a single medium.
 
 Check the available modules with *--list-repos* and then pick the modules
@@ -758,7 +758,7 @@ you need with *--include-repos*.
 
 === Fedora/RHEL notes
 
-mksusecd will by default create media with a Fedora/RHEL-style hybrid mode
+mkmedia will by default create media with a Fedora/RHEL-style hybrid mode
 (hybrid GPT+MBR, data partition starting at offset 0).
 You can change that to create a SUSE-style hybrid mode
 (partition table with non-overlapping partitions)
@@ -789,10 +789,10 @@ Note that this FAT file system image might not be visible on the medium (e.g. KI
 If it is visible, it has names like '/boot/x86_64/efi', '/boot/x86_64/loader/efiboot.img', '/images/efiboot.img', or similar.
 
 You can control the visibility of this image with option *--uefi-image* (to make it visible) or *--no-uefi-image* (to hide it).
-If this option is not given, mksusecd will try to keep the visibility as it was on the source medium.
+If this option is not given, mkmedia will try to keep the visibility as it was on the source medium.
 
 If this FAT file system image is missing (or hidden) or files in the '/EFI' directory (on the medium) have changed,
-mksusecd will create a new FAT file system image based on the updated '/EFI' directory content.
+mkmedia will create a new FAT file system image based on the updated '/EFI' directory content.
 
 === Crypto notes
 
@@ -805,7 +805,7 @@ partition. Including the installer specific boot config. So if you for
 example put some password into the default boot options via *--boot* this
 is also stored in the encrypted part.
 
-At the moment only x86_64 is supported. And you have to run mksusecd on a
+At the moment only x86_64 is supported. And you have to run mkmedia on a
 machine that has grub2-i386-pc installed (to get the legacy BIOS setup).
 
 Unlike the usual setup, grub2 is used for both legacy BIOS and UEFI
@@ -830,11 +830,11 @@ You can find the required versions on the install medium in either the
 /suse/x86_64 or /x86_64 directory. Copy them to some temporary location
 and add +
 *--initrd cryptsetup.rpm --initrd libpwquality1.rpm* +
-to the mksusecd command line.
+to the mkmedia command line.
 
 === Configuration file
 
-mksusecd reads `$HOME/.mksusecdrc` at startup.
+mkmedia reads `$HOME/.mkmediarc` at startup.
 
 *sudo*=_COMMAND_::
 To access existing ISO image files you will need root privileges.
@@ -854,46 +854,43 @@ See *Signing notes* above.
 
 ----
 # create foo.iso from /foo_dir
-mksusecd --create foo.iso /foo_dir
+mkmedia --create foo.iso /foo_dir
 
 # create foo.iso from bar.iso and integrate files from /foo_dir
-mksusecd --create foo.iso bar.iso /foo_dir
+mkmedia --create foo.iso bar.iso /foo_dir
 
 # create foo.iso from /foo_dir, no hybrid mode
-mksusecd --create foo.iso --no-hybrid /foo_dir
+mkmedia --create foo.iso --no-hybrid /foo_dir
 
 # create foo.iso from old.iso and add some boot option
-mksusecd --create foo.iso --boot 'debug=1' old.iso
+mkmedia --create foo.iso --boot 'debug=1' old.iso
 
 # create foo.iso from old.iso and add content of directory foo_bar to the initrd
-mksusecd --create foo.iso --initrd foo_bar old.iso
+mkmedia --create foo.iso --initrd foo_bar old.iso
 
 # create foo.iso from old.iso and add package bar to the initrd
-mksusecd --create foo.iso --initrd bar.rpm old.iso
+mkmedia --create foo.iso --initrd bar.rpm old.iso
 
 # create foo.iso from old.iso and add a driver update to the initrd
-mksusecd --create foo.iso --initrd bar.dud old.iso
+mkmedia --create foo.iso --initrd bar.dud old.iso
 
 # create foo.iso from old.iso and add package bar to rescue system
-mksusecd --create foo.iso --rescue bar.rpm old.iso
+mkmedia --create foo.iso --rescue bar.rpm old.iso
 
 # create foo.iso from live.iso and add package bar to Live system
-mksusecd --create foo.iso --instsys bar.rpm live.iso
+mkmedia --create foo.iso --instsys bar.rpm live.iso
 
 # create foo.iso from live.iso and update kernel to kernel-default.rpm
-mksusecd --create foo.iso --kernel kernel-default.rpm -- live.iso
+mkmedia --create foo.iso --kernel kernel-default.rpm -- live.iso
 
 # create foo.iso from live.iso and increase Live root file system by 1 GiB
-mksusecd --create foo.iso --live-root-size +1G live.iso
+mkmedia --create foo.iso --live-root-size +1G live.iso
 
 # create new iso from sles.iso taking an updated installer from tftpboot-installation-* package
-mksusecd --create new.iso sles.iso tftpboot-installation-SLE.rpm
-
-
+mkmedia --create new.iso sles.iso tftpboot-installation-SLE.rpm
 ----
 
 Find more usage examples here: https://github.com/openSUSE/mksusecd/blob/master/HOWTO.md
-
 
 == See Also
 
