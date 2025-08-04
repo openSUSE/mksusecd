@@ -193,7 +193,7 @@ signature.
 
 == verifymedia
 
-`verifymedia` and `mksusecd` are part of the `mksusecd` package. These tools
+`verifymedia` and `mkmedia` are part of the `mksusecd` package. These tools
 are for people creating new or modified media.
 
 In contrast to `checkmedia`, `verifymedia` testifies technical correctness:
@@ -263,12 +263,13 @@ Check results: [✔] = ok, [✘] = bad, [!] = not ideal
 
 In this case, the `.treeinfo` file does not use the correct architecture.
 
-If you create media yourself with `mksusecd` and run into problems, it might be a good idea
+If you create media yourself with `mkmedia` and run into problems, it might be a good idea
 to check your modified media with `verifymedia` for signs of trouble.
 
-== mksusecd
+== mkmedia
 
-`mksusecd` (in package `mksusecd`) is the tool to modify existing installation or Live images.
+`mkmedia` (in package `mksusecd`) is the tool to modify existing installation or Live images. It used to be
+called `mksusecd` but that name does not reflect the fact that it is no longer limited to SUSE media.
 
 Typical things you can do include
 
@@ -298,7 +299,7 @@ For example, to have an AutoYaST installation as default, add a reference to you
 
 [source]
 ----
-# mksusecd --create new.iso \
+# mkmedia --create new.iso \
   --boot "autoyast=http://example.com/ay1.xml" \
   SLE-15-SP6-Online-x86_64-QU2-Media1.iso
 media style suse, variant install
@@ -327,7 +328,7 @@ the default boot entry:
 
 [source]
 ----
-# mksusecd --create new.iso \
+# mkmedia --create new.iso \
   --boot "autoyast=http://example.com/ay1.xml" \
   --add-entry "Auto 1" \
   SLE-15-SP6-Online-x86_64-QU2-Media1.iso
@@ -344,7 +345,7 @@ Another thing you might want to change is the default kernel console, for exampl
 
 [source]
 ----
-# mksusecd --create new.iso \
+# mkmedia --create new.iso \
   --boot "console=ttyAMA0" \
   SLE-15-SP6-Online-aarch64-QU2-Media1.iso
 ...
@@ -367,7 +368,7 @@ For example, setting the AutoYaST parameter could instead be done this way:
 
 [source]
 ----
-# mksusecd --create new.iso \
+# mkmedia --create new.iso \
   --initrd-config "autoyast=http://example.com/ay1.xml" \
   SLE-15-SP6-Online-x86_64-QU2-Media1.iso
 ...
@@ -387,7 +388,7 @@ interaction:
 
 [source]
 ----
-# mksusecd --create new.iso \
+# mkmedia --create new.iso \
   --boot "-manual" \
   --initrd-config "autoyast=https://example.com/foo" \
   SLE-15-SP6-Online-s390x-GM-Media1.iso
@@ -439,12 +440,12 @@ Let's look at some examples that create online and network media from full media
 
 [source]
 ----
-# mksusecd --create new.iso \
+# mkmedia --create new.iso \
   --micro \
   SLE-15-SP6-Full-x86_64-GM-Media1.iso
 ----
 
-Option `--micro` will make `mksusecd` remove all files except the installer
+Option `--micro` will make `mkmedia` remove all files except the installer
 and those needed for booting. For SLE media you do not need to pass a
 repository because the repository information is read from a registration
 server. Leap-16 has the online repo location already in its configuration.
@@ -454,7 +455,7 @@ server. Leap-16 has the online repo location already in its configuration.
 
 [source]
 ----
-# mksusecd --create new.iso \
+# mkmedia --create new.iso \
   --micro \
   --defaultrepo=https://download.opensuse.org/tumbleweed/repo/oss \
   openSUSE-Tumbleweed-DVD-x86_64-Snapshot20250614-Media.iso
@@ -475,7 +476,7 @@ This works nice for Fedora, for example; all you have to do is:
 
 [source]
 ----
-# mksusecd --create new.iso \
+# mkmedia --create new.iso \
   --micro \
   Fedora-Server-dvd-x86_64-42-1.1.iso
 ...
@@ -485,7 +486,7 @@ If an online repository cannot be found automatically or you have your own repos
 
 [source]
 ----
-# mksusecd --create new.iso \
+# mkmedia --create new.iso \
   --micro \
   --initrd-config inst.repo=https://example.com/foo \
   SUSE-Liberty-Linux-9.6.DVD-x86_64.iso
@@ -500,7 +501,7 @@ The media produced in this way are equivalent to the available netinst/netinstal
 
 [source]
 ----
-# mksusecd --create new.iso \
+# mkmedia --create new.iso \
   --nano \
   --defaultrepo=https://download.opensuse.org/distribution/leap/15.6/repo/oss \
   openSUSE-Leap-15.6-DVD-x86_64-Build710.3-Media.iso
@@ -516,7 +517,7 @@ from a pre-defined location (from the `boot/<ARCH>` subdirectory) within the rep
 
 [source]
 ----
-# mksusecd --create new.iso \
+# mkmedia --create new.iso \
   --nano \
   --initrd-config root=live:https://example.com/foo/squashfs.img \
   Leap-16.0-offline-installer-x86_64.install.iso
@@ -531,7 +532,7 @@ But if you want to pass your own repository, use the `inst.install_url` setting 
 
 [source]
 ----
-# mksusecd --create new.iso \
+# mkmedia --create new.iso \
   --nano \
   --initrd-config root=live:https://example.com/foo/squashfs.img \
   --initrd-config inst.install_url=https://download.opensuse.org/distribution/leap/16.0/repo/oss \
@@ -547,7 +548,7 @@ Then use the `inst.stage2` option to point at that location. The installer will 
 
 [source]
 ----
-mksusecd --create new.iso \
+mkmedia --create new.iso \
   --nano \
   --boot -inst.stage2 \
   --initrd-config inst.stage2=https://example.com/foo \
@@ -562,7 +563,7 @@ Alternatively, you could instead do:
 
 [source]
 ----
-mksusecd --create new.iso \
+mkmedia --create new.iso \
   --nano \
   --boot inst.stage2=https://example.com/foo \
   Fedora-Server-dvd-x86_64-42-1.1.iso
@@ -573,7 +574,7 @@ For Multi-Linux - where you have to set the repository location explicitly - the
 
 [source]
 ----
-# mksusecd --create new.iso \
+# mkmedia --create new.iso \
   --nano \
   --boot -inst.stage2 \
   --initrd-config inst.stage2=https://example.com/foo \
@@ -590,7 +591,7 @@ First, get a list of available products and modules:
 
 [source]
 ----
-# mksusecd --list-repos SLE-15-SP6-Full-x86_64-GM-Media1.iso
+# mkmedia --list-repos SLE-15-SP6-Full-x86_64-GM-Media1.iso
 media style suse, variant install
 Repositories:
   Basesystem-Module [15.6-0]
@@ -624,7 +625,7 @@ For example, SLES-15 + Basesystem + Containers:
 
 [source]
 ----
-# mksusecd --create new.iso \
+# mkmedia --create new.iso \
   --include-repos SLES15-SP6,Basesystem-Module,Containers-Module \
   SLE-15-SP6-Full-x86_64-GM-Media1.iso
 ----
@@ -635,7 +636,7 @@ If you prefer, you can even have all repositories automatically enabled:
 
 [source]
 ----
-# mksusecd --create new.iso \
+# mkmedia --create new.iso \
   --include-repos SLES15-SP6,Basesystem-Module,Containers-Module \
   --enable-repos yes \
   SLE-15-SP6-Full-x86_64-GM-Media1.iso
@@ -651,11 +652,11 @@ There is, however, a group of packages updated regularly:
 tftp installation server for `<PRODUCT>` on architecture `<ARCH>`. An example
 might be `tftpboot-installation-SLE-15-SP6-x86_64.rpm`.
 
-These packages contain all files needed to build an installation medium. `mksusecd` can use them directly:
+These packages contain all files needed to build an installation medium. `mkmedia` can use them directly:
 
 [source]
 ----
-# mksusecd --create new.iso \
+# mkmedia --create new.iso \
   SLE-15-SP6-Full-x86_64-GM-Media1.iso \
   tftpboot-installation-SLE-15-SP6-x86_64.rpm
 ----
@@ -664,7 +665,7 @@ Note that you pass the package as argument *after* the ISO image. This is becaus
 files in later arguments overwrite files from previous arguments.
 
 On a side note, you can build online and network media directly from `tftpboot-installation-<PRODUCT>`
-packages without needing any ISO image to start with. This is the only case where `mksusecd` does not
+packages without needing any ISO image to start with. This is the only case where `mkmedia` does not
 require an already existing medium.
 
 But you must set the volume id explicitly (choose one freely) and you must use either `--micro` (to get an online medium) or
@@ -674,7 +675,7 @@ For example, to build a SLE-15-SP6 online medium:
 
 [source]
 ----
-# mksusecd --create new.iso \
+# mkmedia --create new.iso \
   --micro \
   --volume foobar \
   tftpboot-installation-SLE-15-SP6-x86_64.rpm
@@ -693,7 +694,7 @@ The typical layout would have the kernel directly on the medium, modules and
 firmware in the initrd and, for Live media, kernel, firmware, and modules
 also in the Live root file system.
 
-`mksusecd` takes care of updating the files in all these locations.
+`mkmedia` takes care of updating the files in all these locations.
 
 Let's look at some use-cases.
 
@@ -701,7 +702,7 @@ Let's look at some use-cases.
 
 [source]
 ----
-# mksusecd --create new.iso \
+# mkmedia --create new.iso \
   --kernel kernel-default-6.15.2-1.1.x86_64.rpm \
   -- \
   openSUSE-Tumbleweed-DVD-x86_64-Snapshot20250522-Media.iso
@@ -727,7 +728,7 @@ El-Torito UEFI bootable (x86_64)
 building: 100%
 ----
 
-This updates kernel and modules - but not firmware. `mksusecd` will try to
+This updates kernel and modules - but not firmware. `mkmedia` will try to
 keep the existing module config - but the new kernel package might have a
 slightly different list of modules. The output will tell you the changes
 made to the modules included in the initrd. You can still fine-tune the module config
@@ -742,7 +743,7 @@ Trying a kernel update with Leap-15.6, there is a problem, though:
 
 [source]
 ----
-# mksusecd --create new.iso \
+# mkmedia --create new.iso \
   --kernel kernel-default-6.4.0-150600.21.3.x86_64.rpm \
   -- \
   openSUSE-Leap-15.6-DVD-x86_64-Build630.1-Media.iso
@@ -768,7 +769,7 @@ Let's try again:
 
 [source]
 ----
-# mksusecd --create new.iso \
+# mkmedia --create new.iso \
   --kernel kernel-default-6.4.0-150600.21.3.x86_64.rpm \
   kernel-default-extra-6.4.0-150600.21.3.x86_64.rpm \
   kernel-default-optional-6.4.0-150600.21.3.x86_64.rpm \
@@ -807,7 +808,7 @@ Here is an example of updating the kernel on a Multi-Linux installation medium:
 
 [source]
 ----
-# mksusecd --create new.iso \
+# mkmedia --create new.iso \
   --kernel kernel-core-5.14.0-570.12.1.el9_6.x86_64.rpm \
   kernel-modules-5.14.0-570.12.1.el9_6.x86_64.rpm \
   kernel-modules-core-5.14.0-570.12.1.el9_6.x86_64.rpm \
@@ -845,7 +846,7 @@ Here's what happens on Leap-15.6 trying to add the (random example) `uio_hv_gene
 
 [source]
 ----
-# mksusecd --create new.iso \
+# mkmedia --create new.iso \
   --kernel kernel-default-6.4.0-150600.21.3.x86_64.rpm \
   kernel-default-extra-6.4.0-150600.21.3.x86_64.rpm \
   kernel-default-optional-6.4.0-150600.21.3.x86_64.rpm \
@@ -882,7 +883,7 @@ Going back to the Tumblewed example above but adding firmware packages, too:
 
 [source]
 ----
-# mksusecd --create new.iso \
+# mkmedia --create new.iso \
   --kernel kernel-default-6.15.2-1.1.x86_64.rpm \
   kernel-firmware-*.rpm \
   -- \
@@ -903,7 +904,7 @@ To do this, add the necessary firmware package to the initrd:
 
 [source]
 ----
-# mksusecd --create new.iso \
+# mkmedia --create new.iso \
   --initrd kernel-firmware-qlogic-20250206-2.1.noarch.rpm \
   openSUSE-Tumbleweed-DVD-x86_64-Snapshot20250522-Media.iso
 media style suse, variant install
@@ -928,13 +929,13 @@ For kernel and firmware packages this means a change from `/lib` to `/usr/lib`.
 
 Leap-15 and SLE-15 were prior to usrmerge, Tumbleweed, Leap-16 and SLE-16 are after the change.
 
-The good news is that `mksusecd` can compensate and will move files to their correct place if you attempt a cross-usrmerge change.
+The good news is that `mkmedia` can compensate and will move files to their correct place if you attempt a cross-usrmerge change.
 
 So, you can build SLE-15 media using a kernel from SLE-16 or even from Tumbleweed, for example:
 
 [source]
 ----
-# mksusecd --create new.iso \
+# mkmedia --create new.iso \
   --kernel Tumbleweed/kernel-default-6.15.2-1.1.x86_64.rpm \
   Tumbleweed/kernel-firmware-*.rpm \
   -- \
@@ -984,7 +985,7 @@ For example, to update the hardware detection library used by YaST:
 
 [source]
 ----
-# mksusecd --create new.iso \
+# mkmedia --create new.iso \
   --initrd hwinfo-21.87-150500.3.6.1.x86_64.rpm \
   SLE-15-SP6-Online-x86_64-GM-Media1.iso
 ...
@@ -1012,7 +1013,7 @@ Then add it:
 
 [source]
 ----
-# mksusecd --create new.iso \
+# mkmedia --create new.iso \
   --initrd /tmp/foo \
   --live-root /tmp/foo \
   SLES-16.0-Online-x86_64-GM.install.iso
@@ -1021,7 +1022,7 @@ Then add it:
 
 === Integrate driver updates
 
-Driver updates (DUDs) come in a special format. `mksusecd` recognizes this
+Driver updates (DUDs) come in a special format. `mkmedia` recognizes this
 format and can integrate them directly into the initrd.
 
 The advantage compared to using a `dud` boot option is that this way you do not have to download it
@@ -1029,7 +1030,7 @@ during the installation process and there is no signature check because initrd c
 
 [source]
 ----
-# mksusecd --create new.iso \
+# mkmedia --create new.iso \
   --initrd foobar.dud \
   SLE-15-SP6-Online-x86_64-GM-Media1.iso
 ...
@@ -1039,12 +1040,12 @@ during the installation process and there is no signature check because initrd c
 
 If you have additional software (or a bunch of package updates) for the
 target system (not the installation system) that have to be installed,
-`mksusecd` can help you to have them available as add-on repository during
+`mkmedia` can help you to have them available as add-on repository during
 the installation.
 
 [source]
 ----
-# mksusecd --create new.iso \
+# mkmedia --create new.iso \
   --addon emacs-30.1-6.1.x86_64.rpm \
   --addon-name "my emacs" \
   SLE-15-SP6-Full-x86_64-GM-Media1.iso
@@ -1066,7 +1067,7 @@ This is very flexible but gets in the way if you intend to use the install
 medium also as installation target disk or if you want to have additional
 partitions on the installation medium.
 
-`mksusecd` lets you create pure disk images: there's no longer an ISO9660
+`mkmedia` lets you create pure disk images: there's no longer an ISO9660
 file system spanning the entire image. You can choose whether you want a GPT
 or classic MBR partition table.
 
@@ -1077,7 +1078,7 @@ For example:
 
 [source]
 ----
-# mksusecd --create new.img \
+# mkmedia --create new.img \
   --no-iso --gpt \
   SLES-16.0-Online-x86_64-GM.install.iso
 ...
@@ -1087,7 +1088,7 @@ For Multi-Linux media, you need to force a sanitized partition layout adding the
 
 [source]
 ----
-# mksusecd --create new.img \
+# mkmedia --create new.img \
   --no-iso --gpt --hybrid-fs=iso \
   SUSE-Liberty-Linux-9.6.netinstall-x86_64.iso
 ...
@@ -1095,7 +1096,7 @@ For Multi-Linux media, you need to force a sanitized partition layout adding the
 
 ==== 2. Update shim or grub
 
-In general, `mksusecd` does not recreate the entire boot loader setup when building new media.
+In general, `mkmedia` does not recreate the entire boot loader setup when building new media.
 Instead, it relies on existing boot loader artifacts.
 
 You can, however, replace the boot loader if it is just a regular file on
@@ -1137,7 +1138,7 @@ Now rebuild the installation medium passing `/tmp/foo` as additional source:
 
 [source]
 ----
-# mksusecd --create new.iso \
+# mkmedia --create new.iso \
   SLES-16.0-Online-x86_64-RC2.install.iso \
   /tmp/foo
 media style suse, variant live
@@ -1152,13 +1153,13 @@ building: 100%
 
 `/tmp/foo` will overwrite existing files in `SLES-16.0-Online-x86_64-RC2.install.iso` - since the second argument has higher priority.
 
-Also, `mksusecd` is aware that a copy of the UEFI config exists in a UEFI
+Also, `mkmedia` is aware that a copy of the UEFI config exists in a UEFI
 boot image - which is used for El-Torito booting and happens to be also the EFI System Partition. It will
-automatically sync the changes to these places as well - note the '`updating UEFI image`' line in the `mksusecd` output above.
+automatically sync the changes to these places as well - note the '`updating UEFI image`' line in the `mkmedia` output above.
 
 ==== 3. Sign your own media
 
-`mksusecd` supports signing your newly created media with your own key. This
+`mkmedia` supports signing your newly created media with your own key. This
 allows you to keep track of the authenticity even of your self-made media.
 
 Let's look at an example. Starting with an officially provided image, we can see that it is signed:
@@ -1181,7 +1182,7 @@ Now, let's make some small change:
 
 [source]
 ----
-# mksusecd --create new.iso \
+# mkmedia --create new.iso \
   --sign-image --sign-key-id susetest \
   --initrd-config inst.config_url=https://example.com/agama.yaml \
   SLES-16.0-Online-x86_64-RC2.install.iso
@@ -1235,7 +1236,7 @@ Let's look at an example:
 
 [source]
 ----
-# mksusecd --create new.iso \
+# mkmedia --create new.iso \
   --sign-image --sign-key-id susetest \
   --initrd-config inst.ks=https://example.com/foo.ks \
   SUSE-Liberty-Linux-9.6.netinstall-x86_64.iso

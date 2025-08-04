@@ -29,7 +29,7 @@ The option can be repeated to exclude several tests.
 Show more detailed messages. Can be repeated to log even more.
 
 *--version*::
-Show mksusecd version.
+Show verifymedia version.
 
 *--save-temp*::
 Keep temporary files.
@@ -47,7 +47,7 @@ The result of some tests is ignored by default - making them optional checks:
 
 == See Also
 
-*mksusecd*(1), *checkmedia*(1), *tagmedia*(1).
+*mkmedia*(1), *checkmedia*(1), *tagmedia*(1).
 
 == Links
 

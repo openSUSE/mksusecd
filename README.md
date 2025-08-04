@@ -1,10 +1,10 @@
-# mksusecd
+# mkmedia
 
-This is a tool to create (open)SUSE Linux installation ISOs - either from scratch or
+mkmedia (formerly mksusecd) is a tool to create (open)SUSE Linux installation ISOs - either from scratch or
 by modifying existing ISOs. It is **not** intended to create an installation repository or
 completely new product media. For this, use [kiwi](https://opensuse.github.io/kiwi).
 
-mksusecd makes it easy to apply modifications to existing install media, like:
+mkmedia makes it easy to apply modifications to existing install media, like:
 
 - integrate driver updates ([DUD](http://ftp.suse.com/pub/people/hvogel/Update-Media-HOWTO/html))
 - modify the installation system
@@ -14,7 +14,7 @@ mksusecd makes it easy to apply modifications to existing install media, like:
 - change the default repositories used during installation
 - create a mini ('network') boot iso from a regular dvd
 
-The images mksusecd creates can be put both on a cd/dvd or a (usb-)disk. For this mksusecd creates
+The images mkmedia creates can be put both on a cd/dvd or a (usb-)disk. For this mkmedia creates
 so-called 'isohybrid' images. If you are interested in the technical details,
 you can read more about it [here](layout.md).
 
@@ -41,7 +41,7 @@ See also my mini-series of articles around SUSE installation media and driver up
 > **Note**
 >
 > _In all the examples below, when you use an iso image as source (and not a directory with the unpacked iso),
-you must run mksusecd with root permissions as it will need to mount the iso image temporarily._
+you must run mkmedia with root permissions as it will need to mount the iso image temporarily._
 
 ### 1. Update a package that is used in the installation system
 
@@ -58,7 +58,7 @@ yast2-core-3.1.12-0.x86_64.rpm.
 - Create a new ISO from the original openSUSE 13.2 ISO and the DUD:
 
    ```sh
-   mksusecd --create bug-free.iso --initrd bug-free.dud openSUSE-13.2-DVD-x86_64.iso
+   mkmedia --create bug-free.iso --initrd bug-free.dud openSUSE-13.2-DVD-x86_64.iso
    ```
 
 Now you can use bug-free.iso as a replacement for openSUSE-13.2-DVD-x86_64.iso.
@@ -68,7 +68,7 @@ Now you can use bug-free.iso as a replacement for openSUSE-13.2-DVD-x86_64.iso.
 Say, you need to walk around and install a lot from `http://foo/bar`, then do
 
 ```sh
-mksusecd --create foo.iso --nano --net=http://foo/bar openSUSE-13.2-DVD-x86_64.iso
+mkmedia --create foo.iso --nano --net=http://foo/bar openSUSE-13.2-DVD-x86_64.iso
 ```
 
 `--nano` puts only the necessary files for booting on the media (not the installer itself, for example).
@@ -78,7 +78,7 @@ mksusecd --create foo.iso --nano --net=http://foo/bar openSUSE-13.2-DVD-x86_64.i
 If you need to repeatedly enter the same boot options, create an iso that already has them:
 
 ```sh
-mksusecd --create foo.iso --boot "sshd=1 password=*****" openSUSE-13.2-DVD-x86_64.iso
+mkmedia --create foo.iso --boot "sshd=1 password=*****" openSUSE-13.2-DVD-x86_64.iso
 ```
 
 This would start an ssh daemon you can login to during installation.
@@ -100,7 +100,7 @@ This would start an ssh daemon you can login to during installation.
 - Build a new iso
 
     ```sh
-    mksusecd --create foo.iso /tmp/foo
+    mkmedia --create foo.iso /tmp/foo
     ```
 
 ## Installation
