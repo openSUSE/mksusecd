@@ -448,8 +448,6 @@ if(open my $f, $basic_config) {
     }
   }
   close $f;
-
-  print Dumper \%config;
 }
 
 if($config{sudo}) {
