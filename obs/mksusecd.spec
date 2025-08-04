@@ -74,6 +74,7 @@ install -D -m 644 verifymedia.1 %{buildroot}%{_mandir}/man1/verifymedia.1
 %{_bindir}/*
 %{_libexecdir}/%{name}
 %doc README* *.md
+%doc suse_blog.html suse_blog.adoc *.jpg
 %doc %{_mandir}/man1/mksusecd.*
 %doc %{_mandir}/man1/verifymedia.*
 %if %suse_version >= 1500
