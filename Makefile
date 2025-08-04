@@ -37,17 +37,23 @@ install: isohybrid parti doc
 	@perl -pi -e 's#"(.*)"#"$(LIBDIR)"# if /LIBEXECDIR = /' verifymedia.tmp
 	@cp isozipl isozipl.tmp
 	@perl -pi -e 's/0\.0/$(VERSION)/ if /VERSION = /' isozipl.tmp
+	@cp tools/mnt/mnt mnt.tmp
+	@perl -pi -e 's/0\.0/$(VERSION)/ if /VERSION = /' mnt.tmp
+	@perl -pi -e 's#"(.*)"#"$(LIBDIR)"# if /LIBEXECDIR = /' mnt.tmp
 	install -m 755 -D mksusecd.tmp $(DESTDIR)$(BINDIR)/mksusecd
 	install -m 755 -D verifymedia.tmp $(DESTDIR)$(BINDIR)/verifymedia
 	install -m 755 -D isozipl.tmp $(DESTDIR)$(BINDIR)/isozipl
 	install -m 755 -D tools/isohybrid/isohybrid $(DESTDIR)$(LIBDIR)/mksusecd/isohybrid
 	install -m 755 -D tools/parti/parti $(DESTDIR)$(LIBDIR)/mksusecd/parti
-	@rm -f mksusecd.tmp verifymedia.tmp isozipl.tmp
+	install -m 755 -D mnt.tmp $(DESTDIR)$(LIBDIR)/mksusecd/mnt
+	install -m 755 -D tools/mnt/umnt $(DESTDIR)$(LIBDIR)/mksusecd/umnt
+	@rm -f mksusecd.tmp verifymedia.tmp isozipl.tmp mnt.tmp
 
 doc:
 	@if [ -x /usr/bin/asciidoctor ] ; then \
 	  asciidoctor -b manpage -a version=$(VERSION) mksusecd_man.adoc ;\
 	  asciidoctor -b manpage -a version=$(VERSION) verifymedia_man.adoc ;\
+	  asciidoctor suse_blog.adoc ;\
 	else \
 	  a2x -f manpage -a version=$(VERSION) mksusecd_man.adoc ;\
 	  a2x -f manpage -a version=$(VERSION) verifymedia_man.adoc ;\
@@ -58,5 +64,5 @@ doc:
 clean:
 	@make -C tools/isohybrid clean
 	@make -C tools/parti clean
-	@rm -f *.o *~ *.tmp */*~ mksusecd{.1,_man.xml,_man.pdf} verifymedia{.1,_man.xml,_man.pdf}
+	@rm -f *.o *~ *.tmp */*~ mksusecd{.1,_man.xml,_man.pdf} verifymedia{.1,_man.xml,_man.pdf} suse_blog.html
 	@rm -rf package

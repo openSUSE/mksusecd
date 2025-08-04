@@ -1,0 +1,1100 @@
+#! /usr/bin/perl
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# package Tmp version 1.0
+#
+# Create temporary files/directories and ensures they are removed at
+# program end.
+#
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+{
+  package Tmp;
+
+  use File::Temp;
+  use strict 'vars';
+  use Cwd 'abs_path';
+
+  sub new
+  {
+    my $self = {};
+    my $save_tmp = shift;
+
+    bless $self;
+
+    my $x = $0;
+    $x =~ s#.*/##;
+    $x =~ s/(\s+|"|\\|')/_/;
+    $x = 'tmp' if$x eq "";
+
+    my $t = File::Temp::tempdir(abs_path("/tmp") . "/$x.XXXXXXXX", CLEANUP => $save_tmp ? 0 : 1);
+
+    $self->{base} = $t;
+
+    if(!$save_tmp) {
+      my $s_t = $SIG{TERM};
+      $SIG{TERM} = sub { File::Temp::cleanup; &$s_t if $s_t };
+
+      my $s_i = $SIG{INT};
+      $SIG{INT} = sub { File::Temp::cleanup; &$s_i if $s_i };
+    }
+
+    return $self
+  }
+
+  sub dir
+  {
+    my $self = shift;
+    my $dir = shift;
+    my $t;
+
+    if($dir ne "" && !-e("$self->{base}/$dir")) {
+      $t = "$self->{base}/$dir";
+      die "error: mktemp failed\n" unless mkdir $t, 0755;
+    }
+    else {
+      chomp ($t = `mktemp -d $self->{base}/XXXX`);
+      die "error: mktemp failed\n" if $?;
+    }
+
+    return $t;
+  }
+
+  sub file
+  {
+    my $self = shift;
+    my $file = shift;
+    my $t;
+
+    if($file ne "" && !-e("$self->{base}/$file")) {
+      $t = "$self->{base}/$file";
+      open my $f, ">$t";
+      close $f;
+    }
+    else {
+      chomp ($t = `mktemp $self->{base}/XXXX`);
+      die "error: mktemp failed\n" if $?;
+    }
+
+    return $t;
+  }
+
+  # helper function
+  sub umount
+  {
+    my $mp = shift;
+
+    if(open(my $f, "/proc/mounts")) {
+      while(<$f>) {
+        if((split)[1] eq $mp) {
+          # print STDERR "umount $mp\n";
+          ::susystem("umount $mp");
+          return;
+        }
+      }
+      close $f;
+    }
+  }
+
+  sub mnt
+  {
+    my $self = shift;
+    my $dir = shift;
+
+    my $t = $self->dir($dir);
+
+    if($t ne '') {
+      eval 'END { local $?; umount $t }';
+
+      my $s_t = $SIG{TERM};
+      $SIG{TERM} = sub { umount $t; &$s_t if $s_t };
+
+      my $s_i = $SIG{INT};
+      $SIG{INT} = sub { umount $t; &$s_i if $s_i };
+    }
+
+    return $t;
+  }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+use strict;
+# use utf8;
+use bigint;
+
+use Getopt::Long;
+use Cwd 'abs_path';
+use JSON;
+
+use Data::Dumper;
+$Data::Dumper::Sortkeys = 1;
+$Data::Dumper::Terse = 1;
+$Data::Dumper::Indent = 1;
+
+our $VERSION = "0.0";
+our $LIBEXECDIR = "/usr/lib";
+
+sub usage;
+sub sudo_cmd;
+sub get_mount_device;
+sub get_config;
+sub umount;
+sub mount;
+sub file_magic;
+sub fs_type;
+sub get_archive_type;
+sub unpack_cpiox;
+sub unpack_archive;
+
+my $opt_mount_options = undef;
+my $opt_verbose = 0;
+my $opt_no_mount = 0;
+my $opt_readonly = undef;
+my $opt_keep_uid = undef;
+my $opt_umount;
+my $opt_save_temp;
+
+Getopt::Long::Configure("bundling");
+
+GetOptions(
+  'options|o=s' => \$opt_mount_options,
+  'readonly|r'  => \$opt_readonly,
+  'keep-uid|k'  => \$opt_keep_uid,
+  'verbose|v'   => sub { $opt_verbose++ },
+  'no-mount|n'  => \$opt_no_mount,
+  'umount|u'    => \$opt_umount,
+  'version'     => sub { print "$VERSION\n"; exit 0 },
+  'save-temp'   => \$opt_save_temp,
+  'help'        => sub { usage 0 },
+) || usage 1;
+
+$ENV{PATH} = "$LIBEXECDIR/mksusecd:/usr/bin:/bin:/usr/sbin:/sbin";
+
+my $config = get_config;
+
+my $sudo = $config->{sudo};
+undef $sudo if !$>;
+
+if($sudo) {
+  chomp(my $p = `bash -c 'type -p $sudo'`);
+  die "sorry, you must be root\n" if $p eq "";
+}
+
+my $tmp = Tmp::new($opt_save_temp);
+
+if($opt_umount) {
+  umount $_ for @ARGV ? @ARGV : ( "/mnt" );
+
+  exit 0;
+}
+
+if(!@ARGV) {
+  if(open my $fd, "/proc/mounts") {
+    local $/;
+    print <$fd>;
+    close $fd;
+  }
+
+  exit 0;
+}
+
+my $src = shift;
+my $dst = shift || "/mnt";
+
+usage 1 if $src eq "" || @ARGV;
+
+die "not a directory: $dst\n" unless -d $dst;
+
+my $src_0 = $src;
+my $src_part = $1 if $src =~ s/:(\S+?)$//;
+my $src_1 = $src;
+
+if(-d $src) {
+  sudo_cmd "mount --bind '$src' '$dst'" unless $opt_no_mount;
+
+  exit;
+}
+
+if($src !~ m#/# && ! -e($src)) {
+  my $label = readlink "/dev/disk/by-label/$src";
+  if($label && $label =~ s/\.\.\/\.\.\///) {
+    $src = "/dev/$label";
+  }
+}
+
+my $archive_type = get_archive_type $src;
+
+die "$src_0: nothing to do\n" if !$archive_type;
+
+print "type: $archive_type\n" if $opt_verbose >= 1;
+
+if($archive_type =~ /^qcow/) {
+  ## qcow mount
+
+  if(! -d "/sys/block/nbd0") {
+    sudo_cmd "modprobe nbd";
+  }
+
+  if(!-d "/sys/block/nbd0") {
+    die "no nbd devices\n";
+  }
+
+  my $nbd;
+  for (my $i = 0; $i < 16; $i++) {
+    if(-d "/sys/block/nbd$i" && ! -e "/sys/block/nbd$i/pid") {
+      $nbd = $i;
+      last;
+    }
+  }
+  if(!defined $nbd) {
+    die "no free nbd device\n";
+  }
+  my $ro = $opt_readonly ? " -r" : "";
+  sudo_cmd "qemu-nbd$ro -c /dev/nbd$nbd $src" and die "$src: qemu-nbd failed\n";
+
+  $src = "/dev/nbd$nbd";
+
+  print "$src\n" if $opt_no_mount || $opt_verbose >= 1;
+
+  $archive_type = get_archive_type $src;
+
+  print "type: $archive_type\n" if $opt_verbose >= 1;
+}
+
+# select archive part
+my @types = split /,/, $archive_type;
+
+my $p = $src_part;
+
+my $type = $types[0];
+
+if($p =~ /^\d+$/) {
+  $p-- if $p > 0;
+  $type = $types[$p] if $types[$p] ne "";
+}
+elsif($p ne "") {
+  my $ok = 0;
+  for my $t (@types) {
+    $type = $t, $ok = 1, last if $t =~ /(^|\.)$p/;
+  }
+  die "$src: part '$p' not found\n" if !$ok;
+}
+
+if($type =~ /(^|\.)(part|eltorito)/) {
+  ## setup loop device for partition
+
+  if($type =~ /\[(\d+):(\d+)\]/) {
+    my $start = $1;
+    my $size = $2;
+
+    print "losetup --find --show --offset $start --sizelimit $size $src $opt_verbose\n" if $opt_verbose >= 2;
+    chomp(my $loop_dev = `${sudo} losetup --find --show --offset $start --sizelimit $size $src`);
+    die "$src: losetup failed\n" unless $loop_dev =~ m#^/dev/loop#;
+
+    print "$loop_dev\n" if $opt_no_mount || $opt_verbose >= 1;
+
+    $src = $loop_dev;
+  }
+  else {
+    die "$type: no partition boundaries\n";
+  }
+}
+
+if($type =~ /^fs_([^,.]+)/) {
+  ## mount fs
+  print "using: $type\n" if $type ne $archive_type && $opt_verbose >= 1;
+
+  exit 0 if $opt_no_mount;
+
+  mount $src, $dst, $1;
+}
+elsif($type =~ /^crypto_LUKS/) {
+  # do cryptsetup
+  print "using: $type\n" if $type ne $archive_type && $opt_verbose >= 1;
+
+  my $mapper_name = $tmp->file();
+  $mapper_name =~ s#/[^/]*$##;
+  $mapper_name =~ s#^.*/##;
+
+  die "$src setup failed\n" if sudo_cmd "cryptsetup open '$src' '$mapper_name'";
+
+  print "/dev/mapper/$mapper_name\n" if $opt_no_mount || $opt_verbose >= 1;
+  exit 0 if $opt_no_mount;
+
+  mount "/dev/mapper/$mapper_name", $dst, 'auto';
+}
+else {
+  ## unpack
+
+  exit 0 if $opt_no_mount;
+
+  my $fd;
+
+  # get file handle in case $src is inside $dst and the tmpfs mount would shadow it
+  if(open $fd, $src) {
+    my $fnr = fileno $fd;
+    $src = "/proc/$$/fd/$fnr";
+    print "using $src\n" if $opt_verbose >= 2;
+  }
+
+  sudo_cmd "mount -o 'size=0,nr_inodes=0' -t tmpfs tmpfs '$dst'";
+
+  unpack_archive $archive_type, $src, $dst, $src_part;
+
+  sudo_cmd "chown -R $<:${[split / /,$(]}[0] '$dst'" unless $opt_keep_uid;
+
+  sudo_cmd "mount -oremount,ro '$dst'" if $opt_readonly;
+}
+
+exit 0;
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub usage
+{
+  print <<"= = = = = = = =";
+Usage: mnt [OPTIONS] DEVICE|IMAGE_FILE|DIR|ARCHIVE [DEST]
+Mount device, image, directory, or unpacked archive at DEST.
+
+If DEST is not specified, default to /mnt.
+
+Archives may be compressed, even several times. They are
+unpacked into a new tmpfs mounted at DEST.
+
+If DEVICE or IMAGE_FILE uses LUKS, run cryptsetup.
+
+You can refer to a partition by appending ':partN' or an El-Torito
+image by appending ':eltoritoN' to DEVICE or IMAGE_FILE.
+N is a number starting from 1.
+
+Options:
+
+  -r, --readonly         Mount read-only.
+  -o, --options OPTIONS  Add OPTIONS to mount options.
+  -k, --keep-uid         Keep UIDs in archive.
+  -n, --no-mount         Do all device setup preparations but do not mount.
+  -u, --umount           Unmount DEST. The umnt command is an alias to 'mnt -u'.
+  -v, --verbose          Show more detailed messages. Can be repeated to log even more.
+      --version          Show mnt version.
+      --save-temp        Keep temporary files.
+      --help             Write this help text.
+
+You can set a sudo command to use by putting 'sudo=<my_sudo_command> into \$HOME/.mntrc.
+= = = = = = = =
+
+  exit shift;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub sudo_cmd
+{
+  my $cmd = $_[0];
+
+  (my $log = $cmd) =~ s/\s*>.*$//;
+
+  print "$log\n" if $opt_verbose >= 2;
+
+  return system "${sudo} $cmd >/dev/null";
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub get_mount_device
+{
+  my $dir = $_[0];
+
+  return $dir if -b $dir;
+
+  if(open my $f, "/proc/mounts") {
+    my @mps = (<$f>);
+    close $f;
+    for (reverse @mps) {
+      return $1 if /^(\S+)\s+(\S+)/ && $2 eq $dir;
+    }
+  }
+
+  return undef;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub get_config
+{
+  my $config = {};
+
+  if(open my $f, "$ENV{HOME}/.mntrc") {
+    while(<$f>) {
+      next if /^\s*#/;
+      if(/^\s*(\S+?)\s*=\s*(.*?)\s*$/) {
+        my $key = $1;
+        my $val = $2;
+        $val =~ s/^\"|\"$//g;
+        $config->{$key} = $val;
+      }
+    }
+    close $f;
+  }
+
+  $config->{sudo} ||= "sudo";
+
+  return $config;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub umount
+{
+  my $mount_dir = $_[0];
+  my $mount_device = get_mount_device $mount_dir;
+
+  if($mount_device eq "") {
+    print "$mount_dir: not mounted\n";
+    return;
+  }
+
+  my @tasks;
+
+  print "mounted device: $mount_device\n" if $opt_verbose >= 1;
+
+  if(-d $mount_device) {
+    return sudo_cmd "umount $mount_dir";
+  }
+
+  if(-b $mount_device) {
+    push @tasks, { dev => $mount_device };
+  }
+
+  for my $task (@tasks) {
+    if($task->{dev} =~ m#/dev/mapper/mnt\.#) {
+      my $md = abs_path $task->{dev};
+      $md =~ s#^/dev/##;
+      for my $dev (glob "/sys/block/$md/slaves/*") {
+        $dev =~ s#.*/##;
+        push @tasks, { dev => "/dev/$dev" };
+      }
+      $task->{cmd} = "cryptsetup close '$task->{dev}'";
+      $task->{cond} = "$task->{dev}";
+    }
+    elsif($task->{dev} =~ m#^/dev/(loop\d+)#) {
+      my $loop_dev = $1;
+      my $backing_file;
+      if(open my $fd, "/sys/block/$loop_dev/loop/backing_file") {
+        local $/;
+        $backing_file = <$fd>;
+        close $fd;
+      }
+      chomp $backing_file;
+      push @tasks, { dev => $backing_file } if $backing_file =~ m#^/dev/#;
+      $task->{cmd} = "losetup -d '$task->{dev}'";
+      $task->{cond} = "/sys/block/$loop_dev/loop/backing_file";
+    }
+    elsif($task->{dev} =~ m#^/dev/nbd#) {
+      $task->{cmd} = "qemu-nbd -d '$task->{dev}' >/dev/null";
+    }
+  }
+
+  sudo_cmd "umount $mount_dir" if -d $mount_dir;
+
+  for my $task (@tasks) {
+    sudo_cmd $task->{cmd} if $task->{cmd} && (!$task->{cond} || -e $task->{cond});
+  }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub mount
+{
+  my $src = $_[0];
+  my $dst = $_[1];
+  my $fs = $_[2] || 'auto';
+  my @mo;
+
+  push @mo, "loop" if -f $src;
+  push @mo, "utf8" if $fs eq "vfat";
+  push @mo, "ro" if $opt_readonly;
+  push @mo, $opt_mount_options if $opt_mount_options;
+  my $mo = " -o" . join(",", @mo) if @mo;
+
+  sudo_cmd "mount${mo} -t '$fs' '$src' '$dst'" unless $opt_no_mount;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# Run 'file' system command.
+#
+# result = file_magic(file, pipe)
+#
+# -   file: the input file, or '-' if pipe is set
+# -   pipe: (if set) the command to read from
+# - result: everything 'file' returns
+#
+sub file_magic
+{
+  my $type = "file -b -k -L $_[0] 2>/dev/null";
+  $type = "$_[1] | $type" if $_[1];
+
+  return `$type`;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# result = fs_type(file, pipe, offset)
+#
+# -   file: the input file, or '-' if pipe is set
+# -   pipe: (if set) the command to read from
+# - offset: probe at offset
+# - result: type hash
+#
+sub fs_type
+{
+  my $file = $_[0];
+  my $pipe = $_[1];
+  my $offset = $_[2] || 0;
+  my $type = { };
+
+  if($pipe) {
+    if(open my $fd, "$pipe |") {
+      my $buf;
+      # 1 MiB seems to be the minimum for blkid to work
+      my $i = read $fd, $buf, 1024*1024;
+      close $fd;
+      $file = $tmp->file();
+      if(open my $fd, ">", $file) {
+        syswrite $fd, $buf;
+        close $fd;
+      }
+      else {
+        undef $file;
+      }
+    }
+  }
+
+  if($file) {
+    my $blkid = `blkid --offset '$offset' -p '$file' 2>/dev/null`;
+    if($blkid =~ /\bUSAGE="filesystem"/ && $blkid =~ /\bTYPE="([^"]*)"/) {
+      $type->{fs} = $1;
+    }
+
+    if($blkid =~ /\bUSAGE="crypto"/ && $blkid =~ /\bTYPE="([^"]*)"/) {
+      $type->{crypto} = $1;
+    }
+
+    my $parti = `parti --json $file 2>/dev/null`;
+    $parti = decode_json($parti) if $parti;
+
+    if($parti->{gpt_primary}) {
+      $type->{gpt} = $parti->{gpt_primary};
+    }
+    elsif($parti->{mbr}) {
+      $type->{mbr} = $parti->{mbr};
+    }
+    $type->{eltorito} = $parti->{eltorito} if $parti->{eltorito};
+  }
+
+  return $type;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# Get archive type;
+#
+# type = get_archive_type(file)
+#
+# - file: the archive name
+# - type: something like 'tar.xz' or undef if the archive is unsupported.
+#
+# The special type '[start:length]' designates a part of the file of 'length' bytes
+# beginning at 'start'. A 'length' of 0 means 'to the end of file'.
+#
+# type can be a comma-separated list of individual types. Which makes only sense in
+# relation to types containing '[start:length]' to indicate that different parts of
+# a file can have different archive types.
+#
+sub get_archive_type
+{
+  my $file = $_[0];
+  my $type;
+  my $cmd;
+
+  my $orig = $file;
+
+  if(-d $file) {
+    return 'dir';
+  }
+
+  if(! (-f $file || -b _)) {
+    return undef;
+  }
+
+  if(! -r $file) {
+    die "$orig: not readable; you need root privileges.\n";
+  }
+
+  my @types_found;
+
+  do {
+    my $t = file_magic $file, $cmd;
+
+    if($t =~ /^RPM/) {
+      $type = "cpio.rpm$type";
+    }
+    elsif($t =~ /^ASCII cpio archive \(SVR4/) {
+      $type = "cpiox$type";
+      if(!$cmd) {
+        my $cpiox_stats = unpack_cpiox undef, $file;
+        my $len = $cpiox_stats ? $cpiox_stats->{bytes} : 0;
+        if($len < -s $file) {
+          push @types_found, "$type.[0:$len]";
+          $type = ".[$len:]";
+          $cmd = "dd status=none bs=$len skip=1 if='$file' 2>/dev/null";
+          $file = "-";
+        }
+      }
+    }
+    elsif($t =~ /\b(cpio|tar|rar) archive/i) {
+      $type = "\L$1\E$type";
+    }
+    elsif($t =~ / QCOW /) {
+      $type = "qcow$type";
+    }
+    elsif($t =~ /Zip archive data|Zip data|EPUB /) {
+      $type = "zip$type";
+    }
+    elsif($t =~ /7-zip archive data/) {
+      $type = "7z$type";
+    }
+    elsif($t =~ /^(bzip2|gzip|XZ|Zstandard) compressed data/) {
+      my $c = "\L$1";
+      $c =~ s/zstandard/zstd/;
+      if($cmd) {
+        $cmd .= " | $c --quiet -dc";
+      }
+      else {
+        $cmd = "$c --quiet -dc '$file'";
+      }
+      $file = "-";
+      $c =~ s/bzip2/bz2/;
+      $c =~ s/gzip/gz/;
+      $c =~ s/zstd/zst/;
+      $type = ".$c$type";
+    }
+    else {
+      my $type_added = 0;
+      my $fs_type = fs_type $file, $cmd;
+      my $saved_type = $type;
+
+      if($fs_type->{fs}) {
+        $type = "fs_$fs_type->{fs}$saved_type";
+        $type_added = 1;
+      }
+
+      if($fs_type->{crypto}) {
+        $type = "$fs_type->{crypto}$saved_type";
+        $type_added = 1;
+      }
+
+      if($saved_type !~ /,/) {
+        if($fs_type->{gpt}) {
+          for my $p (@{$fs_type->{gpt}{partitions}}) {
+            if($p->{size}) {
+              my $start = $p->{first_lba} * $fs_type->{gpt}{block_size};
+              my $size = $p->{size} * $fs_type->{gpt}{block_size};
+              my $fs_type2 = fs_type $file, $cmd, $start;
+              my $fs2 = "fs_$fs_type2->{fs}" if $fs_type2->{fs};
+              $fs2 ||= $fs_type2->{crypto};
+              $fs2 .= "." if $fs2 ne "";
+              $type .= ",${fs2}part$p->{number}.[$start:$size]$saved_type";
+              $type_added = 1;
+            }
+          }
+        }
+        if($fs_type->{mbr}) {
+          for my $p (@{$fs_type->{mbr}{partitions}}) {
+            if($p->{size}) {
+              my $start = $p->{first_lba} * $fs_type->{mbr}{block_size};
+              my $size = $p->{size} * $fs_type->{mbr}{block_size};
+              my $fs_type2 = fs_type $file, $cmd, $start;
+              my $fs2 = "fs_$fs_type2->{fs}" if $fs_type2->{fs};
+              $fs2 ||= $fs_type2->{crypto};
+              $fs2 .= "." if $fs2 ne "";
+              $type .= ",${fs2}part$p->{number}.[$start:$size]$saved_type";
+              $type_added = 1;
+            }
+          }
+        }
+        if($fs_type->{eltorito}) {
+          my $number = 1;
+          for my $p (@{$fs_type->{eltorito}{catalog}}) {
+            if($p->{size}) {
+              my $start = $p->{first_lba} * $fs_type->{mbr}{block_size};
+              my $size = $p->{size} * $fs_type->{mbr}{block_size};
+              my $fs_type2 = fs_type $file, $cmd, $start;
+              my $fs2 = "fs_$fs_type2->{fs}" if $fs_type2->{fs};
+              $fs2 ||= $fs_type2->{crypto};
+              $fs2 .= "." if $fs2 ne "";
+              $type .= ",${fs2}eltorito$number.[$start:$size]$saved_type";
+              $type_added = 1;
+            }
+            $number++ if $p->{boot};
+          }
+        }
+      }
+
+      $type =~ s/^,?//;
+
+      return undef if !$type_added;
+    }
+  } while($type =~ /^\./);
+
+  push @types_found, $type;
+  $type = join ",", @types_found;
+
+  # print "$file = $type\n";
+
+  return $type;
+}
+
+
+# Unpack multiple concatenated cpio archives.
+#
+# The archives are expected to be in cpio ASCII format ('cpio -H newc').
+# Between the idividual archives an arbitrary sequence of (binary) zeros is
+# allowed. (This is what the kernel allows for the initramfs image.)
+#
+# unpack_cpiox(dst, file, part)
+#
+# -  dst: the directory to unpack to; if dst is undef, don't unpack anything (just parse)
+# - file: the archive file name
+# - part: the part number (1 based) of a multipart archive (0 = unpack all)
+#
+# If dst is undef, write nothing.
+#
+# Return hash with two elements:
+#   - bytes = size of cpiox archive (data actually read)
+#   - parts = number of individual cpiox archives parsed
+#
+# If 'part' is != 0, 'bytes' is the end of that part (right after the 'TRAILER!!!' entry).
+# If 'part' is 0, 'bytes' is the end of valid cpiox data + any trailing 0 bytes.
+#
+sub unpack_cpiox
+{
+  my $dst = shift;
+  my $file = shift;
+  my $part = shift() + 0;
+
+  my $cpio_cmd = 'cpio --quiet -dmiu --sparse --no-absolute-filenames 2>/dev/null';
+
+  # the archive number we are looking for (1 based)
+  my $cnt = 1;
+
+  # input and output file handles
+  my ($f, $p);
+
+  # data transfer buffer
+  my $buf;
+
+  # search for cpio header in input stream on next read operation
+  my $sync = 0;
+
+  # track # of written bytes (reset at start of each cpio archive)
+  my $write_ofs;
+
+  # track # of read bytes
+  my $read_ofs;
+
+  # Read # of bytes from input and write to output.
+  #
+  # bytes = $read_write->(len)
+  # -   len: number of bytes to transfer
+  # - bytes: size of data actually transferred
+  #
+  # This function implicitly opens a new output pipe if none is open and data
+  # need to be written.
+  #
+  # If the $sync variable is set search the input stream for a valid cpio
+  # header (and reset $sync to 0).
+  #
+  my $read_write = sub
+  {
+    my $len = $_[0];
+
+    # nothing to do
+    return $len if !$len;
+
+    # clear buffer
+    undef $buf;
+
+    # Search for next cpio header.
+    #
+    # This assumes there's a number of binary zeros in the input stream
+    # until the next cpio header.
+    # Actually this only looks for the next non-zero data blob.
+    if($sync) {
+      $sync = 0;
+      while(sysread($f, $buf, 1) == 1 && $buf eq "\x00") { $read_ofs++ };
+      $read_ofs += length $buf;
+      $len -= length $buf;
+    }
+
+    # read $len bytes
+    while($len) {
+      my $x = sysread $f, substr($buf, length $buf), $len;
+      last if !$x;
+      $read_ofs += $x;
+      $len -= $x;
+    };
+
+    # In case we did read something, write it to output pipe.
+    if(length $buf) {
+      # Open a new pipe if needed.
+      # But only if part number matches or is 0 (== all parts).
+      if($dst && !$p && ($part == 0 || $part == $cnt)) {
+        open $p, "| ( cd $dst ; $cpio_cmd )" or die "failed to open cpio: $!\n";
+        $write_ofs = 0;
+      }
+
+      # Write data and track output size for padding calculation at the end.
+      if($p) {
+        syswrite $p, $buf;
+        $write_ofs += length $buf;
+      }
+    }
+
+    return length $buf;
+  };
+
+  # Write padding bytes (pad with 0 to full 512 byte blocks) and close
+  # output pipe.
+  #
+  # $write_pad_and_close->()
+  #
+  # This also sets a sync flag indicating that we should search for the next
+  # valid cpio header in the input stream.
+  #
+  my $write_pad_and_close = sub
+  {
+    if($p) {
+      my $pad = (($write_ofs + 0x1ff) & ~0x1ff) - $write_ofs;
+      syswrite $p, "\x00" x $pad, $pad if $pad;
+      close $p;
+      undef $p;
+    }
+
+    # search for next cpio header in input stream
+    $sync = 1;
+  };
+
+  # open archive and get going...
+  if(open $f, $file) {
+    my $len;
+
+    # We have to trace the cpio archive structure.
+    # Keep going as long as there's a header.
+    while(($len = $read_write->(110)) == 110) {
+      my $magic = substr($buf, 0, 6);
+      my $head = substr($buf, 6);
+
+      if($magic !~ /^07070[12]$/) {
+        close $f;
+        return { bytes => $read_ofs - $len, parts => $cnt - 1 } if !$dst;
+        die "broken cpio header\n";
+      }
+
+      my $fname_len = hex substr $buf, 94, 8;
+      my $data_len = hex substr $buf, 54, 8;
+
+      $fname_len += (2, 1, 0, 3)[$fname_len & 3];
+      $data_len = (($data_len + 3) & ~3);
+
+      $read_write->($fname_len);
+
+      my $fname = $buf;
+      $fname =~ s/\x00*$//;
+
+      $read_write->($data_len);
+
+      # Look for cpio archive end marker.
+      # If found, close cpio process. A new process will be started at the
+      # next valid cpio archive header.
+      if(
+        $fname eq 'TRAILER!!!' &&
+        $head =~ /^0{39}10{55}b0{8}$/i
+      ) {
+        $write_pad_and_close->();
+        # exit if we're done
+        if($cnt++ == $part) {
+          close $f;
+          return { bytes => $read_ofs, parts => $part };
+        }
+      }
+    }
+
+    # we're done, close input file...
+    close $f;
+
+    # ...and output file.
+    $write_pad_and_close->();
+
+    # If $len is != 0 this means we've seen something that's not a header of
+    # a cpio archive entry.
+    die "invalid cpio data\n" if $len;
+  }
+  else {
+    die "error reading cpio archive: $!\n";
+  }
+
+  return { bytes => $read_ofs, parts => $cnt - 1 };
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# Unpack archive file.
+#
+# unpack_archive(type, file, dir, part)
+#
+# - type: a type string as returned by get_archive_type
+# - file: the archive
+# -  dir: the directory to unpack to
+# - part: is the part number of a multipart archive (0 = unpack all)
+#
+# Sample type strings:
+#
+#   "dir", "tar", "tar.gz", "tar.gz.xz", "cpiox.[0:1024],cpiox.xz.gz.[1024:]"
+#
+# Type string is a comma-separated list of individual sub_types.
+#
+sub unpack_archive
+{
+  my $type = $_[0];
+  my $file = $_[1];
+  my $dir = $_[2];
+  my $part = $_[3];
+
+  for my $sub_type (split /,/, $type) {
+    next if $sub_type eq '';
+
+    my $cmd;
+    my $cpiox;
+
+    if($sub_type eq 'dir') {
+      $cmd = "tar -C '$file' -cf - .";
+      $sub_type = 'tar';
+    }
+    elsif(! -r $file) {
+      die "$file: not readable; you need root privileges.\n";
+    }
+
+    for (reverse split /\./, $sub_type) {
+      if(/^(bz2|gz|xz|zst|rpm)$/) {
+        my $c;
+        if($1 eq 'gz') {
+          $c = 'gzip --quiet -dc';
+        }
+        elsif($1 eq 'xz') {
+          $c = 'xz --quiet -dc';
+        }
+        elsif($1 eq 'zst') {
+          $c = 'zstd --quiet --force -dc';
+        }
+        elsif($1 eq 'bz2') {
+          $c = 'bzip2 --quiet -dc';
+        }
+        else {
+          $c = 'rpm2cpio';
+        }
+        if($cmd) {
+          $cmd .= " | $c";
+        }
+        else {
+          $cmd = "$c '$file'";
+        }
+      }
+      elsif(/\[(.*):(.*)\]/) {
+        my $start = ($1 ne "" ? $1 : 0) + 0;
+        my $len = ($2 ne "" ? $2 : 0) + 0;
+        my $args;
+        $args = sprintf "bs=1 skip=%d count=%d", $start, $len;
+        $args = "bs=$start skip=1" if $start && !$len;
+        $args = "bs=$len count=1" if !$start && $len;
+        if($cmd) {
+          $cmd .= " | dd status=none $args 2>/dev/null";
+        }
+        else {
+          $cmd = "dd status=none $args if='$file' 2>/dev/null";
+        }
+      }
+      elsif($_ eq 'tar') {
+        $cmd = "cat '$file'" if !$cmd;
+        $cmd .= " | tar -C '$dir' --keep-directory-symlink -xpf - 2>/dev/null";
+        last;
+      }
+      elsif($_ eq 'zip') {
+        if(!$cmd) {
+          $cmd = "unzip -qX '$file' -d '$dir'";
+        }
+        else {
+          my $t = $tmp->file();
+          $cmd .=  " > '$t' ; unzip -qX '$t' -d '$dir'";
+        }
+        last;
+      }
+      elsif($_ eq 'rar') {
+        my $abs_file = abs_path $file;
+        if(!$cmd) {
+          $cmd = "cd '$dir' ; unrar x -idq '$abs_file'";
+        }
+        else {
+          my $t = $tmp->file();
+          $cmd .=  " > '$t' ; cd '$dir' ; unrar x -idq '$t'";
+        }
+        last;
+      }
+      elsif($_ eq '7z') {
+        my $abs_file = abs_path $file;
+        if(!$cmd) {
+          $cmd = "cd '$dir' ; 7z x '$abs_file' > /dev/null";
+        }
+        else {
+          my $t = $tmp->file();
+          $cmd .=  " > '$t' ; cd '$dir' ; 7z x '$t' > /dev/null";
+        }
+        last;
+      }
+      elsif($_ eq 'cpio') {
+        $cmd = "cat '$file'" if !$cmd;
+        $cmd .= " | ( cd '$dir' ; cpio --quiet -dmiu --sparse --no-absolute-filenames 2>/dev/null )";
+        last;
+      }
+      elsif($_ eq 'cpiox') {
+        if(!$cmd) {
+          $cmd = $file;
+        }
+        else {
+          $cmd .= " |";
+        }
+        $cpiox = 1;
+        last;
+      }
+    }
+
+    # cpiox = concatenated compressed cpio archives as the kernel uses for initrd
+    # must be SVR4 ASCII format, with or without CRC ('cpio -H newc')
+    # in this case we have to parse the cpio stream and handle the 'TRAILER!!!' entries
+    if($cpiox) {
+      print "unpack_cpiox($cmd)\n" if $opt_verbose >= 2;
+      my $cpiox_stats = unpack_cpiox $dir, $cmd, $part;
+      if($cpiox_stats && $part) {
+        $part -= $cpiox_stats->{parts};
+        $part = -1 if !$part;		# 0 has special meaning
+      }
+    }
+    elsif($cmd ne "") {
+      print "$cmd\n" if $opt_verbose >= 2;
+      system $cmd;
+    }
+    else {
+      die "${\(abs_path $file)}: cannot unpack archive ($type)\n";
+    }
+  }
+}

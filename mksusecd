@@ -156,6 +156,7 @@ sub copy_or_new_file;
 sub copy_file;
 sub prepare_mkisofs;
 sub build_filelist;
+sub update_filelist;
 sub run_mkisofs;
 sub read_sector;
 sub write_sector;
@@ -221,7 +222,7 @@ sub prepare_addon;
 sub check_mksquashfs_comp;
 sub check_tagmedia_signature_tag;
 sub eval_size;
-sub add_linuxrc_option;
+sub add_initrd_option;
 sub wipe_iso;
 sub get_media_style;
 sub get_media_variant;
@@ -304,6 +305,7 @@ my $opt_hide_efi_image;
 my $opt_grub_dir;
 my $opt_grub_efi_dir;
 my $opt_luks;
+my $opt_initrd_options = [];
 
 Getopt::Long::Configure("gnu_compat");
 
@@ -395,6 +397,7 @@ GetOptions(
   'no-compression=s' => sub { @$opt_no_compression{split /,/, $_[1]} = ( 1 .. 8 ) },
   'mount-iso'        => \$opt_mount_iso,
   'no-mount-iso'     => sub { $opt_mount_iso = 0 },
+  'initrd-config=s'  => $opt_initrd_options,
   'save-temp'        => \$opt_save_temp,
   'verbose|v'        => sub { $opt_verbose++ },
   'version'          => sub { print "$VERSION\n"; exit 0 },
@@ -494,7 +497,7 @@ my $mksquashfs_has_comp;
 my $tagmedia_has_signature_tag;
 my $image_size;
 my $syslinux_config;
-my $linuxrc_options;
+my $initrd_options;
 my $has_content;
 my $product_db;
 my $repomd_instsys_location;
@@ -504,6 +507,7 @@ my $media_variant = 'install';
 my $detected_signature_file;
 my $orig_initrd_00_lib;
 my $instsys_size;
+my $signature_file_used;
 
 my $progress_start = 0;
 my $progress_end = 100;
@@ -665,11 +669,33 @@ if($opt_create || $opt_list_repos) {
   $boot = analyze_boot;
   get_initrd_format;
 
+  if($opt_type eq "micro") {
+    if($opt_defaultrepo) {
+      $opt_instsys_in_repo = 0;
+    }
+    elsif($media_style eq 'suse') {
+      $opt_create_repo = 1;
+    }
+  }
+
+  # good indicator for openSUSE vs. SLE (one product per medium vs. many)
+  my $num_products = @{$product_db->{list}};
+
+  if(
+    $media_style eq 'suse' &&
+    $media_variant eq 'install' &&
+    (($opt_type eq "micro" && $num_products <= 1) || $opt_type eq "nano") &&
+    !$opt_defaultrepo
+  ) {
+    print "Warning: use --defaultrepo option to set a repository.\n";
+  }
+
   # note: analyze_products may set $detected_signature_file
   if(!defined $opt_signature_file) {
     $opt_signature_file = $detected_signature_file;
-    $opt_signature_file = ".signature" if !defined $opt_signature_file;
+    $opt_signature_file = ".signature" if !defined $opt_signature_file && $media_style eq 'suse';
   }
+  $signature_file_used = defined $opt_signature_file;
   $opt_signature_file = "glumps" if $opt_signature_file eq "";
   my $x = copy_or_new_file $opt_signature_file;
 
@@ -701,7 +727,7 @@ if($opt_create || $opt_list_repos) {
   }
 
   if($opt_instsys_url) {
-    add_linuxrc_option "InstSys", $opt_instsys_url;
+    add_initrd_option "instsys", $opt_instsys_url;
   }
 
   if($opt_net && !$opt_defaultrepo) {
@@ -709,7 +735,19 @@ if($opt_create || $opt_list_repos) {
   }
 
   if($opt_defaultrepo) {
-    add_linuxrc_option "DefaultRepo", $opt_defaultrepo;
+    add_initrd_option "defaultrepo", $opt_defaultrepo;
+  }
+
+  for my $i (@$opt_initrd_options) {
+    if($i =~ /^([^=]+)=(.*)$/) {
+      my $key = $1;
+      my $value = $2;
+      $value =~ s/^("|')(.*)\1$/$2/;
+      add_initrd_option $key, $value;
+    }
+    else {
+      add_initrd_option $i, undef;
+    }
   }
 
   if($opt_sign && (
@@ -736,6 +774,11 @@ if($opt_create || $opt_list_repos) {
     add_instsys_suse;
   }
 
+  prepare_normal;
+  prepare_micro if $opt_type eq 'micro';
+  prepare_nano if $opt_type eq 'nano';
+  prepare_pico if $opt_type eq 'pico';
+
   if($opt_create_repo) {
     run_createrepo $sources[0]{dir};
   }
@@ -743,18 +786,13 @@ if($opt_create || $opt_list_repos) {
   prepare_addon;
 
   # FIXME: suse also has it...
-  if($media_style eq 'rh') {
+  if($media_style eq 'rh' && $opt_type !~ /^(micro|nano|pico)$/) {
     update_treeinfo;
   }
 
   sign_content_or_checksums if update_content_or_checksums;
   $todo = build_todo;
   set_mkisofs_metadata;
-
-  prepare_normal;
-  prepare_micro if $opt_type eq 'micro';
-  prepare_nano if $opt_type eq 'nano';
-  prepare_pico if $opt_type eq 'pico';
 
   prepare_mkisofs;
 
@@ -839,11 +877,18 @@ if($opt_create || $opt_list_repos) {
     print "\n";
     if($opt_sign && $sign_key_dir && $opt_sign_image) {
       my $tmp_dir = $tmp->dir();
-      system "tagmedia --export-tags $tmp_dir/tags $iso_file >/dev/null 2>&1";
-      if(-s "$tmp_dir/tags") {
-        print "signing $iso_file\n" if $opt_verbose >= 1;
-        system "gpg --homedir=$sign_key_dir --local-user '$sign_key_id' --batch --yes --armor --detach-sign $sign_passwd_option $tmp_dir/tags";
-        system "tagmedia --import-signature $tmp_dir/tags.asc $iso_file";
+      # For rh media with signature outside iso data area, --digest will never add a SIGNATURE tag.
+      # But --import-signature below will.
+      # Simply repeat the process in this case, so the correct meta data block is signed.
+      my $cnt = 1;
+      $cnt++ if `tagmedia '$iso_file'` !~ /^signature\s*=\s*\d+/mi;
+      while($cnt--) {
+        system "tagmedia --export-tags $tmp_dir/tags $iso_file >/dev/null 2>&1";
+        if(-s "$tmp_dir/tags") {
+          print "signing $iso_file\n" if $opt_verbose >= 1 && $cnt == 0;
+          system "gpg --homedir=$sign_key_dir --local-user '$sign_key_id' --batch --yes --armor --detach-sign $sign_passwd_option $tmp_dir/tags";
+          system "tagmedia --import-signature $tmp_dir/tags.asc $iso_file";
+        }
       }
     }
   }
@@ -877,9 +922,9 @@ Create new image:
 
 Media type related options:
 
-      --micro                     Create image with just enough files to run the installer (for testing).
+      --micro                     Create image with just enough files to run the installer.
       --nano                      Create image with just enough files for a network based installation.
-      --pico                      Even less than --nano, keep just the bootloader (for testing).
+      --pico                      Even less than --nano, keep just the boot loader (for testing).
 
 Media integrity related options:
 
@@ -889,7 +934,8 @@ Media integrity related options:
       --no-digest                 Don't embed any digest to verify ISO integrity.
       --sign-image                Embed signature for entire image.
       --no-sign-image             Don't embed signature for entire image. (default)
-      --signature-file FILE       Store embedded signature in FILE. (default: /.signature)
+      --signature-file FILE       Store embedded signature in FILE (default: /.signature for SUSE-style media,
+                                  no signature file for RH-style media).
       --sign                      Re-sign '/CHECKSUMS' if it has changed (default).
       --no-sign                   Don't re-sign '/CHECKSUMS'.
       --sign-key KEY_FILE         Use this key file instead of generating a transient key.
@@ -901,6 +947,8 @@ Initrd/instsys update related options:
       --initrd DIR|RPM|DUD        Add content of DIR, RPM, or DUD to initrd (can be repeated).
       --rebuild-initrd            Rebuild the entire initrd instead of appending changes.
       --no-rebuild-initrd         Append changes to the initrd instead of rebuilding.
+      --initrd-config KEY=VALUE   Add config option to initrd intended for linuxrc/YaST/dracut/Agama
+                                  (can be repeated).
       --instsys DIR|RPM           Add content of DIR or RPM to installation system or root file
                                   system for Live media (can be repeated).
       --live-root DIR|RPM         Alias for --instsys.
@@ -1155,6 +1203,34 @@ sub build_filelist
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# update_filelist(sources)
+#
+# Like build_filelist() but new files will replace existing ones.
+#
+sub update_filelist
+{
+  my $src = $_[0];
+
+  for my $s (@$src) {
+    File::Find::find({
+      wanted => sub {
+        if(m#^$s->{dir}/(.+)#) {
+          my $file_name = $1;
+          if($files->{$file_name}) {
+            if(-f "$files->{$file_name}/$file_name") {
+              push @{$mkisofs->{exclude}}, "$files->{$file_name}/$file_name";
+            }
+          }
+          $files->{$file_name} = $s->{dir};
+        }
+      },
+      no_chdir => 1
+    }, $s->{dir});
+  }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # analyze_boot()
 #
 # Scan sources and determne boot configuration. The result is put into the
@@ -1344,9 +1420,17 @@ sub build_todo
       $opt_zipl = 1 if !defined $opt_zipl;
       if($opt_boot_options) {
         my $f = copy_or_new_file "boot/s390x/parmfile";
-        if(open my $f, ">$f") {
-          print $f "$opt_boot_options\n";
-          close $f;
+        my $boot_opts;
+        if(open my $fd, $f) {
+          local $/;
+          $boot_opts = <$fd>;
+          close $fd;
+        }
+        $boot_opts =~ s/\s*$//;
+        $opt_boot_options = merge_options $boot_opts, $opt_boot_options;
+        if(open my $fd, ">", $f) {
+          print $fd "$opt_boot_options\n";
+          close $fd;
         }
       }
       if($opt_zipl) {
@@ -1568,9 +1652,16 @@ sub prepare_mkisofs
 
   my $sf = fname $opt_signature_file;
 
-  if(open my $fh, ">", $sf) {
-    print $fh $magic_sig_id, "\x00" x (0x800 - length $magic_sig_id);
-    close $fh;
+  if($signature_file_used) {
+    print "signature file used\n" if $opt_verbose >= 1;
+    if(open my $fh, ">", $sf) {
+      print $fh $magic_sig_id, "\x00" x (0x800 - length $magic_sig_id);
+      close $fh;
+    }
+  }
+  else {
+    print "signature file not used\n" if $opt_verbose >= 1;
+    push @{$mkisofs->{exclude}}, $sf if $sf;
   }
 
   push @{$mkisofs->{sort}}, "$sf 999999";
@@ -2012,7 +2103,12 @@ sub run_createrepo
   my $dir = $_[0];
   my $ok;
 
-  my $cmd = "createrepo --simple-md-filenames '$dir'";
+  my $tmp_dir = $tmp->dir();
+  my $new_source = { dir => $tmp_dir, real_name => $tmp_dir, type => 'dir' };
+
+  $dir = $tmp_dir if $opt_type =~ /^(micro|nano|pico)$/;
+
+  my $cmd = "createrepo --simple-md-filenames --general-compress-type=gz -o '$tmp_dir' '$dir'";
 
   print "running:\n$cmd\n" if $opt_verbose >= 1;
 
@@ -2039,6 +2135,11 @@ sub run_createrepo
   print "signing '$name'\n" if $opt_verbose >= 1;
 
   system "gpg --homedir=$sign_key_dir --local-user '$sign_key_id' --batch --yes --armor --detach-sign $sign_passwd_option $name";
+
+  exclude_files [ "repodata" ];
+
+  push @sources, $new_source;
+  update_filelist [ $new_source ];
 }
 
 
@@ -3138,15 +3239,21 @@ sub merge_options
         $opt .= "=$new_opts{$k}" if defined $new_opts{$k};
         delete $new_opts{$k};
       }
-      push @opts, $opt;
+      if(exists $new_opts{"-$k"}) {
+        $opt = undef;
+        delete $new_opts{$k};
+      }
+      push @opts, $opt if defined $opt;
     }
 
     for my $opt (@new_opts_order) {
       my $k = $opt;
       if(exists $new_opts{$opt}) {
-        $opt .= "=$new_opts{$opt}" if defined $new_opts{$opt};
-        delete $new_opts{$k};
-        push @opts, $opt;
+        if($opt !~ /^-/) {
+          $opt .= "=$new_opts{$opt}" if defined $new_opts{$opt};
+          delete $new_opts{$k};
+          push @opts, $opt;
+        }
       }
     }
 
@@ -3485,14 +3592,9 @@ sub keep_files
 #
 sub prepare_micro
 {
-  # be careful not to remove yast's control files
-  keep_files [
-    "x86_64/skelcd-control-.*",
-  ];
-
   exclude_files [
     (map { "suse/$_" } @boot_archs, "i586", "noarch"),
-    "(aarch64|ppc64le|s390x|x86_64)/.*", "src", "nosrc", "noarch",
+    "(aarch64|ppc64le|s390x|x86_64)", "src", "nosrc", "noarch",
     "docu",
     "ls-lR\\.gz",
     "INDEX\\.gz",
@@ -3500,10 +3602,17 @@ sub prepare_micro
     "ChangeLog",
     "updates",
     "linux",
-    "images",
     "autorun.inf",
     ".*\\.ico",
     ".*\\.exe",
+    "Module-.*",
+    "Product-.*",
+    "repodata",
+    "install",
+    "AppStream",
+    "BaseOS",
+    "Packages",
+    ".treeinfo",
   ];
 }
 
@@ -3541,6 +3650,9 @@ sub prepare_nano
     "suse",
     "(aarch64|ppc64le|s390x|x86_64)",
     "repodata",
+    "images/install.img",
+    # keep LiveOS dir, so we still know this is a Live medium
+    "LiveOS/squashfs.img",
   ];
 }
 
@@ -3650,6 +3762,8 @@ sub set_mkisofs_metadata
 
   $vol_id = trim_volume_id $vol_id;
 
+  print "volume id: $vol_id\n" if $vol_id && $opt_verbose >= 1;
+
   my $vol_id_from_config;
 
   if(open my $f, "<", fname("boot/grub2/grub.cfg")) {
@@ -3672,12 +3786,35 @@ sub set_mkisofs_metadata
     close $f;
   }
 
+  print "volume id (boot config): $vol_id_from_config\n" if $vol_id_from_config && $opt_verbose >= 1;
+
+  my $vol_id_from_initrd;
+
+  if($media_style eq 'suse' && $media_variant eq 'live') {
+    unpack_orig_initrd if !$orig_initrd;
+    die "initrd unpacking failed\n" if !$orig_initrd;
+
+    if(-d "$orig_initrd/etc/cmdline.d") {
+      my $config = `cat $orig_initrd/etc/cmdline.d/*.conf`;
+      $vol_id_from_initrd = $1 if $config =~ /^root=live:(?:CD)?LABEL=(\S+)/m;
+    }
+  }
+
+  print "volume id (initrd): $vol_id_from_initrd\n" if $vol_id_from_initrd && $opt_verbose >= 1;
+
   $vol_id ||= $vol_id_from_config;
+  $vol_id ||= $vol_id_from_initrd;
 
   if($vol_id_from_config && $vol_id ne $vol_id_from_config) {
     print "Warning: volume id \"$vol_id\" does not match expected volume id from boot config \"$vol_id_from_config\".\n";
     $vol_id = $opt_volume ? $vol_id : $vol_id_from_config;
-    print "Choosing \"$vol_id\".\n";
+    print "Using volume id \"$vol_id\".\n";
+  }
+
+  if($vol_id_from_initrd && $vol_id ne $vol_id_from_initrd) {
+    print "Warning: volume id \"$vol_id\" does not match expected volume id from initrd \"$vol_id_from_initrd\".\n";
+    $vol_id = $opt_volume ? $vol_id : $vol_id_from_initrd;
+    print "Using volume id \"$vol_id\".\n";
   }
 
   $opt_volume = $vol_id;
@@ -4820,7 +4957,7 @@ sub unpack_archive
         }
         else {
           my $t = $tmp->file();
-          $cmd .=  " > '$t' ; cd '$dir' ; unrar x -idq '$abs_file'";
+          $cmd .=  " > '$t' ; cd '$dir' ; unrar x -idq '$t'";
         }
         last;
       }
@@ -5674,7 +5811,7 @@ sub prepare_addon
   # add our add-on to the iso
   my $new_source = { dir => $tmp_dir, real_name => $tmp_dir, type => 'dir' };
   push @sources, $new_source;
-  build_filelist [ $new_source ];
+  update_filelist [ $new_source ];
 }
 
 
@@ -5771,40 +5908,61 @@ sub eval_size
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-# add_linuxrc_option(key, value)
+# add_initrd_option(key, value)
 #
-# Add linxurc config option.
+# Add linuxrc/dracut config option.
 # - key: option name
 # - value: option value
 #
-# Options are stored in /etc/linuxrc.d/60_mksusecd in the initrd.
+# Options are stored in /etc/linuxrc.d/60_mksusecd (linuxrc) or /etc/cmdline.d/60-mksusecd.conf (dracut) in the initrd.
 #
-sub add_linuxrc_option
+sub add_initrd_option
 {
   my ($key, $value) = @_;
 
-  my $linuxrc_cfg = "etc/linuxrc.d/60_mksusecd";
+  my $use_linuxrc = $media_style eq 'suse' && $media_variant eq 'install';
+
+  my $initrd_cfg = $use_linuxrc ? "etc/linuxrc.d/60_mksusecd" : "etc/cmdline.d/60-mksusecd.conf";
 
   unpack_orig_initrd if !$orig_initrd;
 
-  if(!$linuxrc_options) {
-    $linuxrc_options = $tmp->dir();
-    push @opt_initrds, $linuxrc_options;
+  if(!$initrd_options) {
+    $initrd_options = $tmp->dir();
+    push @opt_initrds, $initrd_options;
 
-    mkdir "$linuxrc_options/etc", 0755;
-    mkdir "$linuxrc_options/etc/linuxrc.d", 0755;
+    mkdir "$initrd_options/etc", 0755;
+    if($use_linuxrc) {
+      mkdir "$initrd_options/etc/linuxrc.d", 0755;
+    }
+    else {
+      mkdir "$initrd_options/etc/cmdline.d", 0755;
+    }
 
-    if($orig_initrd && -f "$orig_initrd/$linuxrc_cfg") {
-      system "cp $orig_initrd/$linuxrc_cfg $linuxrc_options/$linuxrc_cfg";
+    if($orig_initrd && -f "$orig_initrd/$initrd_cfg") {
+      system "cp $orig_initrd/$initrd_cfg $initrd_options/$initrd_cfg";
     }
   }
 
-  if(open my $f, ">>$linuxrc_options/$linuxrc_cfg") {
-    print $f "$key:\t\"$value\"\n";
+  my $l;
+
+  if(open my $f, ">>$initrd_options/$initrd_cfg") {
+    # be conservative: try to avoid quotes - some tools (atm: Agama) have problems with it
+    if(!defined $value) {
+      $l = "$key";
+    }
+    elsif($value =~ /\s/) {
+      $l = "$key=\"$value\"";
+    }
+    else {
+      $l = "$key=$value";
+    }
+    print $f "$l\n";
     close $f;
   }
 
-  print "added linuxrc option $key=\"$value\"\n" if $opt_verbose >= 1;
+  my $x = $use_linuxrc ? "linuxrc" : "dracut";
+
+  print "added $x option: $l\n" if $opt_verbose >= 1;
 }
 
 
@@ -6043,7 +6201,7 @@ sub analyze_products
   for (@{$product_db->{list}}) {
     push @{$mkisofs->{exclude}}, $_->{base_dir} if $_->{product_dir};
 
-    next if !$_->{include};
+    next if !$_->{include} || $opt_type =~ /^(micro|nano|pico)$/;
 
     # FIXME: add $label to name?
     print $prod_fd "/$_->{repo_dir} $_->{name} $_->{ver}\n";
