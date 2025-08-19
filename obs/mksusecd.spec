@@ -24,6 +24,7 @@ Summary:        Tool to create SUSE Linux installation ISOs
 License:        GPL-3.0+
 Group:          Hardware/Other
 URL:            https://github.com/wfeldt/mksusecd
+Provides:       mkmedia = %{version}
 Source:         %{name}-%{version}.tar.xz
 BuildRequires:  libuuid-devel
 BuildRequires:  xz
