@@ -971,6 +971,8 @@ sub unpack_archive
   my $dir = $_[2];
   my $part = $_[3];
 
+  $type =~ s/,.*$// if $type =~ /^fs_/;
+
   for my $sub_type (split /,/, $type) {
     next if $sub_type eq '';
 
@@ -1061,6 +1063,17 @@ sub unpack_archive
         }
         last;
       }
+      elsif($_ eq 'fs_iso9660') {
+        my $abs_file = abs_path $file;
+        if(!$cmd) {
+          $cmd = "cd '$dir' ; isoinfo -R -X -j UTF-8 -i '$abs_file' ; chmod --quiet -R u+w .";
+        }
+        else {
+          my $t = $tmp->file();
+          $cmd .=  " > '$t' ; cd '$dir' ; isoinfo -R -X -j UTF-8 -i '$t' ; chmod --quiet -R u+w .";
+        }
+        last;
+      }
       elsif($_ eq 'cpio') {
         $cmd = "cat '$file'" if !$cmd;
         $cmd .= " | ( cd '$dir' ; cpio --quiet -dmiu --sparse --no-absolute-filenames 2>/dev/null )";
@@ -1075,6 +1088,9 @@ sub unpack_archive
         }
         $cpiox = 1;
         last;
+      }
+      else {
+        die "error: cannot handle '$_': command so far: \"$cmd\"\n";
       }
     }
 
