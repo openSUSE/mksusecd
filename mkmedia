@@ -973,6 +973,7 @@ Media integrity related options:
 
 Initrd/instsys update related options:
 
+      --apply-dud DUD             Apply driver update DUD (can be repeated).
       --initrd DIR|RPM|DUD        Add content of DIR, RPM, or DUD to initrd (can be repeated).
       --rebuild-initrd            Rebuild the entire initrd instead of appending changes.
       --no-rebuild-initrd         Append changes to the initrd instead of rebuilding.

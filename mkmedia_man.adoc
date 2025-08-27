@@ -125,8 +125,13 @@ See *Signing notes* below.
 
 === Initrd/instsys update related options
 
+*--apply-dud*=_DUD_::
+Apply driver update DUD (can be repeated). +
+See *Driver update notes* below.
+
 *--initrd*=_DIR_|_RPM_|_DUD_::
-Add content of _DIR_, _RPM_, or _DUD_ to initrd (can be repeated).
+Add content of _DIR_, _RPM_, or _DUD_ to initrd (can be repeated). +
+See *Driver update notes* below.
 
 *--rebuild-initrd*::
 Rebuild the entire initrd instead of appending changes. +
@@ -559,6 +564,41 @@ from boot config to initrd config, make sure you remove the option from the boot
 For example, Fedora media set inst.stage2 (the installer root file system location) as boot option. To move it to
 the initrd, unset it there: *--boot=-inst.stage2* *--initrd-config inst.stage2=http://example.com/foo*.
 
+=== Driver update notes
+
+Driver updates (DUDs) are archives (typically compressed cpio archives) that describe
+modifications to the installation system. In particular a DUD can:
+
+- update kernel modules
+- change files in the initrd of the installation medium
+- change files in the installation system / live root of the installation medium
+- change boot options
+- change installer config options
+- provide updated packages to be installed
+- add scripts to be run before and after the installer runs
+
+Not everything is possible in all situations - check out the driver update documentation
+in the link list below for details.
+
+There are two ways mkmedia can integrate DUDs into installation media:
+
+1. By adding the DUD (the archive file) to the initrd - the installer will automatically look for DUDs
+in the initrd and apply them. Use option *--initrd* for this.
+
+2. By interpreting the DUD content and applying the necessary changes to the installation medium. Use option *--apply-dud* for this.
+mkmedia logs the changes in files '.update.ID' (in live root) and '.update.initrd.ID' (in initrd).
+
+The difference between both ways is that the first method applies the DUD during the installation (the same as using
+inst.dud=URL / dud=URL boot options) while the second has everything
+done before the installation begins.
+
+This matters for example for kernel modules: in the first method the
+original modules are loaded and then the driver update unloads them and
+loads the updated modules. While with the second way the updated modules are loaded
+right away.
+
+Also, things like boot options or initrd changes can only be applied successfully with the second method as it would
+simply be too late with the first method.
 
 === Kernel update notes
 
@@ -894,15 +934,16 @@ Find more usage examples here: https://github.com/openSUSE/mksusecd/blob/master/
 
 == See Also
 
-*verifymedia*(1), *checkmedia*(1), *tagmedia*(1).
+*verifymedia*(1), *checkmedia*(1), *tagmedia*(1), *mkdud(1)*.
 
 == Links
 
 - YaST, linuxrc options: https://en.opensuse.org/SDB:Linuxrc (linuxrc, YaST)
 - dracut options: https://github.com/dracutdevs/dracut/blob/master/man/dracut.cmdline.7.asc
-- Agama options: https://agama-project.github.io/docs/user/boot_options
+- Agama options: https://agama-project.github.io/docs/user/reference/boot_options
 - Anaconda options: https://anaconda-installer.readthedocs.io/en/latest/boot-options.html
-- more documentation: `/usr/share/doc/packages/mksusecd` +
-- get latest version: https://github.com/openSUSE/mksusecd?tab=readme-ov-file#downloads +
-- mksusecd web site: https://github.com/openSUSE/mksusecd +
+- driver update documentaion: https://github.com/openSUSE/mkdud/blob/master/README.md
+- more documentation: /usr/share/doc/packages/mksusecd
+- get latest version: https://github.com/openSUSE/mksusecd?tab=readme-ov-file#downloads
+- mksusecd web site: https://github.com/openSUSE/mksusecd
 - openSUSE Build Service: https://build.opensuse.org
