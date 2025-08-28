@@ -2107,6 +2107,8 @@ sub unpack_archive
   my $dir = $_[2];
   my $part = $_[3];
 
+  $type =~ s/,.*$// if $type =~ /^fs_/;
+
   for my $sub_type (split /,/, $type) {
     next if $sub_type eq '';
 
@@ -2182,7 +2184,29 @@ sub unpack_archive
         }
         else {
           my $t = $tmp->file();
-          $cmd .=  " > '$t' ; cd '$dir' ; unrar x -idq '$abs_file'";
+          $cmd .=  " > '$t' ; cd '$dir' ; unrar x -idq '$t'";
+        }
+        last;
+      }
+      elsif($_ eq '7z') {
+        my $abs_file = abs_path $file;
+        if(!$cmd) {
+          $cmd = "cd '$dir' ; 7z x '$abs_file' > /dev/null";
+        }
+        else {
+          my $t = $tmp->file();
+          $cmd .=  " > '$t' ; cd '$dir' ; 7z x '$t' > /dev/null";
+        }
+        last;
+      }
+      elsif($_ eq 'fs_iso9660') {
+        my $abs_file = abs_path $file;
+        if(!$cmd) {
+          $cmd = "cd '$dir' ; isoinfo -R -X -j UTF-8 -i '$abs_file' ; chmod --quiet -R u+w .";
+        }
+        else {
+          my $t = $tmp->file();
+          $cmd .=  " > '$t' ; cd '$dir' ; isoinfo -R -X -j UTF-8 -i '$t' ; chmod --quiet -R u+w .";
         }
         last;
       }
@@ -2200,6 +2224,9 @@ sub unpack_archive
         }
         $cpiox = 1;
         last;
+      }
+      else {
+        die "error: cannot handle '$_': command so far: \"$cmd\"\n";
       }
     }
 
@@ -2219,7 +2246,7 @@ sub unpack_archive
       system $cmd;
     }
     else {
-      die "$file: cannot unpack archive ($type)\n";
+      die "${\(abs_path $file)}: cannot unpack archive ($type)\n";
     }
   }
 }

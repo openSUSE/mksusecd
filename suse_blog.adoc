@@ -1,4 +1,4 @@
-= Tooling for SUSE and Multi-Linux installation / Live media
+= Make your own SUSE DVD - Tooling for SUSE and Multi-Linux installation / Live media
 :toc: preamble
 :toclevels: 3
 
@@ -6,11 +6,11 @@ When you are doing Linux installations regularly or have a large number of
 machines to deploy you might want to make changes to the official
 installation media to make work more efficient.
 
-This might range from having your network setup parameters integrated to
-running your favorite autoyast or kickstart profile automatically to
+This might range from having your network setup parameters integrated, to
+running your favorite autoyast or kickstart profile automatically, to
 integrating a driver update or a fixed package without which you cannot run
-the installation to upgrading to latest kernel and modules your hardware
-require to updating the entire installer.
+the installation, to upgrading to latest kernel and modules your hardware
+require, to updating the entire installer.
 
 Or you might want to have a size reduced variant of the full media containing
 only the software modules and products you need. Or minimalistic media for
@@ -56,7 +56,9 @@ signature to work. The Multi-Linux equivalent is `checkisomd5`.
 `tagmedia` manages or creates these meta data. The Multi-Linux equivalent
 is `implantisomd5`.
 
-Let's have a look at two typical examples:
+Let's have a look at typical examples.
+
+=== checkmedia
 
 [source]
 ----
@@ -96,6 +98,8 @@ has not been modified by anyone.
 
 Without a signature you have to rely on manually comparing the md5 or sha256
 digests with values you get from trustworthy sources.
+
+=== tagmedia
 
 `tagmedia` gives an insight into the meta data block holding the digest data:
 
@@ -354,7 +358,7 @@ Another thing you might want to change is the default kernel console, for exampl
 For a documentation of possible boot options look here:
 
 1. https://en.opensuse.org/SDB:Linuxrc (linuxrc, YaST)
-2. https://agama-project.github.io/docs/user/boot_options (Agama)
+2. https://agama-project.github.io/docs/user/reference/boot_options (Agama)
 3. https://anaconda-installer.readthedocs.io/en/latest/boot-options.html (Anaconda)
 4. https://github.com/dracutdevs/dracut/blob/master/man/dracut.cmdline.7.asc (dracut)
 
@@ -362,7 +366,7 @@ For a documentation of possible boot options look here:
 === Set installer config options
 
 In most cases, boot options will be intended not for the kernel but for the installer. In
-this case you can have configration options integrated into the initrd directly.
+this case you can have configuration options integrated into the initrd directly.
 
 For example, setting the AutoYaST parameter could instead be done this way:
 
@@ -415,7 +419,7 @@ There are two types of network-based installation media:
 1. media that contain the installer (online media)
 2. smaller media that do not contain the installer (network media)
 
-To avoid confusion, in this document the first type will be refered to as online media, the second as network media.
+To avoid confusion, in this document the first type will be referred to as online media, the second as network media.
 
 Both variants do not contain the installation software repository.
 
@@ -448,7 +452,7 @@ Let's look at some examples that create online and network media from full media
 Option `--micro` will make `mkmedia` remove all files except the installer
 and those needed for booting. For SLE media you do not need to pass a
 repository because the repository information is read from a registration
-server. Leap-16 has the online repo location already in its configuration.
+server. Leap-16 has the online repository location already in its configuration.
 `new.iso` is equivalent to SLE/Leap online media.
 
 ==== 2. Tumbleweed, Leap-15 online media (not officially available)
@@ -464,7 +468,7 @@ server. Leap-16 has the online repo location already in its configuration.
 As in the last example, option `--micro` will keep the installer on the medium.
 But for Tumbleweed and Leap-15 you need to provide the repository location using the `--defaultrepo` option.
 
-The difference to the Tumblweed network medium which is available for download is
+The difference to the Tumbleweed network medium which is available for download is
 that you can use this image for installing any Tumbleweed snapshot.
 
 ==== 3. Multi-Linux, Fedora online media
@@ -507,11 +511,11 @@ The media produced in this way are equivalent to the available netinst/netinstal
   openSUSE-Leap-15.6-DVD-x86_64-Build710.3-Media.iso
 ----
 
-Option `--nano` leaves ony files needed for booting kernel and initrd. In contrast to `--micro` it
+Option `--nano` leaves only files needed for booting kernel and initrd. In contrast to `--micro` it
 also removes the installer from the medium.
 
 As in the Tumbleweed online example, you also need to set the repository location. The installer is loaded
-from a pre-defined location (from the `boot/<ARCH>` subdirectory) within the repository.
+from a predefined location (from the `boot/<ARCH>` sub-directory) within the repository.
 
 ==== 5. Leap-16, SLE-16 network media (no installer, not officially available)
 
@@ -525,7 +529,7 @@ from a pre-defined location (from the `boot/<ARCH>` subdirectory) within the rep
 
 For Agama-based media like Leap-16 or SLE-16 you have to provide the Live root file system
 via network yourself - there is currently no official download location.
-For this, copy `squashfs.img` from the full medium and make it available on a server.
+For this, copy `LiveOS/squashfs.img` from the full medium and make it available on a server.
 
 Leap-16 has a default repository location in its config, you do not need to set it.
 But if you want to pass your own repository, use the `inst.install_url` setting like this:
@@ -541,14 +545,14 @@ But if you want to pass your own repository, use the `inst.install_url` setting 
 
 ==== 6. Multi-Linux, Fedora network media (not officially available)
 
-For network media you have to prepare a server location containg the unpacked full medium.
+For network media you have to prepare a server location containing the unpacked full medium.
 Say, it is available at `+https://example.com/foo+`.
 
 Then use the `inst.stage2` option to point at that location. The installer will be downloaded from there.
 
 [source]
 ----
-mkmedia --create new.iso \
+# mkmedia --create new.iso \
   --nano \
   --boot -inst.stage2 \
   --initrd-config inst.stage2=https://example.com/foo \
@@ -563,7 +567,7 @@ Alternatively, you could instead do:
 
 [source]
 ----
-mkmedia --create new.iso \
+# mkmedia --create new.iso \
   --nano \
   --boot inst.stage2=https://example.com/foo \
   Fedora-Server-dvd-x86_64-42-1.1.iso
@@ -628,6 +632,7 @@ For example, SLES-15 + Basesystem + Containers:
 # mkmedia --create new.iso \
   --include-repos SLES15-SP6,Basesystem-Module,Containers-Module \
   SLE-15-SP6-Full-x86_64-GM-Media1.iso
+...
 ----
 
 Note that some modules might depend on others - but there is no automatic dependency resolution.
@@ -640,6 +645,7 @@ If you prefer, you can even have all repositories automatically enabled:
   --include-repos SLES15-SP6,Basesystem-Module,Containers-Module \
   --enable-repos yes \
   SLE-15-SP6-Full-x86_64-GM-Media1.iso
+...
 ----
 
 === Create SUSE media with updated installer using tftpboot-installation-<PRODUCT> packages
@@ -659,6 +665,7 @@ These packages contain all files needed to build an installation medium. `mkmedi
 # mkmedia --create new.iso \
   SLE-15-SP6-Full-x86_64-GM-Media1.iso \
   tftpboot-installation-SLE-15-SP6-x86_64.rpm
+...
 ----
 
 Note that you pass the package as argument *after* the ISO image. This is because
@@ -879,7 +886,7 @@ you passed via `--kernel` option are used.
 Note that you cannot select individual firmware files. Instead, firmware files are automatically selected based on the requirements of
 kernel modules.
 
-Going back to the Tumblewed example above but adding firmware packages, too:
+Going back to the Tumbleweed example above but adding firmware packages, too:
 
 [source]
 ----
@@ -907,15 +914,7 @@ To do this, add the necessary firmware package to the initrd:
 # mkmedia --create new.iso \
   --initrd kernel-firmware-qlogic-20250206-2.1.noarch.rpm \
   openSUSE-Tumbleweed-DVD-x86_64-Snapshot20250522-Media.iso
-media style suse, variant install
-Repositories:
-  openSUSE [20250522-0]
-assuming repo-md sources
-using signing key, keyid = 7B0EC6208CA8E305
-El-Torito legacy bootable (x86_64)
-UEFI image: boot/x86_64/efi
-El-Torito UEFI bootable (x86_64)
-building: 100%
+...
 ----
 
 ==== 4. Kernel packages: usrmerge or not?
@@ -964,7 +963,7 @@ initrd base modules:
 ...
 ----
 
-Due to the significant kernel version jump, the module config is noticably
+Due to the significant kernel version jump, the module config is noticeably
 different and there are no guarantees things work smoothly.
 
 === Integrate changes into installation system or initrd
@@ -973,9 +972,9 @@ Starting the installation program is a two-stage process. First, kernel and
 initrd are loaded. Then, in the initrd, a program (dracut or linuxrc) loads the complete
 installation system and starts the installer.
 
-So there are two places you might want to change: the initrd (using the `--initrd`) option and the
-installation system / Live root file system (using the --instsys or --live-root option - you can
-use either, they are synonyms).
+So there are two places you might want to change: the initrd (using the `--initrd` option) and the
+installation system / Live root file system (using the `--instsys` or `--live-root` option) - you can
+use either, they are synonyms.
 
 If you are unsure, change in both places.
 
@@ -1025,7 +1024,7 @@ Then add it:
 Driver updates (DUDs) come in a special format. `mkmedia` recognizes this
 format and can integrate them directly into the initrd.
 
-The advantage compared to using a `dud` boot option is that this way you do not have to download it
+The advantage compared to using a `dud` or `inst.dud` boot option is that this way you do not have to download it
 during the installation process and there is no signature check because initrd content is implicitly trusted.
 
 [source]
@@ -1054,6 +1053,8 @@ creating add-on "my emacs" (alias my_emacs):
   - emacs-30.1-6.1.x86_64.rpm
 ...
 ----
+
+This currently works only for YaST-based installation media like SLE-15, Leap-15, or Tumbleweed, though.
 
 === Advanced examples
 
@@ -1102,7 +1103,7 @@ Instead, it relies on existing boot loader artifacts.
 You can, however, replace the boot loader if it is just a regular file on
 the medium. For example, in UEFI-based setups.
 
-UEFI keeps its boot config in a `EFI/BOOT` directoy, which could look like (using a SLE-16 medium):
+UEFI keeps its boot config in a `EFI/BOOT` directory, which could look like (using a SLE-16 medium):
 
 [source]
 ----
@@ -1277,7 +1278,7 @@ It is OK to use this media.
 
 == Further reading
 
-Here are some links to deeply technical documentation
+For all that made it this far, here are some links to technical background documentation
 
 1. Media signing and digest meta data +
   https://github.com/openSUSE/checkmedia/blob/master/README.adoc

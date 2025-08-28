@@ -126,6 +126,7 @@ use Digest::SHA;
 use File::Find;
 use File::Path;
 use Cwd 'abs_path';
+use JSON;
 
 use Data::Dumper;
 $Data::Dumper::Sortkeys = 1;
@@ -234,6 +235,12 @@ sub read_ini;
 sub write_ini;
 sub create_efi_image;
 sub rebuild_efi_image;
+sub read_config;
+sub get_file_arch;
+sub apply_duds;
+sub apply_single_dud;
+sub kernel_module_exists;
+sub run_depmod;
 
 my %config;
 my $sudo;
@@ -256,6 +263,7 @@ my $opt_zipl;
 my $opt_check;
 my $opt_digest;
 my @opt_initrds;
+my @opt_duds;
 my @opt_instsys;
 my @opt_rescue;
 my $opt_boot_options;
@@ -356,6 +364,7 @@ GetOptions(
   'mbr-chs'          => sub { $opt_no_mbr_chs = 0 },
   'no-mbr-chs'       => \$opt_no_mbr_chs,
   'initrd=s'         => \@opt_initrds,
+  'apply-dud=s'      => \@opt_duds,
   'instsys|live-root=s' => \@opt_instsys,
   'rescue=s'         => \@opt_rescue,
   'rebuild-initrd'   => sub { $opt_rebuild_initrd = 2 },
@@ -409,12 +418,20 @@ usage 1 if $opt_hybrid_fs !~ '^(|iso|fat)$';
 usage 1 if defined($opt_digest) && $opt_digest !~ '^(|md5|sha1|sha224|sha256|sha384|sha512)$';
 usage 1 if defined($opt_enable_repos) && $opt_enable_repos !~ /^(0|1|no|yes|auto|ask)$/i;
 
+if(@opt_duds && @opt_kernel_rpms) {
+  die "You cannot use options --apply-dud and --kernel simultaneously.\n";
+}
+
 for (keys %$opt_no_compression) {
   die "Option --no-compression only accepts firmware, modules, or squashfs\n" if !/^(firmware|modules|squashfs)$/;
 }
 
 if(@opt_kernel_rpms && ! defined $opt_rebuild_initrd) {
   $opt_rebuild_initrd = 1;
+}
+
+if(@opt_duds && !$opt_rebuild_initrd) {
+  $opt_rebuild_initrd = 3;
 }
 
 if(@opt_kernel_modules && !@opt_kernel_rpms) {
@@ -431,6 +448,10 @@ if($>) {
   }
   if($opt_rebuild_initrd == 1) {
     die "mkmedia must be run with root permissions to update kernel config.\nOr use --no-rebuild-initrd.\n"
+  }
+  if($opt_rebuild_initrd == 3) {
+    # for live-root changes and full initrd rebuilds
+    die "mkmedia must be run with root permissions to appy driver updates.\n"
   }
 }
 
@@ -511,6 +532,8 @@ my $detected_signature_file;
 my $orig_initrd_00_lib;
 my $instsys_size;
 my $signature_file_used;
+my $applied_duds;
+my $depmod;
 
 my $progress_start = 0;
 my $progress_end = 100;
@@ -755,7 +778,7 @@ if($opt_create || $opt_list_repos) {
 
   if($opt_sign && (
       # we are going to change '/content' resp. '/CHECKSUMS' in one way or another
-      @opt_initrds || @opt_instsys || @opt_rescue || @opt_kernel_rpms || $opt_boot_options ||
+      @opt_initrds || @opt_duds || @opt_instsys || @opt_rescue || @opt_kernel_rpms || $opt_boot_options ||
       $opt_new_boot_entry || $opt_include_repos || update_content_or_checksums || $opt_sign_image
     )
   ) {
@@ -766,6 +789,9 @@ if($opt_create || $opt_list_repos) {
   if(@opt_kernel_rpms) {
     replace_kernel_mods;
   }
+
+  $applied_duds = apply_duds;
+
   $add_initrd = create_initrd;
   update_kernel_initrd;
   update_boot_options;
@@ -947,6 +973,7 @@ Media integrity related options:
 
 Initrd/instsys update related options:
 
+      --apply-dud DUD             Apply driver update DUD (can be repeated).
       --initrd DIR|RPM|DUD        Add content of DIR, RPM, or DUD to initrd (can be repeated).
       --rebuild-initrd            Rebuild the entire initrd instead of appending changes.
       --no-rebuild-initrd         Append changes to the initrd instead of rebuilding.
@@ -2552,8 +2579,12 @@ sub create_initrd
     die "initrd unpacking failed\n" if !$orig_initrd;
     $tmp_dir = $orig_initrd;
 
-    if($kernel->{initrd_layout} ne 'install') {
+    if(
+      $kernel->{initrd_layout} ne 'install' &&
+      $kernel->{modules_replaced}
+    ) {
       # remove old modules and firmware trees
+      print "removing old kernel tree (initrd): $kernel->{target_lib_dir}/modules/$kernel->{orig_version}\n" if $opt_verbose >= 2;
       system "rm -rf $orig_initrd/$kernel->{target_lib_dir}/modules/$kernel->{orig_version}";
       system "rm -rf $orig_initrd/$kernel->{target_lib_dir}/firmware";
     }
@@ -2567,6 +2598,61 @@ sub create_initrd
     }
     else {
       print STDERR "Warning: ignoring initrd part $i\n";
+    }
+  }
+
+  if(
+    $applied_duds->{initrd_needs_depmod} &&
+    -d "$tmp_dir/$kernel->{target_lib_dir}/modules/$kernel->{orig_version}/updates"
+  ) {
+    if($kernel->{initrd_layout} eq 'install') {
+      my $d = "$tmp_dir/$kernel->{target_lib_dir}/modules/$kernel->{orig_version}";
+
+      for my $m (glob "$d/updates/*${kext_glob}") {
+        next unless -f $m;
+        my $dst = kernel_module_exists "$d/initrd", $m;
+        if($dst ne "") {
+          unlink $dst;
+          system "cp $m $d/initrd";
+        }
+      }
+
+      my $i_dir = "$orig_initrd_00_lib/$kernel->{target_lib_dir}/modules/$kernel->{orig_version}/initrd";
+
+      if($orig_initrd_00_lib && -d $i_dir) {
+        for my $m (glob "$tmp_dir/$kernel->{target_lib_dir}/modules/$kernel->{orig_version}/updates/*${kext_glob}") {
+          next unless -f $m;
+          my $dst = kernel_module_exists $i_dir, $m;
+          unlink $dst if $dst ne "";
+          system "mv $m $i_dir";
+        }
+
+        print "running depmod in initrd\n" if $opt_verbose >= 1;
+        run_depmod $orig_initrd_00_lib, $kernel->{orig_version};
+
+        rmdir "$tmp_dir/$kernel->{target_lib_dir}/modules/$kernel->{orig_version}/updates";
+
+        my $comp = $mksquashfs_has_comp ? "-comp xz" : "";
+
+        if($opt_no_compression->{squashfs}) {
+          if(!$mksquashfs_has_comp) {
+            die "mksquashfs version too old to allow setting compression algorithm\n";
+          }
+          else {
+            $comp = "-no-compression";
+          }
+        }
+
+        mkdir "$tmp_dir/parts";
+        unlink "$tmp_dir/parts/00_lib";
+
+        my $err = system "mksquashfs $orig_initrd_00_lib $tmp_dir/parts/00_lib $comp -noappend -no-progress >/dev/null 2>&1";
+        die "mksquashfs failed\n" if $err;
+      }
+    }
+    else {
+      print "running depmod in initrd\n" if $opt_verbose >= 1;
+      run_depmod $tmp_dir, $kernel->{orig_version};
     }
   }
 
@@ -2802,13 +2888,25 @@ sub add_instsys_live
   my $tmp_mnt = $tmp->dir();
   die "\nLiveOS mount failed\n" if susystem "mount -oloop '$tmp_live/root/LiveOS/rootfs.img' $tmp_mnt";
 
-  if($opt_rebuild_initrd) {
+  if(
+    $opt_rebuild_initrd &&
+    $kernel->{modules_replaced}
+  ) {
+    print "removing old kernel tree (live-root): /$kernel->{target_lib_dir}/modules/$kernel->{orig_version}\n" if $opt_verbose >= 2;
     susystem "rm -rf $tmp_mnt/$kernel->{target_lib_dir}/modules/$kernel->{orig_version}";
     susystem "rm -rf $tmp_mnt/$kernel->{target_lib_dir}/firmware" unless $kernel->{keep_firmware};
   }
 
   susystem "sh -c 'tar -C $new_files --owner=0 --group=0 -cf - . | tar -C $tmp_mnt --keep-directory-symlink -xpf -'";
   susystem "chmod 0755 $tmp_mnt";
+
+  if(
+    $applied_duds->{instsys_needs_depmod} &&
+    -d "$tmp_mnt/$kernel->{target_lib_dir}/modules/$kernel->{orig_version}/updates"
+  ) {
+    print "running depmod in live-root\n" if $opt_verbose >= 1;
+    run_depmod $tmp_mnt, $kernel->{orig_version};
+  }
 
   for my $i (glob "$tmp_mnt/boot/* $tmp_mnt/boot/.*") {
     susystem "rm -f '$i'" unless -e $i;
@@ -4885,6 +4983,8 @@ sub unpack_archive
   my $dir = $_[2];
   my $part = $_[3];
 
+  $type =~ s/,.*$// if $type =~ /^fs_/;
+
   for my $sub_type (split /,/, $type) {
     next if $sub_type eq '';
 
@@ -4964,6 +5064,28 @@ sub unpack_archive
         }
         last;
       }
+      elsif($_ eq '7z') {
+        my $abs_file = abs_path $file;
+        if(!$cmd) {
+          $cmd = "cd '$dir' ; 7z x '$abs_file' > /dev/null";
+        }
+        else {
+          my $t = $tmp->file();
+          $cmd .=  " > '$t' ; cd '$dir' ; 7z x '$t' > /dev/null";
+        }
+        last;
+      }
+      elsif($_ eq 'fs_iso9660') {
+        my $abs_file = abs_path $file;
+        if(!$cmd) {
+          $cmd = "cd '$dir' ; isoinfo -R -X -j UTF-8 -i '$abs_file' ; chmod --quiet -R u+w .";
+        }
+        else {
+          my $t = $tmp->file();
+          $cmd .=  " > '$t' ; cd '$dir' ; isoinfo -R -X -j UTF-8 -i '$t' ; chmod --quiet -R u+w .";
+        }
+        last;
+      }
       elsif($_ eq 'cpio') {
         $cmd = "cat '$file'" if !$cmd;
         $cmd .= " | ( cd '$dir' ; cpio --quiet -dmiu --sparse --no-absolute-filenames 2>/dev/null )";
@@ -4978,6 +5100,9 @@ sub unpack_archive
         }
         $cpiox = 1;
         last;
+      }
+      else {
+        die "error: cannot handle '$_': command so far: \"$cmd\"\n";
       }
     }
 
@@ -4997,7 +5122,7 @@ sub unpack_archive
       system $cmd;
     }
     else {
-      die "$file: cannot unpack archive ($type)\n";
+      die "${\(abs_path $file)}: cannot unpack archive ($type)\n";
     }
   }
 }
@@ -5044,6 +5169,8 @@ sub format_array
 #
 sub get_initrd_modules
 {
+  return if $kernel && $kernel->{target_lib_dir} ne "";
+
   my $unpack_dir = $tmp->dir();
 
   # kernel package layout expected in initrd
@@ -5222,6 +5349,7 @@ sub unpack_kernel_rpms
     system "tar -C '$kernel->{dir}/$lib_dir/modules/$_' -cf - . | tar -C '$kernel->{dir}/$lib_dir/modules/$kernel->{version}' --keep-directory-symlink -xf -";
   }
 
+=head
   # compat symlink needed for depmod
   if($kernel->{usrmerge}) {
     symlink("$lib_dir", "$kernel->{dir}/lib");
@@ -5230,9 +5358,11 @@ sub unpack_kernel_rpms
     mkdir "$kernel->{dir}/usr", 0755;
     symlink("../lib", "$kernel->{dir}/usr/lib");
   }
+=cut
 
-  system "depmod -a -b $kernel->{dir} $kernel->{version}";
+  run_depmod $kernel->{dir}, $kernel->{version};
 
+=head
   if($kernel->{usrmerge}) {
     unlink "$kernel->{dir}/lib";
   }
@@ -5240,6 +5370,7 @@ sub unpack_kernel_rpms
     unlink "$kernel->{dir}/usr/lib";
     rmdir "$kernel->{dir}/usr";
   }
+=cut
 
   if(! -s "$kernel->{dir}/$lib_dir/modules/$kernel->{version}/modules.dep") {
     # squashfs is randomly picked, assuming it will always exist
@@ -5362,6 +5493,7 @@ sub build_module_list
     system "cp $kernel->{dir}/$lib_dir/modules/$kernel->{version}/modules.order $kernel->{new_dir}/$target_lib_dir/modules/$kernel->{version}";
   }
 
+=head
   # compat symlink needed for depmod
   if($kernel->{target_usrmerge}) {
     symlink("$target_lib_dir", "$kernel->{new_dir}/lib");
@@ -5370,6 +5502,7 @@ sub build_module_list
     mkdir "$kernel->{new_dir}/usr", 0755;
     symlink("../lib", "$kernel->{new_dir}/usr/lib");
   }
+=cut
 
   if($opt_no_compression->{modules}) {
     my $dir = "$kernel->{new_dir}/$target_lib_dir/modules";
@@ -5383,8 +5516,9 @@ sub build_module_list
     }
   }
 
-  system "depmod -a -b $kernel->{new_dir} $kernel->{version}";
+  run_depmod $kernel->{new_dir}, $kernel->{version};
 
+=head
   if($kernel->{target_usrmerge}) {
     unlink "$kernel->{new_dir}/lib";
   }
@@ -5392,6 +5526,7 @@ sub build_module_list
     unlink "$kernel->{new_dir}/usr/lib";
     rmdir "$kernel->{new_dir}/usr";
   }
+=cut
 
   # now get firmware files
 
@@ -5682,6 +5817,8 @@ sub replace_kernel_mods
   add_modules_to_initrd;
 
   add_modules_to_instsys;
+
+  $kernel->{modules_replaced} = 1;
 
   # now replace kernel
 
@@ -6927,4 +7064,383 @@ sub rebuild_efi_image
   my $count = keys %$source_list;
 
   return 1 if $count > 1;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+sub read_config
+{
+  my $file = $_[0];
+
+  my $cfg = {};
+
+  if(open my $fd, $file) {
+    while(<$fd>) {
+      next if /^\s*#/;
+      if(/^\s*(\S+)\s*[:=]\s*(.*?)\s*$/) {
+        my $key = $1;
+        my $val = $2;
+        $val =~ s/^(["'])(.*)\1$/$2/;
+        $cfg->{"\L$key"} = $val;
+      }
+    }
+    close $fd;
+  }
+
+  return $cfg;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# $arch = get_file_arch($file)
+#
+# Return architecture for $file or undef if it couldn't be determined.
+#
+# $file may optionally be xz, gzip, or zstd compressed (with file extensions
+# .xz, .gz, or .zst, respectively)
+#
+sub get_file_arch
+{
+  my $file = $_[0];
+
+  # Use objdump's 'file format' to determine architecture tag.
+  # Note that objdump's 'architecture' entry does not differentiate between
+  # 'ppc64' and 'ppc64le'.
+  my $arch_map = {
+    'elf32-i386' => 'i386',
+    'elf32-littlearm' => 'armv7hl',	# same for 'armv6hl'
+    'elf32-powerpc' => 'ppc',
+    'elf32-s390' => 's390',
+    'elf64-ia64-little' => 'ia64',
+    'elf64-littleaarch64' => 'aarch64',
+    'elf64-littleriscv' => 'riscv64',
+    'elf64-powerpc' => 'ppc64',
+    'elf64-powerpcle' => 'ppc64le',
+    'elf64-s390' => 's390x',
+    'elf64-x86-64' => 'x86_64',
+  };
+
+  if($file =~ /\.(gz|xz|zst)$/) {
+    my $compr = 'gzip -dc';
+    $compr = 'xz -dc' if $1 eq 'xz';
+    $compr = 'zstd -dc' if $1 eq 'zst';
+    my $tmp_file = $tmp->file();
+    system "$compr $file > $tmp_file";
+    $file = $tmp_file;
+  }
+
+  for (`objdump -f $file 2>/dev/null`) {
+    if(/ file format (\S+)$/) {
+      my $ar = $arch_map->{$1};
+      die "$file: unsupported elf arch \"$1\"\n" if !$ar;
+      return $ar;
+    }
+  }
+
+  return undef;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# apply_duds()
+#
+# Apply all DUDs in @opt_duds.
+#
+# Updates initrd, instsys, boot options as needed.
+#
+sub apply_duds
+{
+  return undef if !@opt_duds;
+
+  unpack_orig_initrd if !$orig_initrd;
+  die "initrd unpacking failed\n" if !$orig_initrd;
+
+  # to get $kernel hash
+  get_initrd_modules;
+
+  my $linuxrc_config = read_config "$orig_initrd/linuxrc.config";
+
+  my $dud;
+
+  $dud->{count} = 0;
+
+  for my $dir (glob "$orig_initrd/[0-9]*/linux/suse") {
+    next unless -d $dir;
+    next unless $dir =~ m#/([0-9]+)/linux/suse$#;
+    $dud->{count} = $1 + 0 if $1 > $dud->{count};
+  }
+
+  $dud->{arch} = get_file_arch "$orig_initrd/usr/bin/sh";
+  $dud->{dist} = "*";
+
+  $dud->{dir} = "/linux/suse/$dud->{arch}-$dud->{dist}";
+
+  $dud->{installer} = $media_style eq 'rh' ? "anaconda" : "agama";
+
+  if($media_style eq 'suse' && $media_variant eq 'install') {
+    die "Error: UpdateDir not set in initrd, cannot apply driver updates\n" if $linuxrc_config->{updatedir} eq "";
+    $dud->{installer} = 'yast';
+    $dud->{dir} = $linuxrc_config->{updatedir};
+    ($dud->{arch} = $1, $dud->{dist} = $2) if $dud->{dir} =~ m#/([^/-]+)-([^/-]+)$#;
+  }
+
+  $dud->{kernel_dir} = "$kernel->{target_lib_dir}/modules/$kernel->{orig_version}";
+
+  print "going to apply driver updates in $dud->{dir}\n" if $opt_verbose >= 1;
+
+  $dud->{initrd} = $tmp->dir();
+  $dud->{instsys} = $tmp->dir();
+  $dud->{module_dir} = $tmp->dir();
+
+  for my $d (@opt_duds) {
+    my $tmp_dir = $tmp->dir();
+
+    my $type = get_archive_type $d;
+
+    if($type) {
+      unpack_archive $type, $d, $tmp_dir;
+    }
+    else {
+      die "Error: failed to apply driver update $d\n";
+    }
+
+    for my $dir (glob "$tmp_dir/linux/suse $tmp_dir/[0-9]*/linux/suse") {
+      next unless -d $dir;
+      for my $sub_dir (glob "$dir/$dud->{arch}-$dud->{dist}") {
+        next unless -d $sub_dir;
+        $dud->{count}++;
+        apply_single_dud $dud, $sub_dir;
+        last;
+      }
+    }
+  }
+
+  push @opt_initrds, $dud->{initrd} if $dud->{initrd_added};
+  push @opt_instsys, $dud->{instsys} if $dud->{instsys_added};
+
+  return $dud;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# apply_single_dud(dud, dir)
+#
+# Apply single DUD in $dir; $dud is hash describing DUD.
+# $dud is updated as needed.
+#
+# Updates initrd, instsys, boot options as needed.
+#
+sub apply_single_dud
+{
+  my $dud = $_[0];
+  my $dir = $_[1];
+
+  print "apply single dud: dir = $dir, count = $dud->{count}\n" if $opt_verbose >= 2;
+
+  $dud->{config} = read_config "$dir/dud.config";
+
+  $dud->{name} = $dud->{config}{updatename};
+  $dud->{id} = $dud->{config}{updateid};
+
+  print "applying driver update\n  - id: $dud->{id}\n  - name: $dud->{name}\n";
+
+  my $log;
+  my $log_id = $dud->{id};
+  $log_id =~ tr [./][__];
+
+  if(-d "$dir/initrd" ) {
+    print "  - initrd updated\n";
+    $dud->{initrd_added} = 1;
+    system "tar -C '$dir/initrd' -cf - . | tar -C '$dud->{initrd}' --keep-directory-symlink -xpf -";
+    system "rm -rf '$dir/initrd'";
+  }
+
+  if(-d "$dir/inst-sys" ) {
+    print "  - inst-sys updated\n";
+    $dud->{instsys_added} = 1;
+    system "tar -C '$dir/inst-sys' -cf - . | tar -C '$dud->{instsys}' --keep-directory-symlink -xpf -";
+    system "rm -rf '$dir/inst-sys'";
+  }
+
+  if(-d "$dir/modules" ) {
+    print "  - modules updated\n";
+    for my $m (glob "$dir/modules/*${kext_glob}") {
+      next unless -f $m;
+      my $version = (split " ", `modinfo -F vermagic $m 2>/dev/null`)[0];
+      die "$m: no kernel version found\n" if $version eq "";
+      my $k_dir = "$dud->{kernel_dir}/updates";
+      if($dud->{installer} ne "yast") {
+        File::Path::make_path "$dud->{instsys}/$k_dir";
+        system "cp $m $dud->{instsys}/$k_dir";
+        $dud->{instsys_added} = 1;
+        $dud->{instsys_needs_depmod} = 1;
+      }
+      File::Path::make_path "$dud->{initrd}/$k_dir";
+      system "mv $m $dud->{initrd}/$k_dir";
+      $dud->{initrd_added} = 1;
+      $dud->{initrd_needs_depmod} = 1;
+      $m =~ s#.*/##;
+      $dud->{modules}{$m} = $version;
+      $log .= "kmod: $m ($version)\n";
+      print "Warning: wrong version for kernel module $m: $version (expected $kernel->{orig_version})\n" if $version ne $kernel->{orig_version};
+    }
+    system "rm -rf '$dir/modules'";
+  }
+
+  my $keep_keys = 0;
+  my $config_options = 0;
+  my $boot_options = 0;
+
+  for my $k (sort keys %{$dud->{config}}) {
+    next if $k =~ /^update/;
+    if($k eq 'boot') {
+      $boot_options++;
+      $opt_boot_options .= " $dud->{config}{boot}";
+      $log .= "boot: $dud->{config}{boot}\n";
+      next;
+    }
+    if($dud->{installer} eq 'yast') {
+      $keep_keys++;
+    }
+    else {
+      $config_options++;
+      add_initrd_option $k, $dud->{config}{$k};
+      if(defined $dud->{config}{$k}) {
+        $log .= "config: $k=$dud->{config}{$k}\n";
+      }
+      else {
+        $log .= "config: $k\n";
+      }
+    }
+  }
+
+  print "  - config options added\n" if $config_options;
+  print "  - boot options added\n" if $boot_options;
+
+  if($keep_keys || -d "$dir/install") {
+    my $c = sprintf "%02u", $dud->{count};
+    my $new_dir = "$dud->{initrd}/$c/linux/suse", $dud->{initrd};
+    File::Path::make_path $new_dir;
+
+    my $top_dir = $dir;
+    $top_dir =~ s#.*/##;
+
+    # keep at least dud name and id
+    print "  - keeping some parts in /$c/linux/suse/$top_dir\n";
+
+    # move remaining parts, if any
+    # final part in $dir might be symlink!
+    rename abs_path($dir), "$new_dir/$top_dir";
+
+    $dud->{initrd_added} = 1;
+  }
+
+  if($log_id ne "" && $log ne "") {
+    if(open my $fd, ">>", "$dud->{initrd}/.update.initrd.$log_id") {
+      print $fd $log;
+      close $fd;
+    }
+    if(open my $fd, ">>", "$dud->{instsys}/.update.$log_id") {
+      print $fd $log;
+      close $fd;
+    }
+  }
+
+  if($opt_verbose >= 2) {
+    print "driver update data:\n";
+    print Dumper $dud;
+  }
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# kernel_module_exists(dir, module_file)
+#
+# return full path for module file in dir or undef
+#
+sub kernel_module_exists
+{
+  my $dir = $_[0];
+  my $old_file = $_[1];
+
+  my $name = $old_file;
+
+  return undef unless $name =~ s/${kext_regexp}$//;
+
+  $name =~ s#.*/##;
+
+  my $new_file;
+
+  for my $n (glob "$dir/$name$kext_glob") {
+    $new_file = $n, last if -f $n;
+  }
+
+  return $new_file;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# run_depmod($dir, $version)
+#
+# Run depmod command for directory $dir and kernel version $version.
+#
+# Takes care of usrmerge by building a separate lib & usr/lib tree and symlinking
+# actual module dir there.
+#
+# Might need root priv when running in live-root but since mkmedia enforces root
+# in this case anyway, it does not really matter.
+# In cany case, the check (related to $needs_root) is kept.
+#
+sub run_depmod
+{
+  my $dir = $_[0];
+  my $version = $_[1];
+
+  if(!$depmod) {
+    $depmod->{dir} = $tmp->dir();
+
+    # prepare base tree
+    File::Path::make_path "$depmod->{dir}/usr/lib";
+    symlink "usr/lib", "$depmod->{dir}/lib";
+
+    # use our own depmod.conf
+    $depmod->{conf} = "$depmod->{dir}/depmod.conf";
+    open my $fd, ">", $depmod->{conf};
+    print $fd "search updates extra weak-updates kgraft built-in\n";
+    print $fd "make_map_files no\n";
+    close $fd;
+  }
+
+  unlink "$depmod->{dir}/usr/lib/modules";
+
+  if(-d "$dir/usr/lib/modules") {
+    symlink "$dir/usr/lib/modules", "$depmod->{dir}/usr/lib/modules";
+  }
+  elsif("$dir/lib/modules") {
+    symlink "$dir/lib/modules", "$depmod->{dir}/usr/lib/modules";
+  }
+  else {
+    die "depmod: unsupported kernel tree\n";
+  }
+
+  my $needs_root = ! -w $dir;
+  my $err;
+
+  if($needs_root) {
+    $err = susystem "depmod -a -C '$depmod->{conf}' -b '$depmod->{dir}' '$version' >$depmod->{dir}/stderr 2>&1";
+  }
+  else {
+    $err = system "depmod -a -C '$depmod->{conf}' -b '$depmod->{dir}' '$version' >$depmod->{dir}/stderr 2>&1";
+  }
+
+  if($err) {
+    my $log;
+    if(open my $fd, "$depmod->{dir}/stderr") {
+      local $/;
+      $log = <$fd>;
+      close $fd;
+    }
+    chomp $log;
+    die "$log\nError: depmod failed\n";
+  }
 }
