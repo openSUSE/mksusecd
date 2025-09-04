@@ -237,7 +237,8 @@ sub create_efi_image;
 sub rebuild_efi_image;
 sub read_config;
 sub get_file_arch;
-sub apply_duds;
+sub apply_duds_1;
+sub apply_duds_2;
 sub apply_single_dud;
 sub kernel_module_exists;
 sub run_depmod;
@@ -502,6 +503,7 @@ my $two_runs;
 my $add_kernel;
 my $add_initrd;
 my $orig_initrd;
+my $orig_initrd_filename;
 my $initrd_has_parts;
 my $has_efi = 0;
 my $has_el_torito = 0;
@@ -695,6 +697,8 @@ if($opt_create || $opt_list_repos) {
   $boot = analyze_boot;
   get_initrd_format;
 
+  $applied_duds = apply_duds_1;
+
   if($opt_type eq "micro") {
     if($opt_defaultrepo) {
       $opt_instsys_in_repo = 0;
@@ -790,7 +794,7 @@ if($opt_create || $opt_list_repos) {
     replace_kernel_mods;
   }
 
-  $applied_duds = apply_duds;
+  apply_duds_2 $applied_duds;
 
   $add_initrd = create_initrd;
   update_kernel_initrd;
@@ -3157,6 +3161,12 @@ sub unpack_orig_initrd
   if(my $x = get_kernel_initrd) {
     my $f = fname($x->{initrd});
     if(-f $f) {
+      if($orig_initrd_filename eq $f) {
+        print "keeping initrd file: $f\n" if $opt_verbose >= 2;
+        return;
+      }
+      $orig_initrd_filename = $f;
+      print "unpacking initrd file: $f\n" if $opt_verbose >= 2;
       $orig_initrd = $tmp->dir();
       my $type = get_archive_type $f;
       if($type) {
@@ -6240,7 +6250,7 @@ sub analyze_products
       my @fields;
       while(my $l = <$f>) {
         @fields = split /\s/, $l;
-        # ... and for each product definition, analyse it
+        # ... and for each product definition, analyze it
         my $ok = check_product($src_idx, $_, @fields) if @fields == 3;
         # If we find a valid product, skip the source dir (except if it's the first).
         # Instead, only the product (the repository) is added to the final medium.
@@ -7142,21 +7152,31 @@ sub get_file_arch
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-# apply_duds()
+# apply_duds_1()
 #
-# Apply all DUDs in @opt_duds.
+# Apply all DUDs in @opt_duds - step 1 (analyze + iso).
 #
-# Updates initrd, instsys, boot options as needed.
+# Update iso as needed.
 #
-sub apply_duds
+# The critical part is that a DUD may replace the initrd. So we do it in two
+# steps: first look only for 'iso' parts and add them to the @sources list.
+# For this, avoid relying on initrd content too much and delay for example
+# module/kernel related things to apply_duds_2.
+#
+# Nevertheless there *is* a chicken-egg problem; the replaced initrd should
+# not introduce a changed 'dist' tag and have the same compression as the
+# old one.
+#
+# Just don't overdo things.
+#
+# In step 2 the main DUD parts are applied.
+#
+sub apply_duds_1
 {
   return undef if !@opt_duds;
 
   unpack_orig_initrd if !$orig_initrd;
   die "initrd unpacking failed\n" if !$orig_initrd;
-
-  # to get $kernel hash
-  get_initrd_modules;
 
   my $linuxrc_config = read_config "$orig_initrd/linuxrc.config";
 
@@ -7184,12 +7204,11 @@ sub apply_duds
     ($dud->{arch} = $1, $dud->{dist} = $2) if $dud->{dir} =~ m#/([^/-]+)-([^/-]+)$#;
   }
 
-  $dud->{kernel_dir} = "$kernel->{target_lib_dir}/modules/$kernel->{orig_version}";
-
   print "going to apply driver updates in $dud->{dir}\n" if $opt_verbose >= 1;
 
   $dud->{initrd} = $tmp->dir();
   $dud->{instsys} = $tmp->dir();
+  $dud->{iso} = $tmp->dir();
   $dud->{module_dir} = $tmp->dir();
 
   for my $d (@opt_duds) {
@@ -7209,44 +7228,92 @@ sub apply_duds
       for my $sub_dir (glob "$dir/$dud->{arch}-$dud->{dist}") {
         next unless -d $sub_dir;
         $dud->{count}++;
-        apply_single_dud $dud, $sub_dir;
+        push @{$dud->{dir_list}}, { count => $dud->{count}, dir => $sub_dir };
+        apply_single_dud $dud, $dud->{count}, $sub_dir, 1;
         last;
       }
     }
   }
 
-  push @opt_initrds, $dud->{initrd} if $dud->{initrd_added};
-  push @opt_instsys, $dud->{instsys} if $dud->{instsys_added};
+  if($dud->{iso_added}) {
+    my $new_source = { dir => $dud->{iso}, real_name => $dud->{iso}, type => 'dir' };
+    push @sources, $new_source;
+    update_filelist [ $new_source ];
+    unpack_orig_initrd;
+  }
 
   return $dud;
 }
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-# apply_single_dud(dud, dir)
+# apply_duds_2()
+#
+# Apply all DUDs in @opt_duds - step 2 (main part).
+#
+# Update initrd, instsys, boot options as needed.
+#
+sub apply_duds_2
+{
+  my $dud = $_[0];
+
+  return if !$dud->{dir_list};
+
+  # to get $kernel hash
+  get_initrd_modules;
+  $dud->{kernel_dir} = "$kernel->{target_lib_dir}/modules/$kernel->{orig_version}";
+
+  print "going to apply driver updates in $dud->{dir}\n" if $opt_verbose >= 1;
+
+  for my $d (@{$dud->{dir_list}}) {
+    apply_single_dud $dud, $d->{count}, $d->{dir}, 0;
+  }
+
+  push @opt_initrds, $dud->{initrd} if $dud->{initrd_added};
+  push @opt_instsys, $dud->{instsys} if $dud->{instsys_added};
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# apply_single_dud(dud, count, dir, iso_only)
 #
 # Apply single DUD in $dir; $dud is hash describing DUD.
 # $dud is updated as needed.
 #
-# Updates initrd, instsys, boot options as needed.
+# Update iso, initrd, instsys, boot options as needed.
 #
 sub apply_single_dud
 {
   my $dud = $_[0];
-  my $dir = $_[1];
+  my $count = $_[1];
+  my $dir = $_[2];
+  my $iso_only = $_[3];
 
-  print "apply single dud: dir = $dir, count = $dud->{count}\n" if $opt_verbose >= 2;
+  print "apply single dud: dir = $dir, count = $count, iso = $iso_only\n" if $opt_verbose >= 2 && !$iso_only;
 
   $dud->{config} = read_config "$dir/dud.config";
 
   $dud->{name} = $dud->{config}{updatename};
   $dud->{id} = $dud->{config}{updateid};
 
-  print "applying driver update\n  - id: $dud->{id}\n  - name: $dud->{name}\n";
+  print "applying driver update\n  - id: $dud->{id}\n  - name: $dud->{name}\n" if !$iso_only;
 
   my $log;
   my $log_id = $dud->{id};
   $log_id =~ tr [./][__];
+
+  if($iso_only) {
+    if(-d "$dir/iso" ) {
+      $dud->{iso_added} = 1;
+      $dud->{has_iso_dir}{$dir} = 1;
+      system "tar -C '$dir/iso' -cf - . | tar -C '$dud->{iso}' --keep-directory-symlink -xpf -";
+      system "rm -rf '$dir/iso'";
+    }
+    return;
+  }
+  else {
+    print "  - iso updated\n" if $dud->{has_iso_dir}{$dir};
+  }
 
   if(-d "$dir/initrd" ) {
     print "  - initrd updated\n";
@@ -7318,7 +7385,7 @@ sub apply_single_dud
   print "  - boot options added\n" if $boot_options;
 
   if($keep_keys || -d "$dir/install") {
-    my $c = sprintf "%02u", $dud->{count};
+    my $c = sprintf "%02u", $count;
     my $new_dir = "$dud->{initrd}/$c/linux/suse", $dud->{initrd};
     File::Path::make_path $new_dir;
 
@@ -7341,6 +7408,10 @@ sub apply_single_dud
       close $fd;
     }
     if(open my $fd, ">>", "$dud->{instsys}/.update.$log_id") {
+      print $fd $log;
+      close $fd;
+    }
+    if(open my $fd, ">>", "$dud->{iso}/.update.iso.$log_id") {
       print $fd $log;
       close $fd;
     }

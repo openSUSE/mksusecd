@@ -50,7 +50,7 @@ We have a patch for yast2-core that is needed during installation and the
 final system, e.g. for an AutoYaST installation. The patch is included in
 yast2-core-3.1.12-0.x86_64.rpm.
 
-- Create a Driver Update Disk (DUD) from yast2-core.rpm:
+- Create a Driver Update Disk (DUD) from yast2-core.rpm using [mkdud](https://github.com/openSUSE/mkdud?tab=readme-ov-file#mkdud):
 
     ```sh
     mkdud --create bug-free.dud --dist 13.2 yast2-core-3.1.12-0.x86_64.rpm
