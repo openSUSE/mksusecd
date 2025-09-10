@@ -572,6 +572,7 @@ modifications to the installation system. In particular a DUD can:
 - update kernel modules
 - change files in the initrd of the installation medium
 - change files in the installation system / live root of the installation medium
+- change files on the installation medium
 - change boot options
 - change installer config options
 - provide updated packages to be installed
@@ -597,8 +598,8 @@ original modules are loaded and then the driver update unloads them and
 loads the updated modules. While with the second way the updated modules are loaded
 right away.
 
-Also, things like boot options or initrd changes can only be applied successfully with the second method as it would
-simply be too late with the first method.
+Also, changes to boot options, the initrd content, or general installation media changes can only be applied successfully with
+the second method.
 
 === Kernel update notes
 

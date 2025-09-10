@@ -31,6 +31,7 @@ Packages for openSUSE and SLES are built at the [openSUSE Build Service](https:/
 
 See also my mini-series of articles around SUSE installation media and driver updates that highlight specific use-cases:
 
+- [Make your own SUSE DVD – Tooling for SUSE and Multi-Linux installation / Live media](https://www.suse.com/c/make-your-own-suse-dvd-tooling-for-suse-and-multi-linux-installation-live-media)
 - [Update the update process!](https://lizards.opensuse.org/2017/02/16/fun-things-to-do-with-driver-updates)
 - [But what if I need a new kernel?](https://lizards.opensuse.org/2017/03/16/fun-things-to-do-with-driver-updates-2)
 - [And what if I want to **remove** some files?](https://lizards.opensuse.org/2017/04/25/fun-things-to-do-with-driver-updates-3)
@@ -49,7 +50,7 @@ We have a patch for yast2-core that is needed during installation and the
 final system, e.g. for an AutoYaST installation. The patch is included in
 yast2-core-3.1.12-0.x86_64.rpm.
 
-- Create a Driver Update Disk (DUD) from yast2-core.rpm:
+- Create a Driver Update Disk (DUD) from yast2-core.rpm using [mkdud](https://github.com/openSUSE/mkdud?tab=readme-ov-file#mkdud):
 
     ```sh
     mkdud --create bug-free.dud --dist 13.2 yast2-core-3.1.12-0.x86_64.rpm
