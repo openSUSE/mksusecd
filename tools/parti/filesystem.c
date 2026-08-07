@@ -23,6 +23,9 @@
 #include "filesystem.h"
 #include "util.h"
 
+// read (and cache) this much of each file system for probing
+#define FS_READ_BYTES	(256 * 1024)
+
 typedef struct {
   char *type;
   char *label;
@@ -54,7 +57,7 @@ int fs_probe(fs_detail_t *fs, disk_t *disk, uint64_t offset)
 
   uint8_t buf[disk->block_size];
 
-  for(uint64_t u = 0; u < 68 * 1024; u += disk->block_size) {
+  for(uint64_t u = 0; u < FS_READ_BYTES; u += disk->block_size) {
     disk_read(disk, buf, (offset + u) / disk->block_size, 1);
   }
 

@@ -1,4 +1,4 @@
-parti 2.12
+parti 2.13
 
 Does not contain libmediacheck related parts (__WITH_MEDIA_CHECK__ is
 undefined) to avoid additional linking dependency (and the info is not used
