@@ -17,7 +17,7 @@ only the software modules and products you need. Or minimalistic media for
 purely network-based installations.
 
 There is a group of tools that lets you do all this easily. They come in two
-packages: `checkmedia` and `mksusecd`.
+packages: `checkmedia` and `mkmedia`.
 
 A lesser known fact is that these tools work not only with SUSE media but
 also with Multi-Linux media. That is, with Fedora, RHEL, CentOS, and
@@ -197,7 +197,7 @@ signature.
 
 == verifymedia
 
-`verifymedia` and `mkmedia` are part of the `mksusecd` package. These tools
+`verifymedia` and `mkmedia` are part of the `mkmedia` package. These tools
 are for people creating new or modified media.
 
 In contrast to `checkmedia`, `verifymedia` testifies technical correctness:
@@ -272,7 +272,7 @@ to check your modified media with `verifymedia` for signs of trouble.
 
 == mkmedia
 
-`mkmedia` (in package `mksusecd`) is the tool to modify existing installation or Live images. It used to be
+`mkmedia` is the tool to modify existing installation or Live images. It used to be
 called `mksusecd` but that name does not reflect the fact that it is no longer limited to SUSE media.
 
 Typical things you can do include
@@ -1326,4 +1326,4 @@ For all that made it this far, here are some links to technical background docum
 1. Media signing and digest meta data +
   https://github.com/openSUSE/checkmedia/blob/master/README.adoc
 2. Hybrid mode ISO image layout details +
-  https://github.com/openSUSE/mksusecd/blob/master/layout.md
+  https://github.com/openSUSE/mkmedia/blob/master/layout.md

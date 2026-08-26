@@ -46,7 +46,7 @@ install: isohybrid parti doc
 	install -m 755 -D tools/mnt/umnt $(DESTDIR)$(LIBDIR)/mkmedia/umnt
 	@rm -f mkmedia.tmp verifymedia.tmp isozipl.tmp mnt.tmp
 
-%.1: %_man.adoc
+%.1: %_man.adoc VERSION
 	@if [ -x /usr/bin/asciidoctor ] ; then \
 	  asciidoctor -b manpage -a version=$(VERSION) $< ; \
 	fi

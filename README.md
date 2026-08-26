@@ -22,10 +22,10 @@ you can read more about it [here](layout.md).
 
 Packages for openSUSE and SLES are built at the [openSUSE Build Service](https://build.opensuse.org). You can grab
 
-- [official releases](https://software.opensuse.org/package/mksusecd) or
+- [official releases](https://software.opensuse.org/package/mkmedia) or
 
-- [latest stable versions](https://software.opensuse.org/download/package?project=home:snwint:ports&package=mksusecd)
-  from my [ports](https://build.opensuse.org/package/show/home:snwint:ports/mksusecd) project
+- [latest stable versions](https://software.opensuse.org/download/package?project=home:snwint:ports&package=mkmedia)
+  from my [ports](https://build.opensuse.org/package/show/home:snwint:ports/mkmedia) project
 
 ## Blog
 
@@ -106,12 +106,12 @@ This would start an ssh daemon you can login to during installation.
 
 ## Installation
 
-Often you will need [mkdud][1] along with mksusecd. Both mksusecd and mkdud are
+Often you will need [mkdud][1] along with mkmedia. Both mkmedia and mkdud are
 included in openSUSE Tumbleweed. So on openSUSE Tumbleweed installation is as
 simple as
 
 ```
-zypper in mksusecd mkdud
+zypper in mkmedia mkdud
 ```
 
 [1]: https://github.com/openSUSE/mkdud
@@ -127,13 +127,13 @@ Submissions are managed by a SUSE internal [jenkins](https://jenkins.io) node in
 
 Each time a new commit is integrated into the master branch of the repository,
 a new submit request is created to the openSUSE Build Service. The devel project
-is [system:install:head](https://build.opensuse.org/package/show/system:install:head/mksusecd).
+is [system:install:head](https://build.opensuse.org/package/show/system:install:head/mkmedia).
 
 `*.changes` and version numbers are auto-generated from git commits, you don't have to worry about this.
 
 The spec file is maintained in the Build Service only. If you need to change it for the `master` branch,
 submit to the
-[devel project](https://build.opensuse.org/package/show/system:install:head/mksusecd)
+[devel project](https://build.opensuse.org/package/show/system:install:head/mkmedia)
 in the build service directly.
 
 Development happens exclusively in the `master` branch. The branch is used for all current products.
